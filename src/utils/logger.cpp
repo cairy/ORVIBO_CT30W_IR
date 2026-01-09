@@ -23,6 +23,11 @@ bool Logger::init() {
 }
 
 void Logger::log(const String& type, const String& content) {
+    // 优化：内存压力大时跳过非关键日志
+    if (ESP.getFreeHeap() < 4096 && type != "error") {
+        return;
+    }
+    
     unsigned long now = millis();
     
     // 循环覆盖
@@ -54,14 +59,60 @@ void Logger::log(const String& type, const String& content) {
                   logs[log_index == 0 ? MAX_LOG_ENTRIES - 1 : log_index - 1].content);
     
     // 优化：只在达到阈值或内存压力大时才标记保存
-    // 如果日志数量达到一定阈值（比如20条）或内存使用率较高，才标记保存
+    // 如果日志数量达到一定阈值（MAX_LOG_ENTRIES的2/3）或内存使用率较高，才标记保存
     // 这样可以减少Flash写入次数，延长Flash寿命
-    static int logSaveThreshold = 20;  // 日志数量阈值
+    static int logSaveThreshold = (MAX_LOG_ENTRIES * 2) / 3;  // 日志数量阈值（约13条）
     if (log_count >= logSaveThreshold) {
         needsSave = true;
     }
     // 注意：错误日志总是立即标记保存（重要信息）
     if (type == "error") {
+        needsSave = true;
+    }
+}
+
+// 优化：添加const char*版本，避免String对象创建
+void Logger::log(const char* type, const char* content) {
+    // 优化：内存压力大时跳过非关键日志
+    if (ESP.getFreeHeap() < 4096 && (type == nullptr || strcmp(type, "error") != 0)) {
+        return;
+    }
+    
+    unsigned long now = millis();
+    
+    // 循环覆盖
+    logs[log_index].timestamp = now;
+    // 使用strncpy安全复制，确保以null结尾
+    if (type != nullptr) {
+        strncpy(logs[log_index].type, type, MAX_LOG_TYPE_LEN - 1);
+        logs[log_index].type[MAX_LOG_TYPE_LEN - 1] = '\0';
+    } else {
+        logs[log_index].type[0] = '\0';
+    }
+    if (content != nullptr) {
+        strncpy(logs[log_index].content, content, MAX_LOG_CONTENT_LEN - 1);
+        logs[log_index].content[MAX_LOG_CONTENT_LEN - 1] = '\0';
+    } else {
+        logs[log_index].content[0] = '\0';
+    }
+    logs[log_index].valid = true;
+    
+    log_index = (log_index + 1) % MAX_LOG_ENTRIES;
+    if (log_count < MAX_LOG_ENTRIES) {
+        log_count++;
+    }
+    
+    // 串口输出
+    Serial.printf("[%lu] [%s] %s\n", now, logs[log_index == 0 ? MAX_LOG_ENTRIES - 1 : log_index - 1].type, 
+                  logs[log_index == 0 ? MAX_LOG_ENTRIES - 1 : log_index - 1].content);
+    
+    // 优化：只在达到阈值或内存压力大时才标记保存
+    static int logSaveThreshold = (MAX_LOG_ENTRIES * 2) / 3;  // 日志数量阈值（约13条）
+    if (log_count >= logSaveThreshold) {
+        needsSave = true;
+    }
+    // 注意：错误日志总是立即标记保存（重要信息）
+    if (type != nullptr && strcmp(type, "error") == 0) {
         needsSave = true;
     }
 }
@@ -96,12 +147,22 @@ void Logger::logReceiveSignal(const SignalID& signalId, bool matched) {
         recentSignalCount++;
     }
     
-    // 同时记录到日志（使用字符串格式）
-    String signalStr = "Protocol:" + String(signalId.protocol) + 
-                      ", Data:" + String(signalId.data, HEX) +
-                      ", Hash:" + String(signalId.hash, HEX) +
-                      ", Matched:" + String(matched ? "Yes" : "No");
-    logReceive(signalStr);
+    // 优化：使用char数组和snprintf替代String拼接，减少内存分配
+    // 检查内存压力，内存不足时跳过非关键日志
+    if (ESP.getFreeHeap() < 4096) {
+        // 内存压力大时，只记录到最近信号缓冲区，不记录到日志
+        return;
+    }
+    
+    // 使用固定大小的缓冲区，避免动态内存分配
+    char signalStr[MAX_LOG_CONTENT_LEN];
+    snprintf(signalStr, sizeof(signalStr), 
+             "Protocol:%u, Data:%08X, Hash:%08X, Matched:%s",
+             signalId.protocol, signalId.data, signalId.hash,
+             matched ? "Yes" : "No");
+    
+    // 使用const char*版本避免String对象创建
+    log("receive", signalStr);
 }
 
 int Logger::getRecentSignals(RecentSignal* signals, int max_count) {
@@ -174,19 +235,45 @@ void Logger::saveToFlash() {
         return;
     }
     
+    // 内存保护：内存不足时跳过保存
+    if (ESP.getFreeHeap() < 3072) {
+        Serial.println("[Logger] 内存不足，跳过保存日志到Flash");
+        needsSave = false;
+        return;
+    }
+    
     File file = LittleFS.open(LOG_FILE, "w");
     if (!file) {
         return;
     }
     
-    // 动态计算JSON大小：每条日志约100字节，加上JSON开销
-    // 30条日志约3000字节，加上数组开销约4000字节
-    size_t jsonSize = (log_count * 100) + 1024;
+    // 优化：更精确的JSON大小计算
+    // 基础开销：数组结构约100字节
+    // 每条日志：timestamp(8) + type字符串(实际长度) + content字符串(实际长度) + 对象开销(20)
+    size_t jsonSize = 256; // 基础开销
+    int start_idx = (log_count < MAX_LOG_ENTRIES) ? 0 : log_index;
+    for (int i = 0; i < log_count; i++) {
+        int idx = (start_idx + i) % MAX_LOG_ENTRIES;
+        if (logs[idx].valid) {
+            jsonSize += 28; // timestamp + 对象开销
+            jsonSize += strlen(logs[idx].type);
+            jsonSize += strlen(logs[idx].content);
+        }
+    }
     if (jsonSize < 2048) jsonSize = 2048;  // 最小2KB
+    if (jsonSize > 6144) jsonSize = 6144;   // 限制最大6KB，避免内存不足
+    
+    // 检查是否有足够内存
+    if (ESP.getFreeHeap() < jsonSize + 1024) {
+        Serial.printf("[Logger] 内存不足，无法保存日志 (需要: %d, 可用: %d)\n", jsonSize, ESP.getFreeHeap());
+        file.close();
+        needsSave = false;
+        return;
+    }
+    
     DynamicJsonDocument doc(jsonSize);
     JsonArray logArray = doc.to<JsonArray>();
     
-    int start_idx = (log_count < MAX_LOG_ENTRIES) ? 0 : log_index;
     for (int i = 0; i < log_count; i++) {
         int idx = (start_idx + i) % MAX_LOG_ENTRIES;
         if (logs[idx].valid) {

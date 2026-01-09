@@ -16,6 +16,11 @@ bool MQTTClient::init() {
 }
 
 void MQTTClient::update() {
+    // 如果MQTT未配置，不尝试连接
+    if (!configManager.isMQTTConfigured()) {
+        return;
+    }
+    
     if (!client.connected()) {
         unsigned long now = millis();
         if (now - lastReconnectAttempt > 5000) {
@@ -118,6 +123,11 @@ void MQTTClient::setBufferSize(uint16_t size) {
 
 bool MQTTClient::attemptReconnect() {
     if (!configManager.isValid()) {
+        return false;
+    }
+    
+    // 检查MQTT是否配置，未配置时不尝试连接
+    if (!configManager.isMQTTConfigured()) {
         return false;
     }
     

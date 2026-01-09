@@ -276,11 +276,25 @@ void HAMQTTHandler::publishDiscoveryConfig() {
 }
 
 void HAMQTTHandler::processCommand(const String& payload) {
-    DynamicJsonDocument doc(2048);
+    // 内存保护：检查可用内存
+    if (ESP.getFreeHeap() < 2048) {
+        Serial.println("[HA MQTT] 内存不足，跳过命令处理");
+        return;
+    }
+    
+    // 优化：根据payload长度动态计算JSON大小
+    size_t jsonSize = payload.length() + 512;
+    if (jsonSize > 3072) jsonSize = 3072; // 限制最大3KB
+    if (jsonSize < 512) jsonSize = 512;
+    
+    DynamicJsonDocument doc(jsonSize);
     DeserializationError error = deserializeJson(doc, payload);
     
     if (error) {
-        publishState("error", "Invalid JSON: " + String(error.c_str()));
+        // 优化：避免创建临时String对象
+        char errorMsg[64];
+        snprintf(errorMsg, sizeof(errorMsg), "Invalid JSON: %s", error.c_str());
+        publishState("error", errorMsg);
         return;
     }
     
@@ -312,13 +326,32 @@ void HAMQTTHandler::processCommand(const String& payload) {
 }
 
 void HAMQTTHandler::handleQueryMaps() {
+    // 内存保护：检查可用内存
+    if (ESP.getFreeHeap() < 2048) {
+        publishState("error", "Low Memory");
+        return;
+    }
+    
     IR_MapRule rules[MAX_MAP_RULES];
     int count = mapper.getRuleCount();
     mapper.getAllRules(rules, count);
     
-    // 动态计算JSON大小：每条规则约200字节
-    size_t jsonSize = (count * 200) + 2048;
-    if (jsonSize < 4096) jsonSize = 4096;
+    // 优化：更精确的JSON大小计算
+    size_t jsonSize = 256; // 基础开销
+    for (int i = 0; i < count; i++) {
+        jsonSize += 120; // 规则基础开销
+        jsonSize += rules[i].bSignalCount * 40;
+        jsonSize += (rules[i].bSignalCount > 0 ? rules[i].bSignalCount - 1 : 0) * 4;
+    }
+    if (jsonSize > 8192) jsonSize = 8192; // 限制最大8KB
+    if (jsonSize < 512) jsonSize = 512;
+    
+    // 检查是否有足够内存
+    if (ESP.getFreeHeap() < jsonSize + 1024) {
+        publishState("error", "Insufficient Memory");
+        return;
+    }
+    
     DynamicJsonDocument doc(jsonSize);
     JsonArray rulesArray = doc.to<JsonArray>();
     
@@ -357,7 +390,18 @@ void HAMQTTHandler::handleQueryMaps() {
 }
 
 void HAMQTTHandler::handleUpdateMap(const String& json) {
-    DynamicJsonDocument doc(2048);
+    // 内存保护：检查可用内存
+    if (ESP.getFreeHeap() < 2048) {
+        publishState("error", "Low Memory");
+        return;
+    }
+    
+    // 优化：根据json长度动态计算JSON大小
+    size_t jsonSize = json.length() + 512;
+    if (jsonSize > 3072) jsonSize = 3072;
+    if (jsonSize < 512) jsonSize = 512;
+    
+    DynamicJsonDocument doc(jsonSize);
     DeserializationError error = deserializeJson(doc, json);
     
     if (error) {
@@ -415,13 +459,32 @@ void HAMQTTHandler::handleUpdateMap(const String& json) {
 }
 
 void HAMQTTHandler::handleGetLogs() {
+    // 内存保护：检查可用内存
+    if (ESP.getFreeHeap() < 1536) {
+        publishState("error", "Low Memory");
+        return;
+    }
+    
     LogEntry entries[MAX_LOG_ENTRIES];
     int count = logger.getLogCount();
     logger.getLogs(entries, count);
     
-    // 动态计算JSON大小：每条日志约100字节
-    size_t jsonSize = (count * 100) + 1024;
-    if (jsonSize < 2048) jsonSize = 2048;
+    // 优化：更精确的JSON大小计算
+    size_t jsonSize = 256;
+    for (int i = 0; i < count; i++) {
+        jsonSize += 108;
+        jsonSize += strlen(entries[i].type);
+        jsonSize += strlen(entries[i].content);
+    }
+    if (jsonSize > 4096) jsonSize = 4096;
+    if (jsonSize < 512) jsonSize = 512;
+    
+    // 检查是否有足够内存
+    if (ESP.getFreeHeap() < jsonSize + 1024) {
+        publishState("error", "Insufficient Memory");
+        return;
+    }
+    
     DynamicJsonDocument doc(jsonSize);
     JsonArray logArray = doc.to<JsonArray>();
     
@@ -547,7 +610,24 @@ void HAMQTTHandler::handleSetForwardingEnabled(const String& json) {
 }
 
 void HAMQTTHandler::handleUpdateMaps(const String& json) {
-    DynamicJsonDocument doc(4096);
+    // 内存保护：检查可用内存（批量更新需要更多内存）
+    if (ESP.getFreeHeap() < 4096) {
+        publishState("error", "Low Memory");
+        return;
+    }
+    
+    // 优化：根据json长度动态计算JSON大小
+    size_t jsonSize = json.length() + 1024;
+    if (jsonSize > 6144) jsonSize = 6144; // 限制最大6KB
+    if (jsonSize < 1024) jsonSize = 1024;
+    
+    // 检查是否有足够内存
+    if (ESP.getFreeHeap() < jsonSize + 2048) {
+        publishState("error", "Insufficient Memory");
+        return;
+    }
+    
+    DynamicJsonDocument doc(jsonSize);
     DeserializationError error = deserializeJson(doc, json);
     
     if (error) {

@@ -24,6 +24,7 @@ public:
     void setWiFi(const String& ssid, const String& password);
     void setMQTT(const String& server, uint16_t port, 
                 const String& username, const String& password);
+    void clearMQTT();
     bool isValid() const;
     bool isMQTTConfigured() const;
     void reset();

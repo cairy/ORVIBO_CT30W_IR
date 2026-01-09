@@ -72,8 +72,9 @@ const unsigned long BUTTON_CHECK_INTERVAL = 20;  // 20ms
 // 内存监控
 unsigned long lastMemoryCheckTime = 0;
 const float MEMORY_WARNING_THRESHOLD = 70.0f;  // 内存使用率超过70%时警告
-const float MEMORY_CRITICAL_THRESHOLD = 90.0f; // 内存使用率超过90%时自动清理
-const unsigned long MEMORY_CHECK_INTERVAL = 60000; // 60秒检查一次内存
+const float MEMORY_CLEANUP_THRESHOLD = 85.0f;  // 内存使用率超过85%时开始清理（更积极的策略）
+const float MEMORY_CRITICAL_THRESHOLD = 90.0f; // 内存使用率超过90%时强制清理
+const unsigned long MEMORY_CHECK_INTERVAL = 30000; // 30秒检查一次内存（更频繁）
 
 // Web服务器启动延迟（启动后等待时间，单位：毫秒）
 const unsigned long WEB_SERVER_START_DELAY = 8000; // 8秒延迟
@@ -82,6 +83,9 @@ unsigned long systemStartTime = 0;
 void setup() {
     Serial.begin(115200);
     Serial.println("\n\n=== ORVIBO-CT30W 红外转发器启动 ===");
+    
+    // 初始化内存监控（尽早初始化，记录初始堆大小）
+    MemoryMonitor::init();
     
     // 初始化存储
     if (!Storage::init()) {
@@ -282,11 +286,20 @@ void loop() {
         ledControl.setNetworkStateWithMQTTConfig(wifiConnected, mqttConnected, mqttConfigured);
         
         // Web服务器条件启动/停止逻辑（优化：延迟启动，避免MQTT快速连接时不必要的启动）
+        // 内存保护：内存不足时停止Web服务器
         bool shouldRunWebServer = false;
         unsigned long elapsedSinceStart = now - systemStartTime;
+        size_t freeHeap = ESP.getFreeHeap();
         
-        if (wifiManager.getStatus() == WIFI_AP_MODE) {
-            // AP模式：始终运行
+        // 内存不足时强制停止Web服务器
+        if (freeHeap < 4096) {
+            if (webServer.isRunning()) {
+                Serial.println("[Web服务器] 内存不足，停止Web服务器");
+                webServer.stop();
+            }
+            shouldRunWebServer = false;
+        } else if (wifiManager.getStatus() == WIFI_AP_MODE) {
+            // AP模式：内存充足时运行
             shouldRunWebServer = true;
         } else if (wifiConnected) {
             // WiFi已连接
@@ -355,46 +368,73 @@ void loop() {
         size_t freeHeap = ESP.getFreeHeap();
         size_t maxBlock = ESP.getMaxFreeBlockSize();
         float usagePercent = MemoryMonitor::getUsagePercent();
+        float fragPercent = MemoryMonitor::getFragmentationPercent();
         
         // 内存使用率超过警告阈值时打印警告
         if (usagePercent > MEMORY_WARNING_THRESHOLD) {
-            Serial.printf("[内存警告] 使用率: %.1f%%, 空闲: %d bytes (%.2f KB), 最大连续块: %d bytes (%.2f KB)\n",
-                         usagePercent, freeHeap, freeHeap / 1024.0f, maxBlock, maxBlock / 1024.0f);
+            Serial.printf("[内存警告] 使用率: %.1f%%, 空闲: %d bytes (%.2f KB), 最大连续块: %d bytes (%.2f KB), 碎片率: %.1f%%\n",
+                         usagePercent, freeHeap, freeHeap / 1024.0f, maxBlock, maxBlock / 1024.0f, fragPercent);
         }
         
-        // 内存使用率超过临界阈值时自动清理
-        static bool lastMemoryCritical = false;  // 跟踪上次是否处于临界状态
+        // 内存清理策略：85%开始清理，90%强制清理
+        static bool lastMemoryCleanup = false;  // 跟踪上次是否处于清理状态
+        bool currentMemoryCleanup = (usagePercent > MEMORY_CLEANUP_THRESHOLD);
         bool currentMemoryCritical = (usagePercent > MEMORY_CRITICAL_THRESHOLD);
         
-        if (currentMemoryCritical) {
-            // 只在连续两次检查都超过阈值时才清理（避免频繁清理）
-            if (lastMemoryCritical) {
-                Serial.println("[内存清理] 内存使用率过高，开始自动清理...");
-                
-                // 先保存日志（避免丢失重要信息）
-                logger.flush();
-                
-                // 清理部分日志（保留最近10条）
-                if (logger.getLogCount() > 10) {
-                    Serial.println("[内存清理] 清理旧日志...");
-                    // 暂时只清理全部日志（可以后续优化为保留最近N条）
-                    logger.clearLogs();
-                }
-                
-                // 触发垃圾回收
-                for (int i = 0; i < 3; i++) {
-                    ESP.wdtFeed();
-                    ESP.getFreeHeap();
-                    delay(10);
-                }
-                
-                size_t newFreeHeap = ESP.getFreeHeap();
-                Serial.printf("[内存清理] 清理后空闲内存: %d bytes (%.2f KB), 释放了 %d bytes\n",
-                             newFreeHeap, newFreeHeap / 1024.0f, newFreeHeap - freeHeap);
+        // 清理条件：当前是临界状态，或者连续两次检查都超过清理阈值
+        if (currentMemoryCritical || (currentMemoryCleanup && lastMemoryCleanup)) {
+            // 连续两次检查都超过阈值时才清理（避免频繁清理）
+            Serial.println("[内存清理] 内存使用率过高，开始自动清理...");
+            
+            size_t beforeFreeHeap = ESP.getFreeHeap();
+            
+            // 1. 清理消息队列（释放队列中的任务）
+            if (forwardQueue.size() > 0) {
+                Serial.printf("[内存清理] 清理消息队列 (%d 个任务)...\n", forwardQueue.size());
+                forwardQueue.clear();
             }
-            lastMemoryCritical = true;
+            
+            // 2. 清理部分日志（保留最近5条）
+            if (logger.getLogCount() > 5) {
+                Serial.printf("[内存清理] 清理旧日志 (当前: %d 条)...\n", logger.getLogCount());
+                logger.clearLogs();
+            }
+            
+            // 3. 先保存日志（避免丢失重要信息）
+            logger.flush();
+            
+            // 4. 触发垃圾回收（更有效的方法）
+            // 通过分配和释放临时对象来触发碎片整理
+            for (int i = 0; i < 5; i++) {
+                ESP.wdtFeed();
+                // 创建临时String对象并立即释放，触发垃圾回收
+                {
+                    String temp;
+                    temp.reserve(256);
+                    temp = "cleanup";
+                    temp = "";
+                }
+                delay(20);  // 增加延迟，给垃圾回收更多时间
+            }
+            
+            // 5. 多次调用getFreeHeap()触发内存整理
+            for (int i = 0; i < 3; i++) {
+                ESP.getFreeHeap();
+                ESP.getMaxFreeBlockSize();
+                delay(10);
+            }
+            
+            size_t afterFreeHeap = ESP.getFreeHeap();
+            int freedBytes = afterFreeHeap - beforeFreeHeap;
+            
+            Serial.printf("[内存清理] 清理完成 - 清理前: %d bytes (%.2f KB), 清理后: %d bytes (%.2f KB), 释放: %d bytes (%.2f KB)\n",
+                         beforeFreeHeap, beforeFreeHeap / 1024.0f,
+                         afterFreeHeap, afterFreeHeap / 1024.0f,
+                         freedBytes, freedBytes / 1024.0f);
+            
+            lastMemoryCleanup = true;
         } else {
-            lastMemoryCritical = false;
+            lastMemoryCleanup = false;
         }
     }
     

@@ -45,6 +45,13 @@ void NetworkConfigManager::setMQTT(const String& server, uint16_t port,
     config.mqtt_password[sizeof(config.mqtt_password) - 1] = '\0';
 }
 
+void NetworkConfigManager::clearMQTT() {
+    memset(config.mqtt_server, 0, sizeof(config.mqtt_server));
+    config.mqtt_port = 1883;
+    memset(config.mqtt_username, 0, sizeof(config.mqtt_username));
+    memset(config.mqtt_password, 0, sizeof(config.mqtt_password));
+}
+
 bool NetworkConfigManager::isValid() const {
     return config.valid && strlen(config.wifi_ssid) > 0;
 }

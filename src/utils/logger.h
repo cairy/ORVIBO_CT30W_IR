@@ -27,6 +27,7 @@ public:
     Logger();
     bool init();
     void log(const String& type, const String& content);
+    void log(const char* type, const char* content);  // 优化：const char*版本，避免String对象创建
     void logReceive(const String& signal_info);
     void logReceiveSignal(const SignalID& signalId, bool matched);  // 记录接收的信号
     void logTransmit(const String& signal_info);

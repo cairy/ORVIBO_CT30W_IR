@@ -83,7 +83,10 @@ void WebServer::handleSave() {
         configManager.setWiFi(ssid, password);
     }
     
-    if (mqtt_server.length() > 0) {
+    // 如果MQTT服务器地址为空，清除MQTT配置；否则设置MQTT配置
+    if (mqtt_server.length() == 0) {
+        configManager.clearMQTT();
+    } else {
         uint16_t port = mqtt_port.toInt();
         if (port == 0) port = 1883;
         configManager.setMQTT(mqtt_server, port, mqtt_username, mqtt_password);
@@ -107,11 +110,13 @@ void WebServer::handleSave() {
 
 String WebServer::getHTML() {
     NetworkConfig& config = configManager.getConfig();
+    bool mqttConfigured = configManager.isMQTTConfigured();
     
-    // 预分配String容量以减少内存重新分配
+    // 简化：预分配固定大小，足够使用
     String html;
-    html.reserve(1500);  // 预估HTML大小约1500字节
+    html.reserve(1500);
     
+    // 使用F()宏将字符串存储在Flash中，减少RAM占用
     html = F("<!DOCTYPE html><html><head><meta charset='UTF-8'>");
     html += F("<meta name='viewport' content='width=device-width, initial-scale=1.0'>");
     html += F("<title>ORVIBO-CT30W 配置</title>");
@@ -125,22 +130,31 @@ String WebServer::getHTML() {
     html += F("<input type='text' name='ssid' placeholder='WiFi SSID' value='");
     html += config.wifi_ssid;
     html += F("' required>");
-    html += F("<input type='password' name='password' placeholder='WiFi 密码' value='");
-    html += config.wifi_password;
-    html += F("' required>");
-    html += F("<h2>MQTT 配置</h2>");
-    html += F("<input type='text' name='mqtt_server' placeholder='MQTT 服务器地址' value='");
-    html += config.mqtt_server;
-    html += F("' required>");
-    html += F("<input type='number' name='mqtt_port' placeholder='MQTT 端口' value='");
-    html += config.mqtt_port;
+    // 密码字段不显示实际值，提高安全性
+    html += F("<input type='password' name='password' placeholder='WiFi 密码' required>");
+    html += F("<h2>MQTT 配置（可选）</h2>");
+    html += F("<input type='text' name='mqtt_server' placeholder='MQTT 服务器地址（可选）' value='");
+    // 如果MQTT未配置，显示空值
+    if (mqttConfigured) {
+        html += config.mqtt_server;
+    }
+    html += F("'>");
+    html += F("<input type='number' name='mqtt_port' placeholder='MQTT 端口（默认1883）' value='");
+    // 如果MQTT未配置，显示默认端口1883
+    if (mqttConfigured) {
+        html += config.mqtt_port;
+    } else {
+        html += F("1883");
+    }
     html += F("'>");
     html += F("<input type='text' name='mqtt_username' placeholder='MQTT 用户名（可选）' value='");
-    html += config.mqtt_username;
+    // 如果MQTT未配置，显示空值
+    if (mqttConfigured) {
+        html += config.mqtt_username;
+    }
     html += F("'>");
-    html += F("<input type='password' name='mqtt_password' placeholder='MQTT 密码（可选）' value='");
-    html += config.mqtt_password;
-    html += F("'>");
+    // MQTT密码字段不显示实际值，提高安全性
+    html += F("<input type='password' name='mqtt_password' placeholder='MQTT 密码（可选）'>");
     html += F("<button type='submit'>保存配置</button>");
     html += F("</form></body></html>");
     
@@ -165,6 +179,7 @@ void WebServer::sendErrorResponse(int code, const String& error) {
     doc["success"] = false;
     doc["error"] = error;
     String output;
+    output.reserve(256);
     serializeJson(doc, output);
     sendJSONResponse(code, output);
 }
@@ -175,13 +190,14 @@ void WebServer::handleAPIStatus() {
         return;
     }
     
-    DynamicJsonDocument doc(512);
+    DynamicJsonDocument doc(256);
     doc["success"] = true;
     doc["status"] = "running";
     doc["ruleCount"] = mapper->getRuleCount();
     doc["forwarding"] = forwarder->isForwarding();
     
     String output;
+    output.reserve(256);
     serializeJson(doc, output);
     sendJSONResponse(200, output);
 }
@@ -196,9 +212,11 @@ void WebServer::handleAPIMaps() {
     int count = mapper->getRuleCount();
     mapper->getAllRules(rules, count);
     
-    // 动态计算JSON大小：每条规则约200字节
-    size_t jsonSize = (count * 200) + 2048;
-    if (jsonSize < 2048) jsonSize = 2048;
+    // 简化：根据规则数量动态计算JSON大小
+    size_t jsonSize = 256 + (count * 200);  // 基础开销 + 每条规则约200字节
+    if (jsonSize > 6144) jsonSize = 6144;   // 限制最大6KB
+    if (jsonSize < 512) jsonSize = 512;
+    
     DynamicJsonDocument doc(jsonSize);
     JsonArray rulesArray = doc.to<JsonArray>();
     
@@ -232,6 +250,7 @@ void WebServer::handleAPIMaps() {
     }
     
     String output;
+    output.reserve(jsonSize);
     serializeJson(doc, output);
     sendJSONResponse(200, output);
 }
@@ -248,11 +267,19 @@ void WebServer::handleAPIUpdateMap() {
         return;
     }
     
-    DynamicJsonDocument doc(4096);
+    // 简化：根据body长度动态计算JSON大小
+    size_t jsonSize = body.length() + 512;
+    if (jsonSize > 6144) jsonSize = 6144;
+    if (jsonSize < 512) jsonSize = 512;
+    
+    DynamicJsonDocument doc(jsonSize);
     DeserializationError error = deserializeJson(doc, body);
     
     if (error) {
-        sendErrorResponse(400, "Invalid JSON: " + String(error.c_str()));
+        // 优化：避免创建临时String对象
+        char errorMsg[64];
+        snprintf(errorMsg, sizeof(errorMsg), "Invalid JSON: %s", error.c_str());
+        sendErrorResponse(400, errorMsg);
         return;
     }
     
@@ -307,11 +334,12 @@ void WebServer::handleAPIUpdateMap() {
             }
         }
         
-        DynamicJsonDocument response(256);
+        DynamicJsonDocument response(192);
         response["success"] = true;
         response["message"] = "Rules updated";
         response["count"] = successCount;
         String output;
+        output.reserve(192);
         serializeJson(response, output);
         sendJSONResponse(200, output);
     } else {
@@ -363,6 +391,7 @@ void WebServer::handleAPIUpdateMap() {
             response["success"] = true;
             response["message"] = "Rule updated";
             String output;
+            output.reserve(128);
             serializeJson(response, output);
             sendJSONResponse(200, output);
         } else {
@@ -381,9 +410,11 @@ void WebServer::handleAPILogs() {
     int count = logger->getLogCount();
     logger->getLogs(entries, count);
     
-    // 动态计算JSON大小：每条日志约100字节
-    size_t jsonSize = (count * 100) + 1024;
-    if (jsonSize < 1024) jsonSize = 1024;
+    // 简化：根据日志数量计算JSON大小
+    size_t jsonSize = 256 + (count * 100);
+    if (jsonSize > 3072) jsonSize = 3072;
+    if (jsonSize < 512) jsonSize = 512;
+    
     DynamicJsonDocument doc(jsonSize);
     JsonArray logArray = doc.to<JsonArray>();
     
@@ -395,6 +426,7 @@ void WebServer::handleAPILogs() {
     }
     
     String output;
+    output.reserve(jsonSize);
     serializeJson(doc, output);
     sendJSONResponse(200, output);
 }
@@ -406,10 +438,11 @@ void WebServer::handleAPILearnStop() {
     }
     
     if (learner->stopDeviceLearn()) {
-        DynamicJsonDocument response(256);
+        DynamicJsonDocument response(192);
         response["success"] = true;
         response["message"] = "Device learn stopped";
         String output;
+        output.reserve(192);
         serializeJson(response, output);
         sendJSONResponse(200, output);
     } else {
@@ -418,6 +451,12 @@ void WebServer::handleAPILearnStop() {
 }
 
 void WebServer::handleAPILearnResult() {
+    // 内存保护：检查可用内存（学习结果可能较大）
+    if (ESP.getFreeHeap() < 4096) {
+        sendErrorResponse(503, "Low Memory");
+        return;
+    }
+    
     if (learner == nullptr) {
         sendErrorResponse(500, "Service not initialized");
         return;
@@ -444,7 +483,12 @@ void WebServer::handleAPIRecentSignals() {
     RecentSignal signals[MAX_RECENT_SIGNALS];
     int count = logger->getRecentSignals(signals, MAX_RECENT_SIGNALS);
     
-    DynamicJsonDocument doc(2048);
+    // 简化：根据信号数量计算JSON大小
+    size_t jsonSize = 256 + (count * 100);
+    if (jsonSize > 1536) jsonSize = 1536;
+    if (jsonSize < 512) jsonSize = 512;
+    
+    DynamicJsonDocument doc(jsonSize);
     JsonArray signalsArray = doc.to<JsonArray>();
     
     for (int i = 0; i < count; i++) {
@@ -460,6 +504,7 @@ void WebServer::handleAPIRecentSignals() {
     }
     
     String output;
+    output.reserve(jsonSize);
     serializeJson(doc, output);
     sendJSONResponse(200, output);
 }
@@ -476,11 +521,19 @@ void WebServer::handleAPISendSignal() {
         return;
     }
     
-    DynamicJsonDocument doc(512);
+    // 简化：根据body长度动态计算JSON大小
+    size_t jsonSize = body.length() + 256;
+    if (jsonSize > 1024) jsonSize = 1024;
+    if (jsonSize < 256) jsonSize = 256;
+    
+    DynamicJsonDocument doc(jsonSize);
     DeserializationError error = deserializeJson(doc, body);
     
     if (error) {
-        sendErrorResponse(400, "Invalid JSON: " + String(error.c_str()));
+        // 优化：避免创建临时String对象
+        char errorMsg[64];
+        snprintf(errorMsg, sizeof(errorMsg), "Invalid JSON: %s", error.c_str());
+        sendErrorResponse(400, errorMsg);
         return;
     }
     
@@ -500,10 +553,11 @@ void WebServer::handleAPISendSignal() {
     
     // 直接发送信号（不经过转发规则）
     if (forwarder->sendSignal(signal, repeatCount)) {
-        DynamicJsonDocument response(256);
+        DynamicJsonDocument response(192);
         response["success"] = true;
         response["message"] = "Signal sent";
         String output;
+        output.reserve(192);
         serializeJson(response, output);
         sendJSONResponse(200, output);
     } else {

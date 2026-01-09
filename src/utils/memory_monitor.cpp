@@ -1,18 +1,49 @@
 #include "memory_monitor.h"
 
-// ESP8266 堆大小（动态获取，典型值约80KB）
-// 注意：ESP8266的堆大小可能因编译选项和运行时状态而变化
+// ESP8266 堆大小（动态获取）
+// 在启动时记录初始空闲堆，用于计算总堆大小
 static size_t cachedHeapSize = 0;
+static size_t initialFreeHeap = 0;
+static bool initialized = false;
+
+// 初始化内存监控（在启动时调用）
+void MemoryMonitor::init() {
+    if (!initialized) {
+        // 记录启动时的空闲堆（此时内存使用最少）
+        initialFreeHeap = ESP.getFreeHeap();
+        
+        // ESP8266的堆大小 = 初始空闲堆 + 已使用的堆
+        // 通过多次采样获取更准确的值
+        size_t maxFreeHeap = initialFreeHeap;
+        for (int i = 0; i < 5; i++) {
+            size_t currentFree = ESP.getFreeHeap();
+            if (currentFree > maxFreeHeap) {
+                maxFreeHeap = currentFree;
+            }
+            delay(10);
+        }
+        
+        // 估算总堆大小：初始空闲堆 + 估算已使用堆（约10-20KB）
+        // 更准确的方法：初始空闲堆通常接近总堆大小（启动时使用最少）
+        // 但考虑到启动时已经分配了一些内存，我们使用一个保守的估算
+        cachedHeapSize = maxFreeHeap + 10000;  // 初始空闲堆 + 10KB缓冲
+        
+        // 限制在合理范围内（ESP8266典型堆大小约50-80KB）
+        if (cachedHeapSize < 50000) cachedHeapSize = 50000;
+        if (cachedHeapSize > 90000) cachedHeapSize = 90000;
+        
+        initialized = true;
+        
+        Serial.printf("[内存监控] 初始化完成 - 初始空闲堆: %d bytes (%.2f KB), 估算总堆: %d bytes (%.2f KB)\n",
+                     initialFreeHeap, initialFreeHeap / 1024.0f,
+                     cachedHeapSize, cachedHeapSize / 1024.0f);
+    }
+}
 
 // 获取实际堆大小（动态计算）
 static size_t getHeapSize() {
     if (cachedHeapSize == 0) {
-        // ESP8266没有直接获取堆大小的API，通过计算获取
-        // 方法：获取当前空闲堆 + 已使用堆（通过内存分配测试）
-        // 简化方法：使用典型值，但在运行时根据实际情况调整
-        // ESP8266典型堆大小约80KB，但实际可能因编译选项而异
-        // 使用一个合理的估算值：空闲堆 + 估算已使用堆
-        // 更准确的方法是在启动时记录初始空闲堆，但这里使用典型值
+        // 如果未初始化，使用默认值
         cachedHeapSize = 81920;  // 80KB典型值
     }
     return cachedHeapSize;
@@ -51,19 +82,35 @@ float MemoryMonitor::getUsagePercent() {
     return (float)used * 100.0f / (float)heapSize;
 }
 
+float MemoryMonitor::getFragmentationPercent() {
+    size_t freeHeap = getFreeHeap();
+    size_t maxBlock = getLargestFreeBlock();
+    
+    if (freeHeap == 0) return 0.0f;
+    
+    // 碎片率 = (总空闲内存 - 最大连续块) / 总空闲内存 * 100
+    size_t fragmented = freeHeap - maxBlock;
+    return (float)fragmented * 100.0f / (float)freeHeap;
+}
+
 bool MemoryMonitor::isMemoryUsageHigh(float thresholdPercent) {
     return getUsagePercent() > thresholdPercent;
 }
 
 void MemoryMonitor::printMemoryInfo() {
     size_t heapSize = getHeapSize();
+    size_t freeHeap = getFreeHeap();
+    size_t maxBlock = getLargestFreeBlock();
+    float usagePercent = getUsagePercent();
+    float fragPercent = getFragmentationPercent();
+    
     Serial.println("=== 内存使用情况 ===");
     Serial.printf("总堆内存: %u 字节 (%.2f KB)\n", heapSize, heapSize / 1024.0f);
-    Serial.printf("空闲堆内存: %u 字节 (%.2f KB)\n", getFreeHeap(), getFreeHeap() / 1024.0f);
+    Serial.printf("空闲堆内存: %u 字节 (%.2f KB)\n", freeHeap, freeHeap / 1024.0f);
     Serial.printf("已使用堆内存: %u 字节 (%.2f KB)\n", getUsedHeap(), getUsedHeap() / 1024.0f);
-    Serial.printf("最大连续空闲块: %u 字节 (%.2f KB)\n", getLargestFreeBlock(), getLargestFreeBlock() / 1024.0f);
-    Serial.printf("当前空闲堆内存: %u 字节 (%.2f KB)\n", getMinFreeHeap(), getMinFreeHeap() / 1024.0f);
-    Serial.printf("内存使用率: %.2f%%\n", getUsagePercent());
+    Serial.printf("最大连续空闲块: %u 字节 (%.2f KB)\n", maxBlock, maxBlock / 1024.0f);
+    Serial.printf("内存使用率: %.2f%%\n", usagePercent);
+    Serial.printf("内存碎片率: %.2f%%\n", fragPercent);
     Serial.println("==================");
 }
 

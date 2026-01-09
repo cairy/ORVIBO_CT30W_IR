@@ -1,18 +1,18 @@
 #ifndef CONSTANTS_H
 #define CONSTANTS_H
 
-// 缓冲区大小配置（根据内存占用动态调整）
+// 缓冲区大小配置（优化：减少内存占用）
 #define IR_RX_BUFFER_SIZE_MIN 4096   // 4KB 最小缓冲区
 #define IR_RX_BUFFER_SIZE_MAX 6144   // 6KB 最大缓冲区
-#define IR_RX_BUFFER_SIZE 5120       // 默认 5KB（根据实际使用调整）
+#define IR_RX_BUFFER_SIZE 4096       // 默认 4KB（从5KB减少到4KB，节省1KB）
 
-// 映射表配置
-#define MAX_MAP_RULES 50             // 最大映射规则数
+// 映射表配置（优化：减少内存占用）
+#define MAX_MAP_RULES 30             // 最大映射规则数（从50减少到30，节省约2.16KB）
 #define MAX_B_SIGNALS_PER_RULE 5     // 每条规则最多5个连续B信号
 #define MAX_SIGNAL_CACHE 5            // 信号缓存数量
 
-// 日志配置
-#define MAX_LOG_ENTRIES 30            // 最大日志条目数（优化内存占用）
+// 日志配置（优化：减少内存占用）
+#define MAX_LOG_ENTRIES 20            // 最大日志条目数（从30减少到20，节省约850字节）
 #define MAX_LOG_TYPE_LEN 16           // 日志类型最大长度
 #define MAX_LOG_CONTENT_LEN 64         // 日志内容最大长度
 
@@ -21,7 +21,7 @@
 #define MAX_LEARN_TIMING_COUNT 200    // 每个指令最大时序点数（受内存限制，从300减少到200）
 #define MAX_COMMAND_NAME_LEN 32      // 指令名称最大长度
 #define MAX_DEVICE_NAME_LEN 64       // 设备名称最大长度
-#define MAX_RECENT_SIGNALS 10        // 最近接收信号记录数
+#define MAX_RECENT_SIGNALS 5         // 最近接收信号记录数（从10减少到5，节省约110字节）
 #define DEFAULT_LEARN_TIMEOUT_SEC 30 // 默认学习超时时间（秒）
 
 // 信号处理配置
@@ -48,8 +48,8 @@
 #define MQTT_TOPIC_STATE "homeassistant/orvibo-ct30w/state"
 #define MQTT_TOPIC_LOG "homeassistant/orvibo-ct30w/log"
 
-// MQTT 配置
-#define MQTT_BUFFER_SIZE 2048  // MQTT 消息缓冲区大小（字节）
+// MQTT 配置（优化：减少内存占用）
+#define MQTT_BUFFER_SIZE 1536  // MQTT 消息缓冲区大小（从2048减少到1536，节省512字节）
 
 // Home Assistant Discovery 配置
 #define MQTT_DISCOVERY_PREFIX "homeassistant"
