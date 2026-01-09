@@ -47,6 +47,14 @@ public:
     String getLearnProgress() const;  // 返回学习进度，如"2/5"
     bool getLearnedDevice(LearnedDevice& device);  // 获取学习结果
     String convertToSmartIRFormat();  // 转换为SmartIR格式JSON
+    
+    // 学习状态查询方法
+    String getCurrentCommandName() const;  // 获取当前正在学习的指令名称
+    int getLearnedCommandCount() const;   // 获取已学习的指令数量
+    int getTotalCommandCount() const;      // 获取总指令数量
+    String getDeviceName() const;          // 获取当前学习的设备名称
+    void getLearnedCommandNames(String* names, int maxCount) const;  // 获取已学习的指令名称列表
+    void getLearnedCommandNames(const char** names, int maxCount) const;  // 获取已学习的指令名称列表（返回const char*指针，节省内存）
 
 private:
     IRReceiver& receiver;
@@ -63,7 +71,7 @@ private:
     unsigned long lastSignalTime;      // 最后接收信号时间
     unsigned long learnTimeoutMs;      // 学习超时时间（毫秒）
     
-    void processDeviceLearnSignal();
+    void processDeviceLearnSignal(const IRTiming* timing, int count);
     void checkLearnTimeout();
     String encodeTimingToBase64(const IRTiming* timing, int count);
     void parseCommandNames(const String& commandNamesStr);

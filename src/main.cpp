@@ -223,22 +223,25 @@ void loop() {
     if (now - lastIRReceiverTime >= IR_RECEIVER_INTERVAL) {
         lastIRReceiverTime = now;
         
-        // 使用IRremoteESP8266库解码（方案A：直接使用库）
-        SignalID signalId;
-        if (irParser.decodeWithLibrary(signalId)) {
-            // 查找映射规则
-            IR_MapRule* rule = irMapper.findRule(signalId);
-            bool matched = (rule != nullptr);
-            
-            // 记录信号（包含匹配信息）
-            logger.logReceiveSignal(signalId, matched);
-            
-            // LED闪烁
-            ledControl.blink(1);
-            
-            // 查找映射并转发（优化：减少调试输出提升性能）
-            if (rule != nullptr) {
-                irForwarder.forwardSignal(signalId);
+        // 学习模式下，跳过库解码，只使用自定义接收器
+        if (!irLearner.isLearningDevice()) {
+            // 使用IRremoteESP8266库解码（方案A：直接使用库）
+            SignalID signalId;
+            if (irParser.decodeWithLibrary(signalId)) {
+                // 查找映射规则
+                IR_MapRule* rule = irMapper.findRule(signalId);
+                bool matched = (rule != nullptr);
+                
+                // 记录信号（包含匹配信息）
+                logger.logReceiveSignal(signalId, matched);
+                
+                // LED闪烁
+                ledControl.blink(1);
+                
+                // 查找映射并转发（优化：减少调试输出提升性能）
+                if (rule != nullptr) {
+                    irForwarder.forwardSignal(signalId);
+                }
             }
         }
         

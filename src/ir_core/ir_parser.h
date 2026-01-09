@@ -25,6 +25,10 @@ public:
     // 使用IRremoteESP8266库解码（推荐方法）
     bool decodeWithLibrary(SignalID& signalId);
     
+    // 禁用/启用库的接收（用于学习模式）
+    void disableLibraryReceiver();
+    void enableLibraryReceiver();
+    
     // 使用自定义时序解析（用于学习模式）
     bool parseSignal(const IRTiming* timing, int count, SignalID& signalId);
     

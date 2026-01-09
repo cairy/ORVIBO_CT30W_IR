@@ -22,8 +22,17 @@ void IRReceiver::update() {
     unsigned long now = micros();
     
     // 检查是否超时（500ms无信号则认为接收完成）
-    if (receiving && (now - lastSignalTime) > (SIGNAL_TIMEOUT_MS * 1000)) {
-        receiving = false;
+    if (receiving) {
+        unsigned long elapsed;
+        // 处理 micros() 溢出（约70分钟后）
+        if (now >= lastSignalTime) {
+            elapsed = now - lastSignalTime;
+        } else {
+            elapsed = (0xFFFFFFFFUL - lastSignalTime) + now;
+        }
+        if (elapsed > (SIGNAL_TIMEOUT_MS * 1000)) {
+            receiving = false;
+        }
     }
     
     processBuffer();
@@ -57,9 +66,28 @@ bool IRReceiver::getSignal(IRTiming* outputBuffer, int& count, int maxCount) {
         return false;
     }
     
-    if (bufferCount == 0 || receiving) {
+    if (bufferCount == 0) {
         count = 0;
         return false;
+    }
+    
+    // 如果正在接收，检查是否已经接收完成（距离最后一次信号超过100ms）
+    if (receiving) {
+        unsigned long now = micros();
+        unsigned long elapsed;
+        // 处理 micros() 溢出（约70分钟后）
+        if (now >= lastSignalTime) {
+            elapsed = now - lastSignalTime;
+        } else {
+            elapsed = (0xFFFFFFFFUL - lastSignalTime) + now;
+        }
+        // 如果距离最后一次信号少于100ms，认为信号还在接收中
+        if (elapsed < 100000) {  // 100ms = 100000μs
+            count = 0;
+            return false;
+        }
+        // 信号接收完成，标记为不再接收（但不清空缓冲区，继续处理）
+        receiving = false;
     }
     
     // 计算持续时间

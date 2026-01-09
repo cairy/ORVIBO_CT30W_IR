@@ -114,12 +114,68 @@
 | `/api/maps` | GET | 查询所有映射规则 |
 | `/api/maps` | PUT | 批量更新映射规则（接收完整规则列表） |
 | `/api/logs` | GET | 获取日志 |
+| `/api/learn/start` | POST | 启动设备学习模式 |
+| `/api/learn/status` | GET | 查询学习状态和进度 |
 | `/api/learn/stop` | POST | 停止设备学习模式 |
 | `/api/learn/result` | GET | 查询学习结果（SmartIR格式） |
 | `/api/signals/recent` | GET | 获取最近接收的信号 |
 | `/api/signals/send` | POST | 直接发送红外信号 |
 
 #### 请求示例
+
+**启动设备学习：**
+```bash
+POST http://设备IP/api/learn/start
+Content-Type: application/json
+
+{
+  "deviceName": "空调遥控器",
+  "commandNames": "开机,关机,温度+,温度-,模式",
+  "timeoutSeconds": 30
+}
+```
+
+**响应示例：**
+```json
+{
+  "success": true,
+  "message": "学习已启动"
+}
+```
+
+**查询学习状态：**
+```bash
+GET http://设备IP/api/learn/status
+```
+
+**响应示例：**
+```json
+{
+  "isLearning": true,
+  "deviceName": "空调遥控器",
+  "progress": "2/5",
+  "currentCommand": "温度+",
+  "learnedCount": 2,
+  "totalCount": 5,
+  "learnedCommands": ["开机", "关机"]
+}
+```
+
+**说明：**
+- `isLearning`：是否正在学习中
+- `deviceName`：当前学习的设备名称
+- `progress`：学习进度，格式为"已学习数/总数"
+- `currentCommand`：当前正在学习的指令名称
+- `learnedCount`：已学习的指令数量
+- `totalCount`：总指令数量
+- `learnedCommands`：已学习的指令名称列表
+
+**学习流程：**
+1. 调用`/api/learn/start`启动学习
+2. 轮询`/api/learn/status`查询状态
+3. 当`learnedCount`增加时，表示当前信号学习成功，可以继续下一个信号
+4. 当`learnedCount == totalCount`时，表示所有信号学习完成
+5. 调用`/api/learn/result`获取学习结果
 
 **停止设备学习：**
 ```bash
@@ -226,6 +282,8 @@ Content-Type: application/json
 | `update_map` | 更新单个映射规则 | `id`, `rule` | 见下方示例 |
 | `update_maps` | 批量更新映射规则 | `rules` | 见下方示例 |
 | `get_logs` | 获取日志 | 无 | 见下方示例 |
+| `start_learn` | 启动设备学习 | `deviceName`, `commandNames`, `timeoutSeconds` | 见下方示例 |
+| `query_learn_status` | 查询学习状态 | 无 | 见下方示例 |
 | `stop_learn` | 停止设备学习 | 无 | 见下方示例 |
 | `query_learn_result` | 查询学习结果 | 无 | 见下方示例 |
 | `get_recent_signals` | 获取最近接收的信号 | 无 | 见下方示例 |
@@ -336,14 +394,65 @@ Content-Type: application/json
 }
 ```
 
-**6. 停止设备学习：**
+**6. 启动设备学习：**
+```json
+{
+  "action": "start_learn",
+  "deviceName": "空调遥控器",
+  "commandNames": "开机,关机,温度+,温度-,模式",
+  "timeoutSeconds": 30
+}
+```
+
+**响应**（发布到 state 主题）：
+```json
+{
+  "status": "success",
+  "message": "学习已启动",
+  "timestamp": 1234567890
+}
+```
+
+**7. 查询学习状态：**
+```json
+{
+  "action": "query_learn_status"
+}
+```
+
+**响应**（发布到 state 主题）：
+```json
+{
+  "status": "success",
+  "message": "{\"isLearning\":true,\"deviceName\":\"空调遥控器\",\"progress\":\"2/5\",\"currentCommand\":\"温度+\",\"learnedCount\":2,\"totalCount\":5,\"learnedCommands\":[\"开机\",\"关机\"]}",
+  "timestamp": 1234567890
+}
+```
+
+**说明：**
+- `isLearning`：是否正在学习中
+- `deviceName`：当前学习的设备名称
+- `progress`：学习进度，格式为"已学习数/总数"
+- `currentCommand`：当前正在学习的指令名称
+- `learnedCount`：已学习的指令数量
+- `totalCount`：总指令数量
+- `learnedCommands`：已学习的指令名称列表
+
+**学习流程：**
+1. 发送`start_learn`指令启动学习
+2. 轮询`query_learn_status`查询状态
+3. 当`learnedCount`增加时，表示当前信号学习成功，可以继续下一个信号
+4. 当`learnedCount == totalCount`时，表示所有信号学习完成
+5. 发送`query_learn_result`获取学习结果
+
+**8. 停止设备学习：**
 ```json
 {
   "action": "stop_learn"
 }
 ```
 
-**7. 查询学习结果：**
+**9. 查询学习结果：**
 ```json
 {
   "action": "query_learn_result"
@@ -359,14 +468,14 @@ Content-Type: application/json
 }
 ```
 
-**8. 获取最近接收的信号：**
+**10. 获取最近接收的信号：**
 ```json
 {
   "action": "get_recent_signals"
 }
 ```
 
-**9. 发送红外信号：**
+**11. 发送红外信号：**
 ```json
 {
   "action": "send_signal",
@@ -380,7 +489,7 @@ Content-Type: application/json
 }
 ```
 
-**10. 设置转发启用状态：**
+**12. 设置转发启用状态：**
 ```json
 {
   "action": "set_forwarding_enabled",

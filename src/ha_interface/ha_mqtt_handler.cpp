@@ -310,6 +310,10 @@ void HAMQTTHandler::processCommand(const String& payload) {
         handleGetLogs();
     } else if (action == "upload_signal") {
         handleUploadSignal(payload);
+    } else if (action == "start_learn") {
+        handleStartLearn(payload);
+    } else if (action == "query_learn_status") {
+        handleQueryLearnStatus(payload);
     } else if (action == "stop_learn") {
         handleStopLearn(payload);
     } else if (action == "query_learn_result") {
@@ -504,6 +508,121 @@ void HAMQTTHandler::handleUploadSignal(const String& json) {
     // 上传自定义B信号序列
     // 实现逻辑类似添加映射规则，但用于上传信号数据
     publishState("success", "Signal uploaded");
+}
+
+void HAMQTTHandler::handleStartLearn(const String& json) {
+    if (learner == nullptr) {
+        publishState("error", "Learner service not initialized");
+        return;
+    }
+    
+    // 内存保护：检查可用内存
+    if (ESP.getFreeHeap() < 2048) {
+        publishState("error", "Low Memory");
+        return;
+    }
+    
+    // 解析JSON
+    size_t jsonSize = json.length() + 256;
+    if (jsonSize > 1024) jsonSize = 1024;
+    if (jsonSize < 256) jsonSize = 256;
+    
+    DynamicJsonDocument doc(jsonSize);
+    DeserializationError error = deserializeJson(doc, json);
+    
+    if (error) {
+        publishState("error", "Invalid JSON");
+        return;
+    }
+    
+    String deviceName = doc["deviceName"] | "";
+    String commandNames = doc["commandNames"] | "";
+    int timeoutSeconds = doc["timeoutSeconds"] | DEFAULT_LEARN_TIMEOUT_SEC;
+    
+    if (deviceName.length() == 0) {
+        publishState("error", "Missing 'deviceName' field");
+        return;
+    }
+    
+    if (commandNames.length() == 0) {
+        publishState("error", "Missing 'commandNames' field");
+        return;
+    }
+    
+    // 启动学习
+    if (learner->startDeviceLearn(deviceName, commandNames, timeoutSeconds)) {
+        publishState("success", "学习已启动");
+    } else {
+        publishState("error", "Failed to start learning (可能已有学习任务进行中)");
+    }
+}
+
+void HAMQTTHandler::handleQueryLearnStatus(const String& json) {
+    if (learner == nullptr) {
+        publishState("error", "Learner service not initialized");
+        return;
+    }
+    
+    // 内存保护：检查可用内存（提高阈值，因为需要创建JSON和String对象）
+    if (ESP.getFreeHeap() < 3072) {
+        publishState("error", "Low Memory");
+        return;
+    }
+    
+    bool isLearning = learner->isLearningDevice();
+    
+    // 根据是否在学习中动态调整JSON大小（增加大小以避免溢出）
+    size_t jsonSize = isLearning ? 1024 : 256;
+    
+    // 再次检查内存，确保有足够空间
+    if (ESP.getFreeHeap() < jsonSize + 1024) {
+        publishState("error", "Low Memory");
+        return;
+    }
+    
+    DynamicJsonDocument doc(jsonSize);
+    doc["isLearning"] = isLearning;
+    
+    if (isLearning) {
+        // 直接使用String对象，但立即添加到JSON中，避免同时持有多个String对象
+        String deviceName = learner->getDeviceName();
+        doc["deviceName"] = deviceName;
+        deviceName = "";  // 立即释放
+        
+        String progress = learner->getLearnProgress();
+        doc["progress"] = progress;
+        progress = "";  // 立即释放
+        
+        String currentCommand = learner->getCurrentCommandName();
+        doc["currentCommand"] = currentCommand;
+        currentCommand = "";  // 立即释放
+        
+        doc["learnedCount"] = learner->getLearnedCommandCount();
+        doc["totalCount"] = learner->getTotalCommandCount();
+        
+        // 使用const char*指针数组，避免创建String对象，节省内存
+        const char* learnedNames[MAX_LEARN_COMMANDS];
+        learner->getLearnedCommandNames(learnedNames, MAX_LEARN_COMMANDS);
+        JsonArray learnedCommandsArray = doc.createNestedArray("learnedCommands");
+        int learnedCount = learner->getLearnedCommandCount();
+        for (int i = 0; i < learnedCount && i < MAX_LEARN_COMMANDS; i++) {
+            if (learnedNames[i] != nullptr && strlen(learnedNames[i]) > 0) {
+                learnedCommandsArray.add(learnedNames[i]);
+            }
+        }
+    } else {
+        doc["deviceName"] = "";
+        doc["progress"] = "";
+        doc["currentCommand"] = "";
+        doc["learnedCount"] = 0;
+        doc["totalCount"] = 0;
+        doc.createNestedArray("learnedCommands");  // 创建空数组以保持JSON结构一致
+    }
+    
+    String output;
+    output.reserve(jsonSize);
+    serializeJson(doc, output);
+    publishState("success", output);
 }
 
 void HAMQTTHandler::handleStopLearn(const String& json) {

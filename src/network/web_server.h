@@ -50,6 +50,8 @@ private:
     void handleAPIMaps();
     void handleAPIUpdateMap();
     void handleAPILogs();
+    void handleAPILearnStart();
+    void handleAPILearnStatus();
     void handleAPILearnStop();
     void handleAPILearnResult();
     void handleAPIRecentSignals();

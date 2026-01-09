@@ -21,6 +21,8 @@ bool WebServer::init() {
     server.on("/api/maps", HTTP_GET, [this]() { this->handleAPIMaps(); });
     server.on("/api/maps", HTTP_PUT, [this]() { this->handleAPIUpdateMap(); });
     server.on("/api/logs", HTTP_GET, [this]() { this->handleAPILogs(); });
+    server.on("/api/learn/start", HTTP_POST, [this]() { this->handleAPILearnStart(); });
+    server.on("/api/learn/status", HTTP_GET, [this]() { this->handleAPILearnStatus(); });
     server.on("/api/learn/stop", HTTP_POST, [this]() { this->handleAPILearnStop(); });
     server.on("/api/learn/result", HTTP_GET, [this]() { this->handleAPILearnResult(); });
     server.on("/api/signals/recent", HTTP_GET, [this]() { this->handleAPIRecentSignals(); });
@@ -462,6 +464,135 @@ void WebServer::handleAPILogs() {
     sendJSONResponse(200, output);
 }
 
+void WebServer::handleAPILearnStart() {
+    if (learner == nullptr) {
+        sendErrorResponse(500, "Service not initialized");
+        return;
+    }
+    
+    String body = server.arg("plain");
+    if (body.length() == 0) {
+        sendErrorResponse(400, "Missing request body");
+        return;
+    }
+    
+    // 内存保护：检查可用内存
+    if (ESP.getFreeHeap() < 2048) {
+        sendErrorResponse(503, "Low Memory");
+        return;
+    }
+    
+    // 解析JSON
+    size_t jsonSize = body.length() + 256;
+    if (jsonSize > 1024) jsonSize = 1024;
+    if (jsonSize < 256) jsonSize = 256;
+    
+    DynamicJsonDocument doc(jsonSize);
+    DeserializationError error = deserializeJson(doc, body);
+    
+    if (error) {
+        char errorMsg[64];
+        snprintf(errorMsg, sizeof(errorMsg), "Invalid JSON: %s", error.c_str());
+        sendErrorResponse(400, errorMsg);
+        return;
+    }
+    
+    String deviceName = doc["deviceName"] | "";
+    String commandNames = doc["commandNames"] | "";
+    int timeoutSeconds = doc["timeoutSeconds"] | DEFAULT_LEARN_TIMEOUT_SEC;
+    
+    if (deviceName.length() == 0) {
+        sendErrorResponse(400, "Missing 'deviceName' field");
+        return;
+    }
+    
+    if (commandNames.length() == 0) {
+        sendErrorResponse(400, "Missing 'commandNames' field");
+        return;
+    }
+    
+    // 启动学习
+    if (learner->startDeviceLearn(deviceName, commandNames, timeoutSeconds)) {
+        DynamicJsonDocument response(256);
+        response["success"] = true;
+        response["message"] = "学习已启动";
+        String output;
+        output.reserve(256);
+        serializeJson(response, output);
+        sendJSONResponse(200, output);
+    } else {
+        sendErrorResponse(500, "Failed to start learning (可能已有学习任务进行中)");
+    }
+}
+
+void WebServer::handleAPILearnStatus() {
+    if (learner == nullptr) {
+        sendErrorResponse(500, "Service not initialized");
+        return;
+    }
+    
+    // 内存保护：检查可用内存（提高阈值，因为需要创建JSON和String对象）
+    if (ESP.getFreeHeap() < 3072) {
+        sendErrorResponse(503, "Low Memory");
+        return;
+    }
+    
+    bool isLearning = learner->isLearningDevice();
+    
+    // 根据是否在学习中动态调整JSON大小（增加大小以避免溢出）
+    size_t jsonSize = isLearning ? 1024 : 256;
+    
+    // 再次检查内存，确保有足够空间
+    if (ESP.getFreeHeap() < jsonSize + 1024) {
+        sendErrorResponse(503, "Low Memory");
+        return;
+    }
+    
+    DynamicJsonDocument doc(jsonSize);
+    doc["isLearning"] = isLearning;
+    
+    if (isLearning) {
+        // 直接使用String对象，但立即添加到JSON中，避免同时持有多个String对象
+        String deviceName = learner->getDeviceName();
+        doc["deviceName"] = deviceName;
+        deviceName = "";  // 立即释放
+        
+        String progress = learner->getLearnProgress();
+        doc["progress"] = progress;
+        progress = "";  // 立即释放
+        
+        String currentCommand = learner->getCurrentCommandName();
+        doc["currentCommand"] = currentCommand;
+        currentCommand = "";  // 立即释放
+        
+        doc["learnedCount"] = learner->getLearnedCommandCount();
+        doc["totalCount"] = learner->getTotalCommandCount();
+        
+        // 使用const char*指针数组，避免创建String对象，节省内存
+        const char* learnedNames[MAX_LEARN_COMMANDS];
+        learner->getLearnedCommandNames(learnedNames, MAX_LEARN_COMMANDS);
+        JsonArray learnedCommandsArray = doc.createNestedArray("learnedCommands");
+        int learnedCount = learner->getLearnedCommandCount();
+        for (int i = 0; i < learnedCount && i < MAX_LEARN_COMMANDS; i++) {
+            if (learnedNames[i] != nullptr && strlen(learnedNames[i]) > 0) {
+                learnedCommandsArray.add(learnedNames[i]);
+            }
+        }
+    } else {
+        doc["deviceName"] = "";
+        doc["progress"] = "";
+        doc["currentCommand"] = "";
+        doc["learnedCount"] = 0;
+        doc["totalCount"] = 0;
+        doc.createNestedArray("learnedCommands");  // 创建空数组以保持JSON结构一致
+    }
+    
+    String output;
+    output.reserve(jsonSize);
+    serializeJson(doc, output);
+    sendJSONResponse(200, output);
+}
+
 void WebServer::handleAPILearnStop() {
     if (learner == nullptr) {
         sendErrorResponse(500, "Service not initialized");
@@ -482,14 +613,15 @@ void WebServer::handleAPILearnStop() {
 }
 
 void WebServer::handleAPILearnResult() {
-    // 内存保护：检查可用内存（学习结果可能较大）
-    if (ESP.getFreeHeap() < 4096) {
-        sendErrorResponse(503, "Low Memory");
+    if (learner == nullptr) {
+        sendErrorResponse(500, "Service not initialized");
         return;
     }
     
-    if (learner == nullptr) {
-        sendErrorResponse(500, "Service not initialized");
+    // 首先检查内存，确保有足够空间（大幅提高阈值，因为Base64编码需要大量内存）
+    size_t freeHeap = ESP.getFreeHeap();
+    if (freeHeap < 12288) {  // 至少需要12KB空闲内存
+        sendErrorResponse(503, "Low Memory");
         return;
     }
     
@@ -499,8 +631,38 @@ void WebServer::handleAPILearnResult() {
         return;
     }
     
+    // 估算所需内存：每个命令的Base64编码可能很大
+    // 最坏情况：200个时序点 * 2字节 = 400字节，Base64后约533字节
+    // 加上JSON结构开销，每个命令约650字节
+    // 5个命令约3250字节，加上设备名称和其他开销，总共约4000字节
+    // 但是String对象和内存碎片需要更多空间，所以需要至少12KB
+    size_t estimatedMemory = 4000 + (device.commandCount * 650);
+    
+    // 内存保护：检查可用内存（学习结果可能较大，需要更多内存）
+    if (freeHeap < estimatedMemory + 4096) {  // 增加安全余量到4KB
+        sendErrorResponse(503, "Low Memory");
+        return;
+    }
+    
     // 转换为SmartIR格式
-    String smartIRJson = learner->convertToSmartIRFormat();
+    String smartIRJson;
+    {
+        // 使用作用域确保临时对象及时释放
+        smartIRJson = learner->convertToSmartIRFormat();
+    }
+    
+    // 检查转换是否成功（如果内存不足，可能返回空字符串或"{}"）
+    if (smartIRJson.length() == 0 || smartIRJson == "{}") {
+        sendErrorResponse(503, "Failed to convert to SmartIR format (memory insufficient)");
+        return;
+    }
+    
+    // 检查内存是否仍然足够发送响应
+    if (ESP.getFreeHeap() < smartIRJson.length() + 2048) {
+        sendErrorResponse(503, "Low Memory");
+        return;
+    }
+    
     sendJSONResponse(200, smartIRJson);
 }
 

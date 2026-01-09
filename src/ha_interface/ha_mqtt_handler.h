@@ -42,6 +42,8 @@ private:
     void handleUpdateMap(const String& json);
     void handleGetLogs();
     void handleUploadSignal(const String& json);
+    void handleStartLearn(const String& json);
+    void handleQueryLearnStatus(const String& json);
     void handleStopLearn(const String& json);
     void handleQueryLearnResult(const String& json);
     void handleGetRecentSignals(const String& json);

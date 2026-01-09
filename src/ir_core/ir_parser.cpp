@@ -58,6 +58,20 @@ bool IRParser::decodeWithLibrary(SignalID& signalId) {
     return success;
 }
 
+void IRParser::disableLibraryReceiver() {
+    if (irrecv != nullptr) {
+        // 禁用中断处理程序，重新注册自定义中断处理程序
+        detachInterrupt(digitalPinToInterrupt(IR_RX_PIN));
+    }
+}
+
+void IRParser::enableLibraryReceiver() {
+    if (irrecv != nullptr) {
+        // 重新启用库的接收器
+        irrecv->enableIRIn();
+    }
+}
+
 bool IRParser::convertDecodeResult(decode_results& results, SignalID& signalId) {
     // 初始化SignalID
     signalId.protocol = 0;
