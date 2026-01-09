@@ -3,6 +3,7 @@
 #include "ir_core/ir_forwarder.h"
 #include "ir_core/ir_learner.h"
 #include "utils/logger.h"
+#include "config/constants.h"
 #include <ArduinoJson.h>
 
 WebServer::WebServer(NetworkConfigManager& config)
@@ -511,6 +512,38 @@ void WebServer::handleAPILearnStart() {
         return;
     }
     
+    // 先检查命令数量是否超过限制
+    int commandCount = 0;
+    if (commandNames.length() > 0) {
+        int startPos = 0;
+        int commaPos = commandNames.indexOf(',');
+        while (commaPos >= 0) {
+            String cmdName = commandNames.substring(startPos, commaPos);
+            cmdName.trim();
+            if (cmdName.length() > 0) {
+                commandCount++;
+            }
+            startPos = commaPos + 1;
+            commaPos = commandNames.indexOf(',', startPos);
+        }
+        // 处理最后一个命令
+        if (startPos < commandNames.length()) {
+            String cmdName = commandNames.substring(startPos);
+            cmdName.trim();
+            if (cmdName.length() > 0) {
+                commandCount++;
+            }
+        }
+    }
+    
+    // 检查命令数量限制
+    if (commandCount > MAX_LEARN_COMMANDS) {
+        char errorMsg[128];
+        snprintf(errorMsg, sizeof(errorMsg), "命令数量超过限制，最多支持 %d 个命令，当前有 %d 个", MAX_LEARN_COMMANDS, commandCount);
+        sendErrorResponse(400, errorMsg);
+        return;
+    }
+    
     // 启动学习
     if (learner->startDeviceLearn(deviceName, commandNames, timeoutSeconds)) {
         DynamicJsonDocument response(256);
@@ -614,33 +647,26 @@ void WebServer::handleAPILearnStop() {
 
 void WebServer::handleAPILearnResult() {
     if (learner == nullptr) {
+        Serial.println("[handleAPILearnResult] 错误：learner为null");
         sendErrorResponse(500, "Service not initialized");
         return;
     }
     
-    // 首先检查内存，确保有足够空间（大幅提高阈值，因为Base64编码需要大量内存）
+    // 首先检查内存，确保有足够空间
     size_t freeHeap = ESP.getFreeHeap();
-    if (freeHeap < 12288) {  // 至少需要12KB空闲内存
+    if (freeHeap < 6144) {  // 至少需要6KB空闲内存
+        Serial.printf("[handleAPILearnResult] 错误：内存严重不足（需要: 6144, 可用: %d）\n", freeHeap);
         sendErrorResponse(503, "Low Memory");
         return;
     }
     
-    LearnedDevice device;
-    if (!learner->getLearnedDevice(device)) {
+    // 不要复制整个LearnedDevice结构体到栈上（约5KB，会导致栈溢出）
+    // 直接检查学习状态，然后调用convertToSmartIRFormat
+    int commandCount = learner->getLearnedCommandCount();
+    
+    if (commandCount == 0) {
+        Serial.println("[handleAPILearnResult] 错误：未找到学习设备（命令数为0）");
         sendErrorResponse(404, "No learned device found");
-        return;
-    }
-    
-    // 估算所需内存：每个命令的Base64编码可能很大
-    // 最坏情况：200个时序点 * 2字节 = 400字节，Base64后约533字节
-    // 加上JSON结构开销，每个命令约650字节
-    // 5个命令约3250字节，加上设备名称和其他开销，总共约4000字节
-    // 但是String对象和内存碎片需要更多空间，所以需要至少12KB
-    size_t estimatedMemory = 4000 + (device.commandCount * 650);
-    
-    // 内存保护：检查可用内存（学习结果可能较大，需要更多内存）
-    if (freeHeap < estimatedMemory + 4096) {  // 增加安全余量到4KB
-        sendErrorResponse(503, "Low Memory");
         return;
     }
     
@@ -653,17 +679,20 @@ void WebServer::handleAPILearnResult() {
     
     // 检查转换是否成功（如果内存不足，可能返回空字符串或"{}"）
     if (smartIRJson.length() == 0 || smartIRJson == "{}") {
+        Serial.println("[handleAPILearnResult] 错误：转换失败或返回空JSON");
         sendErrorResponse(503, "Failed to convert to SmartIR format (memory insufficient)");
         return;
     }
     
     // 检查内存是否仍然足够发送响应
-    if (ESP.getFreeHeap() < smartIRJson.length() + 2048) {
+    size_t freeHeapAfter = ESP.getFreeHeap();
+    if (freeHeapAfter < smartIRJson.length() + 2048) {
+        Serial.println("[handleAPILearnResult] 错误：内存不足，无法发送响应");
         sendErrorResponse(503, "Low Memory");
         return;
     }
-    
     sendJSONResponse(200, smartIRJson);
+    Serial.println("[handleAPILearnResult] 响应发送完成");
 }
 
 void WebServer::handleAPIRecentSignals() {
