@@ -1,0 +1,63 @@
+#ifndef IR_MAPPER_H
+#define IR_MAPPER_H
+
+#include <Arduino.h>
+#include "ir_parser.h"
+#include "config/constants.h"
+#include "utils/storage.h"
+
+// B信号定义
+struct BSignal {
+    uint32_t protocol;
+    uint32_t data;
+    uint32_t hash;
+    bool isProtocol;
+};
+
+// 映射规则
+struct IR_MapRule {
+    // A信号标识
+    SignalID aSignal;
+    
+    // B信号序列（最多5个）
+    BSignal bSignals[MAX_B_SIGNALS_PER_RULE];
+    uint8_t bSignalCount;
+    
+    // 配置参数
+    uint16_t intervals[MAX_B_SIGNALS_PER_RULE - 1];  // 信号间隔（4个间隔对应5个信号）
+    uint8_t repeatCount;  // 重复次数（1-10）
+    
+    bool valid;
+    uint8_t id;  // 规则ID
+};
+
+// 映射表管理器
+class IRMapper {
+public:
+    IRMapper();
+    bool init();
+    bool initDefaultMappings();
+    bool addRule(const IR_MapRule& rule, bool saveImmediately = true);
+    bool updateRule(uint8_t id, const IR_MapRule& rule);
+    bool deleteRule(uint8_t id);
+    IR_MapRule* findRule(const SignalID& aSignal);
+    bool getRule(uint8_t id, IR_MapRule& rule);
+    int getRuleCount() const;
+    bool getAllRules(IR_MapRule* rules, int maxCount);
+    bool saveToFlash();
+    bool loadFromFlash();
+    bool exportToJSON(String& json);
+    bool importFromJSON(const String& json);
+
+private:
+    IR_MapRule rules[MAX_MAP_RULES];
+    int ruleCount;
+    uint8_t nextId;
+    
+    bool findRuleIndex(const SignalID& aSignal, int& index);
+    bool findRuleIndexById(uint8_t id, int& index);
+    uint32_t signalIdToKey(const SignalID& signalId) const;
+};
+
+#endif // IR_MAPPER_H
+

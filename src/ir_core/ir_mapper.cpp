@@ -1,0 +1,467 @@
+#include "ir_mapper.h"
+#include <ArduinoJson.h>
+
+IRMapper::IRMapper() : ruleCount(0), nextId(1) {
+    for (int i = 0; i < MAX_MAP_RULES; i++) {
+        rules[i].valid = false;
+    }
+}
+
+bool IRMapper::init() {
+    return loadFromFlash();
+}
+
+bool IRMapper::initDefaultMappings() {
+    // 如果映射表不为空，直接返回
+    if (ruleCount > 0) {
+        return true;
+    }
+    
+    // 检查可用内存，如果内存不足则跳过初始化
+    size_t freeHeap = ESP.getFreeHeap();
+    if (freeHeap < 4096) {  // 至少需要4KB空闲内存来保存
+        Serial.printf("[IRMapper] 内存不足，跳过默认映射初始化 (空闲: %d bytes)\n", freeHeap);
+        return false;
+    }
+    
+    // 从旧程序提取的映射关系常量
+    const uint32_t NEC_PROTOCOL = 1;  // NEC协议
+    
+    // A信号（接收端）
+    const uint32_t SOURCE_VOLUP = 0x11B08F7;
+    const uint32_t SOURCE_VOLDOWN = 0x11B8877;
+    const uint32_t SOURCE_MUTE = 0x11B708F;
+    const uint32_t SOURCE_POWER = 0x11B26D9;
+    const uint32_t SOURCE_AVTV = 0x11B7689;
+    
+    // B信号（发送端）
+    const uint32_t TARGET_VOLUP = 0xFD22DD;
+    const uint32_t TARGET_VOLDOWN = 0xFDC23D;
+    const uint32_t TARGET_MUTE = 0xFD708F;
+    const uint32_t TARGET_POWER = 0xFDB04F;
+    const uint32_t TARGET_AVTV = 0xFD48B7;
+    
+    // 创建映射规则
+    IR_MapRule rule;
+    
+    // 初始化间隔数组
+    for (int i = 0; i < MAX_B_SIGNALS_PER_RULE - 1; i++) {
+        rule.intervals[i] = 0;
+    }
+    
+    // 1. 音量+
+    rule.aSignal.protocol = NEC_PROTOCOL;
+    rule.aSignal.data = SOURCE_VOLUP;
+    rule.aSignal.hash = 0;
+    rule.aSignal.isProtocol = true;
+    
+    rule.bSignalCount = 1;
+    rule.bSignals[0].protocol = NEC_PROTOCOL;
+    rule.bSignals[0].data = TARGET_VOLUP;
+    rule.bSignals[0].hash = 0;
+    rule.bSignals[0].isProtocol = true;
+    
+    rule.repeatCount = 1;
+    rule.valid = true;
+    
+    // 批量添加规则，不立即保存（节省内存）
+    if (!addRule(rule, false)) {
+        return false;
+    }
+    
+    // 2. 音量-
+    rule.aSignal.data = SOURCE_VOLDOWN;
+    rule.bSignals[0].data = TARGET_VOLDOWN;
+    if (!addRule(rule, false)) {
+        return false;
+    }
+    
+    // 3. 静音
+    rule.aSignal.data = SOURCE_MUTE;
+    rule.bSignals[0].data = TARGET_MUTE;
+    if (!addRule(rule, false)) {
+        return false;
+    }
+    
+    // 4. 电源（需要重复3次）
+    rule.aSignal.data = SOURCE_POWER;
+    rule.bSignals[0].data = TARGET_POWER;
+    rule.repeatCount = 3;
+    if (!addRule(rule, false)) {
+        return false;
+    }
+    
+    // 5. AV/TV
+    rule.aSignal.data = SOURCE_AVTV;
+    rule.bSignals[0].data = TARGET_AVTV;
+    rule.repeatCount = 1;
+    if (!addRule(rule, false)) {
+        return false;
+    }
+    
+    // 所有规则添加完成后，一次性保存
+    return saveToFlash();
+}
+
+bool IRMapper::addRule(const IR_MapRule& rule, bool saveImmediately) {
+    if (ruleCount >= MAX_MAP_RULES) {
+        return false;
+    }
+    
+    // 检查是否已存在相同的A信号
+    int existingIndex;
+    if (findRuleIndex(rule.aSignal, existingIndex)) {
+        return false;  // 已存在
+    }
+    
+    rules[ruleCount] = rule;
+    rules[ruleCount].id = nextId++;
+    rules[ruleCount].valid = true;
+    ruleCount++;
+    
+    if (saveImmediately) {
+        saveToFlash();
+    }
+    return true;
+}
+
+bool IRMapper::updateRule(uint8_t id, const IR_MapRule& rule) {
+    int index;
+    if (!findRuleIndexById(id, index)) {
+        return false;
+    }
+    
+    rules[index] = rule;
+    rules[index].id = id;  // 保持原有ID
+    rules[index].valid = true;
+    
+    saveToFlash();
+    return true;
+}
+
+bool IRMapper::deleteRule(uint8_t id) {
+    int index;
+    if (!findRuleIndexById(id, index)) {
+        return false;
+    }
+    
+    // 移动后续规则
+    for (int i = index; i < ruleCount - 1; i++) {
+        rules[i] = rules[i + 1];
+    }
+    
+    ruleCount--;
+    rules[ruleCount].valid = false;
+    
+    saveToFlash();
+    return true;
+}
+
+IR_MapRule* IRMapper::findRule(const SignalID& aSignal) {
+    int index;
+    if (findRuleIndex(aSignal, index)) {
+        return &rules[index];
+    }
+    return nullptr;
+}
+
+bool IRMapper::getRule(uint8_t id, IR_MapRule& rule) {
+    int index;
+    if (!findRuleIndexById(id, index)) {
+        return false;
+    }
+    
+    rule = rules[index];
+    return true;
+}
+
+int IRMapper::getRuleCount() const {
+    return ruleCount;
+}
+
+bool IRMapper::getAllRules(IR_MapRule* outputRules, int maxCount) {
+    if (outputRules == nullptr || maxCount <= 0) {
+        return false;
+    }
+    
+    int count = (maxCount < ruleCount) ? maxCount : ruleCount;
+    for (int i = 0; i < count; i++) {
+        outputRules[i] = rules[i];
+    }
+    
+    return true;
+}
+
+bool IRMapper::saveToFlash() {
+    // 检查可用内存
+    size_t freeHeap = ESP.getFreeHeap();
+    if (freeHeap < 4096) {  // 至少需要4KB空闲内存
+        Serial.printf("[IRMapper] 内存不足，跳过保存 (空闲: %d bytes)\n", freeHeap);
+        return false;
+    }
+    
+    // 动态计算JSON大小：每条规则约200字节，加上JSON开销
+    size_t jsonSize = (ruleCount * 200) + 2048;
+    if (jsonSize < 4096) jsonSize = 4096;  // 最小4KB
+    
+    // 确保不超过可用内存
+    if (jsonSize > freeHeap - 1024) {  // 保留1KB缓冲
+        jsonSize = freeHeap - 1024;
+        if (jsonSize < 1024) {
+            Serial.printf("[IRMapper] 内存不足，无法保存 (需要至少1KB)\n");
+            return false;
+        }
+    }
+    
+    DynamicJsonDocument doc(jsonSize);
+    JsonArray rulesArray = doc.to<JsonArray>();
+    
+    for (int i = 0; i < ruleCount; i++) {
+        if (!rules[i].valid) continue;
+        
+        JsonObject ruleObj = rulesArray.createNestedObject();
+        ruleObj["id"] = rules[i].id;
+        
+        // A信号
+        JsonObject aSignal = ruleObj.createNestedObject("aSignal");
+        aSignal["protocol"] = rules[i].aSignal.protocol;
+        aSignal["data"] = rules[i].aSignal.data;
+        aSignal["hash"] = rules[i].aSignal.hash;
+        aSignal["isProtocol"] = rules[i].aSignal.isProtocol;
+        
+        // B信号序列
+        JsonArray bSignals = ruleObj.createNestedArray("bSignals");
+        for (int j = 0; j < rules[i].bSignalCount; j++) {
+            JsonObject bSignal = bSignals.createNestedObject();
+            bSignal["protocol"] = rules[i].bSignals[j].protocol;
+            bSignal["data"] = rules[i].bSignals[j].data;
+            bSignal["hash"] = rules[i].bSignals[j].hash;
+            bSignal["isProtocol"] = rules[i].bSignals[j].isProtocol;
+        }
+        
+        ruleObj["bSignalCount"] = rules[i].bSignalCount;
+        
+        // 间隔
+        JsonArray intervals = ruleObj.createNestedArray("intervals");
+        for (int j = 0; j < rules[i].bSignalCount - 1; j++) {
+            intervals.add(rules[i].intervals[j]);
+        }
+        
+        ruleObj["repeatCount"] = rules[i].repeatCount;
+    }
+    
+    String output;
+    serializeJson(doc, output);
+    return Storage::saveFile(CONFIG_FILE_MAPS, output);
+}
+
+bool IRMapper::loadFromFlash() {
+    String content = Storage::readFile(CONFIG_FILE_MAPS);
+    if (content.length() == 0) {
+        return true;  // 文件不存在，返回成功（空映射表）
+    }
+    
+    // 动态计算JSON大小：文件大小加上解析开销
+    size_t jsonSize = content.length() + 1024;
+    if (jsonSize < 4096) jsonSize = 4096;
+    DynamicJsonDocument doc(jsonSize);
+    DeserializationError error = deserializeJson(doc, content);
+    if (error) {
+        return false;
+    }
+    
+    JsonArray rulesArray = doc.as<JsonArray>();
+    ruleCount = 0;
+    nextId = 1;
+    
+    for (JsonObject ruleObj : rulesArray) {
+        if (ruleCount >= MAX_MAP_RULES) break;
+        
+        IR_MapRule& rule = rules[ruleCount];
+        rule.id = ruleObj["id"] | 0;
+        if (rule.id >= nextId) {
+            nextId = rule.id + 1;
+        }
+        
+        // A信号
+        JsonObject aSignal = ruleObj["aSignal"];
+        rule.aSignal.protocol = aSignal["protocol"] | 0;
+        rule.aSignal.data = aSignal["data"] | 0;
+        rule.aSignal.hash = aSignal["hash"] | 0;
+        rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
+        
+        // B信号序列
+        JsonArray bSignals = ruleObj["bSignals"];
+        rule.bSignalCount = 0;
+        for (JsonObject bSignal : bSignals) {
+            if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
+            
+            rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
+            rule.bSignals[rule.bSignalCount].data = bSignal["data"] | 0;
+            rule.bSignals[rule.bSignalCount].hash = bSignal["hash"] | 0;
+            rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
+            rule.bSignalCount++;
+        }
+        
+        // 间隔
+        JsonArray intervals = ruleObj["intervals"];
+        int intervalCount = 0;
+        for (uint16_t interval : intervals) {
+            if (intervalCount >= MAX_B_SIGNALS_PER_RULE - 1) break;
+            rule.intervals[intervalCount++] = interval;
+        }
+        
+        rule.repeatCount = ruleObj["repeatCount"] | 1;
+        rule.valid = true;
+        ruleCount++;
+    }
+    
+    return true;
+}
+
+bool IRMapper::exportToJSON(String& json) {
+    // 动态计算JSON大小：每条规则约200字节
+    size_t jsonSize = (ruleCount * 200) + 2048;
+    if (jsonSize < 4096) jsonSize = 4096;
+    DynamicJsonDocument doc(jsonSize);
+    JsonArray rulesArray = doc.to<JsonArray>();
+    
+    for (int i = 0; i < ruleCount; i++) {
+        if (!rules[i].valid) continue;
+        
+        JsonObject ruleObj = rulesArray.createNestedObject();
+        ruleObj["id"] = rules[i].id;
+        
+        JsonObject aSignal = ruleObj.createNestedObject("aSignal");
+        aSignal["protocol"] = rules[i].aSignal.protocol;
+        aSignal["data"] = rules[i].aSignal.data;
+        aSignal["hash"] = rules[i].aSignal.hash;
+        aSignal["isProtocol"] = rules[i].aSignal.isProtocol;
+        
+        JsonArray bSignals = ruleObj.createNestedArray("bSignals");
+        for (int j = 0; j < rules[i].bSignalCount; j++) {
+            JsonObject bSignal = bSignals.createNestedObject();
+            bSignal["protocol"] = rules[i].bSignals[j].protocol;
+            bSignal["data"] = rules[i].bSignals[j].data;
+            bSignal["hash"] = rules[i].bSignals[j].hash;
+            bSignal["isProtocol"] = rules[i].bSignals[j].isProtocol;
+        }
+        
+        ruleObj["bSignalCount"] = rules[i].bSignalCount;
+        
+        JsonArray intervals = ruleObj.createNestedArray("intervals");
+        for (int j = 0; j < rules[i].bSignalCount - 1; j++) {
+            intervals.add(rules[i].intervals[j]);
+        }
+        
+        ruleObj["repeatCount"] = rules[i].repeatCount;
+    }
+    
+    serializeJson(doc, json);
+    return true;
+}
+
+bool IRMapper::importFromJSON(const String& json) {
+    // 动态计算JSON大小：JSON字符串长度加上解析开销
+    size_t jsonSize = json.length() + 1024;
+    if (jsonSize < 4096) jsonSize = 4096;
+    DynamicJsonDocument doc(jsonSize);
+    DeserializationError error = deserializeJson(doc, json);
+    if (error) {
+        return false;
+    }
+    
+    // 清空现有规则
+    ruleCount = 0;
+    nextId = 1;
+    
+    JsonArray rulesArray = doc.as<JsonArray>();
+    for (JsonObject ruleObj : rulesArray) {
+        if (ruleCount >= MAX_MAP_RULES) break;
+        
+        IR_MapRule rule;
+        rule.id = ruleObj["id"] | 0;
+        
+        JsonObject aSignal = ruleObj["aSignal"];
+        rule.aSignal.protocol = aSignal["protocol"] | 0;
+        rule.aSignal.data = aSignal["data"] | 0;
+        rule.aSignal.hash = aSignal["hash"] | 0;
+        rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
+        
+        JsonArray bSignals = ruleObj["bSignals"];
+        rule.bSignalCount = 0;
+        for (JsonObject bSignal : bSignals) {
+            if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
+            
+            rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
+            rule.bSignals[rule.bSignalCount].data = bSignal["data"] | 0;
+            rule.bSignals[rule.bSignalCount].hash = bSignal["hash"] | 0;
+            rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
+            rule.bSignalCount++;
+        }
+        
+        JsonArray intervals = ruleObj["intervals"];
+        int intervalCount = 0;
+        for (uint16_t interval : intervals) {
+            if (intervalCount >= MAX_B_SIGNALS_PER_RULE - 1) break;
+            rule.intervals[intervalCount++] = interval;
+        }
+        
+        rule.repeatCount = ruleObj["repeatCount"] | 1;
+        rule.valid = true;
+        
+        rules[ruleCount++] = rule;
+        if (rule.id >= nextId) {
+            nextId = rule.id + 1;
+        }
+    }
+    
+    return saveToFlash();
+}
+
+bool IRMapper::findRuleIndex(const SignalID& aSignal, int& index) {
+    for (int i = 0; i < ruleCount; i++) {
+        if (!rules[i].valid) continue;
+        
+        const SignalID& ruleSignal = rules[i].aSignal;
+        
+        // 直接比较protocol和data，避免24位截断问题
+        if (aSignal.isProtocol == ruleSignal.isProtocol) {
+            if (aSignal.isProtocol) {
+                // 协议信号：比较protocol和data
+                if (aSignal.protocol == ruleSignal.protocol && 
+                    aSignal.data == ruleSignal.data) {
+                    index = i;
+                    return true;
+                }
+            } else {
+                // 哈希信号：比较hash
+                if (aSignal.hash == ruleSignal.hash) {
+                    index = i;
+                    return true;
+                }
+            }
+        }
+    }
+    
+    return false;
+}
+
+bool IRMapper::findRuleIndexById(uint8_t id, int& index) {
+    for (int i = 0; i < ruleCount; i++) {
+        if (rules[i].valid && rules[i].id == id) {
+            index = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+uint32_t IRMapper::signalIdToKey(const SignalID& signalId) const {
+    if (signalId.isProtocol) {
+        return (signalId.protocol << 24) | (signalId.data & 0xFFFFFF);
+    } else {
+        return signalId.hash;
+    }
+}
+
