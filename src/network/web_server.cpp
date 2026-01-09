@@ -208,19 +208,37 @@ void WebServer::handleAPIMaps() {
         return;
     }
     
-    IR_MapRule rules[MAX_MAP_RULES];
+    // 检查内存：避免在栈上分配大数组导致栈溢出
+    size_t freeHeap = ESP.getFreeHeap();
     int count = mapper->getRuleCount();
-    mapper->getAllRules(rules, count);
+    
+    // 估算所需内存：每个规则约108字节，加上JSON开销
+    size_t estimatedMemory = count * 120;  // 规则数组 + 安全余量
+    if (freeHeap < estimatedMemory + 2048) {
+        sendErrorResponse(503, "Insufficient Memory");
+        return;
+    }
+    
+    // 优化：只分配实际需要的数量，而不是MAX_MAP_RULES
+    // 限制最大数量，避免栈溢出
+    int maxRules = (count < MAX_MAP_RULES) ? count : MAX_MAP_RULES;
+    if (maxRules > 20) maxRules = 20;  // 进一步限制，避免栈溢出
+    
+    IR_MapRule rules[maxRules];
+    if (!mapper->getAllRules(rules, maxRules)) {
+        sendErrorResponse(500, "Failed to get rules");
+        return;
+    }
     
     // 简化：根据规则数量动态计算JSON大小
-    size_t jsonSize = 256 + (count * 200);  // 基础开销 + 每条规则约200字节
+    size_t jsonSize = 256 + (maxRules * 200);  // 基础开销 + 每条规则约200字节
     if (jsonSize > 6144) jsonSize = 6144;   // 限制最大6KB
     if (jsonSize < 512) jsonSize = 512;
     
     DynamicJsonDocument doc(jsonSize);
     JsonArray rulesArray = doc.to<JsonArray>();
     
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < maxRules; i++) {
         JsonObject ruleObj = rulesArray.createNestedObject();
         ruleObj["id"] = rules[i].id;
         
@@ -288,12 +306,25 @@ void WebServer::handleAPIUpdateMap() {
         // 批量更新：清空现有规则，添加新规则
         JsonArray rulesArray = doc["rules"];
         
-        // 清空所有现有规则
-        IR_MapRule rules[MAX_MAP_RULES];
+        // 清空所有现有规则（避免在栈上分配大数组导致栈溢出）
+        // 使用小数组存储规则ID，逐个删除
+        uint8_t ruleIds[20];  // 限制最多20个规则ID（每个ID 1字节，总共20字节）
+        int idCount = 0;
+        
+        // 获取所有规则ID（使用较小的临时数组，避免栈溢出）
         int count = mapper->getRuleCount();
-        mapper->getAllRules(rules, count);
-        for (int i = 0; i < count; i++) {
-            mapper->deleteRule(rules[i].id);
+        if (count > 20) count = 20;  // 限制最多20个规则
+        
+        IR_MapRule tempRule;
+        for (uint8_t id = 1; id <= 255 && idCount < count; id++) {
+            if (mapper->getRule(id, tempRule)) {
+                ruleIds[idCount++] = id;
+            }
+        }
+        
+        // 删除找到的所有规则
+        for (int i = 0; i < idCount; i++) {
+            mapper->deleteRule(ruleIds[i]);
         }
         
         // 添加新规则
