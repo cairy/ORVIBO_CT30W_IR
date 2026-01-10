@@ -17,18 +17,18 @@ enum LearnMode {
 // 学习的指令结构
 struct LearnedCommand {
     char name[MAX_COMMAND_NAME_LEN];  // 指令名称
-    SignalID signalId;                // 信号ID
-    IRTiming timing[MAX_LEARN_TIMING_COUNT];  // 时序数据（受内存限制）
+    IRTiming timing[MAX_LEARN_TIMING_COUNT];  // 时序数据（总是保存）
     int timingCount;                  // 时序数量
+    SignalID signalId;                // 信号ID（如果解析成功）
+    bool hasProtocol;                 // 是否成功解析了协议
     bool valid;                       // 是否有效
 };
 
-// 学习的设备结构（兼容SmartIR格式）
+// 学习的设备结构
 struct LearnedDevice {
     char deviceName[MAX_DEVICE_NAME_LEN];  // 设备名称
     LearnedCommand commands[MAX_LEARN_COMMANDS];  // 指令列表
     int commandCount;                   // 指令数量
-    unsigned long learnTime;            // 学习时间
     bool valid;                         // 是否有效
 };
 
@@ -46,7 +46,27 @@ public:
     bool isLearningDevice() const;
     String getLearnProgress() const;  // 返回学习进度，如"2/5"
     bool getLearnedDevice(LearnedDevice& device);  // 获取学习结果
-    String convertToSmartIRFormat();  // 转换为SmartIR格式JSON
+    
+    // 输出格式转换方法
+    String convertToBase64Format();      // 转换为Base64格式JSON（默认格式）
+    String convertToSignalIDFormat();    // 转换为SignalID格式JSON（如果解析成功）
+    String convertToArrayFormat();       // 转换为数组格式JSON
+    
+    // Base64解码（用于发送学习到的信号）
+    static bool decodeBase64ToTiming(const String& base64, IRTiming* timing, int& count, int maxCount);
+    
+    // 统一信号格式解析函数（用于HTTP API和MQTT接口）
+    enum SignalFormat {
+        FORMAT_BASE64,      // Base64字符串
+        FORMAT_ARRAY,       // 数组字符串
+        FORMAT_PROTOCOL,    // 协议格式字符串 protocol,data,repeatCount
+        FORMAT_SIGNALID     // SignalID对象格式（JSON）
+    };
+    
+    static SignalFormat detectSignalFormat(const String& payload);
+    static bool parseArrayString(const String& arrayStr, IRTiming* timing, int& count, int maxCount);
+    static bool parseProtocolString(const String& protocolStr, SignalID& signalId, uint8_t& repeatCount);
+    static bool parseSignalPayload(const String& payload, SignalID& signalId, IRTiming* timing, int& timingCount, int maxTimingCount, uint8_t& repeatCount, SignalFormat& format);
     
     // 学习状态查询方法
     String getCurrentCommandName() const;  // 获取当前正在学习的指令名称

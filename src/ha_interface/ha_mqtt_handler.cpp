@@ -27,14 +27,29 @@ void HAMQTTHandler::update() {
     bool isConnected = mqtt.isConnected();
     
     if (isConnected && !wasConnected) {
-        // 刚连接成功，订阅命令主题
+        // 刚连接成功，订阅命令主题和 SmartIR 主题
         // 检查内存后再操作
-        if (ESP.getFreeHeap() >= 1024) {
+        if (ESP.getFreeHeap() >= 2048) {
             Serial.println("[HA MQTT] MQTT 已连接，订阅命令主题...");
             if (mqtt.subscribe(MQTT_TOPIC_COMMAND)) {
                 Serial.println("[HA MQTT] ✓ 已订阅: " + String(MQTT_TOPIC_COMMAND));
             } else {
                 Serial.println("[HA MQTT] ✗ 订阅失败: " + String(MQTT_TOPIC_COMMAND));
+            }
+            
+            // 订阅 SmartIR 主题（直接接收 Base64 字符串）
+            Serial.println("[HA MQTT] 订阅 SmartIR 主题...");
+            if (mqtt.subscribe("smartir/climate/+/send")) {
+                Serial.println("[HA MQTT] ✓ 已订阅: smartir/climate/+/send");
+            }
+            if (mqtt.subscribe("smartir/media_player/+/send")) {
+                Serial.println("[HA MQTT] ✓ 已订阅: smartir/media_player/+/send");
+            }
+            if (mqtt.subscribe("smartir/fan/+/send")) {
+                Serial.println("[HA MQTT] ✓ 已订阅: smartir/fan/+/send");
+            }
+            if (mqtt.subscribe("smartir/light/+/send")) {
+                Serial.println("[HA MQTT] ✓ 已订阅: smartir/light/+/send");
             }
         } else {
             Serial.printf("[HA MQTT] 内存不足，跳过订阅 (空闲: %d bytes)\n", ESP.getFreeHeap());
@@ -93,6 +108,14 @@ void HAMQTTHandler::update() {
 }
 
 void HAMQTTHandler::handleCommand(const String& topic, const String& payload) {
+    // 检查是否是 SmartIR 主题（直接发送 Base64 字符串）
+    if (topic.startsWith("smartir/") && topic.endsWith("/send")) {
+        // SmartIR 直接发送 Base64 字符串，不需要 JSON 包装
+        handleSmartIRSignal(payload);
+        return;
+    }
+    
+    // 处理设备命令主题
     if (topic == MQTT_TOPIC_COMMAND) {
         processCommand(payload);
     }
@@ -304,12 +327,8 @@ void HAMQTTHandler::processCommand(const String& payload) {
         handleQueryMaps();
     } else if (action == "update_map") {
         handleUpdateMap(payload);
-    } else if (action == "update_maps") {
-        handleUpdateMaps(payload);
     } else if (action == "get_logs") {
         handleGetLogs();
-    } else if (action == "upload_signal") {
-        handleUploadSignal(payload);
     } else if (action == "start_learn") {
         handleStartLearn(payload);
     } else if (action == "query_learn_status") {
@@ -394,15 +413,15 @@ void HAMQTTHandler::handleQueryMaps() {
 }
 
 void HAMQTTHandler::handleUpdateMap(const String& json) {
-    // 内存保护：检查可用内存
-    if (ESP.getFreeHeap() < 2048) {
+    // 内存保护：检查可用内存（批量更新需要更多内存）
+    if (ESP.getFreeHeap() < 4096) {
         publishState("error", "Low Memory");
         return;
     }
     
     // 优化：根据json长度动态计算JSON大小
-    size_t jsonSize = json.length() + 512;
-    if (jsonSize > 3072) jsonSize = 3072;
+    size_t jsonSize = json.length() + 1024;
+    if (jsonSize > 6144) jsonSize = 6144; // 限制最大6KB
     if (jsonSize < 512) jsonSize = 512;
     
     DynamicJsonDocument doc(jsonSize);
@@ -413,52 +432,113 @@ void HAMQTTHandler::handleUpdateMap(const String& json) {
         return;
     }
     
-    uint8_t id = doc["id"] | 0;
-    if (id == 0) {
-        publishState("error", "Invalid rule ID");
-        return;
-    }
-    
-    JsonObject ruleObj = doc["rule"];
-    if (ruleObj.isNull()) {
-        publishState("error", "Missing 'rule' field");
-        return;
-    }
-    
-    IR_MapRule rule;
-    
-    JsonObject aSignal = ruleObj["aSignal"];
-    rule.aSignal.protocol = aSignal["protocol"] | 0;
-    rule.aSignal.data = aSignal["data"] | 0;
-    rule.aSignal.hash = aSignal["hash"] | 0;
-    rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
-    
-    JsonArray bSignals = ruleObj["bSignals"];
-    rule.bSignalCount = 0;
-    for (JsonObject bSignal : bSignals) {
-        if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
+    // 检查是否是批量更新（包含rules数组）
+    if (doc.containsKey("rules")) {
+        // 批量更新：清空现有规则，添加新规则
+        JsonArray rulesArray = doc["rules"];
         
-        rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
-        rule.bSignals[rule.bSignalCount].data = bSignal["data"] | 0;
-        rule.bSignals[rule.bSignalCount].hash = bSignal["hash"] | 0;
-        rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
-        rule.bSignalCount++;
-    }
-    
-    JsonArray intervals = ruleObj["intervals"];
-    int intervalCount = 0;
-    for (uint16_t interval : intervals) {
-        if (intervalCount >= MAX_B_SIGNALS_PER_RULE - 1) break;
-        rule.intervals[intervalCount++] = interval;
-    }
-    
-    rule.repeatCount = ruleObj["repeatCount"] | 1;
-    rule.valid = true;
-    
-    if (mapper.updateRule(id, rule)) {
-        publishState("success", "Rule updated");
+        // 清空所有现有规则
+        IR_MapRule rules[MAX_MAP_RULES];
+        int count = mapper.getRuleCount();
+        mapper.getAllRules(rules, count);
+        for (int i = 0; i < count; i++) {
+            mapper.deleteRule(rules[i].id);
+        }
+        
+        // 添加新规则
+        int successCount = 0;
+        for (JsonObject ruleObj : rulesArray) {
+            IR_MapRule rule;
+            
+            JsonObject aSignal = ruleObj["aSignal"];
+            rule.aSignal.protocol = aSignal["protocol"] | 0;
+            rule.aSignal.data = aSignal["data"] | 0;
+            rule.aSignal.hash = aSignal["hash"] | 0;
+            rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
+            
+            JsonArray bSignals = ruleObj["bSignals"];
+            rule.bSignalCount = 0;
+            for (JsonObject bSignal : bSignals) {
+                if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
+                
+                rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
+                rule.bSignals[rule.bSignalCount].data = bSignal["data"] | 0;
+                rule.bSignals[rule.bSignalCount].hash = bSignal["hash"] | 0;
+                rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
+                rule.bSignalCount++;
+            }
+            
+            JsonArray intervals = ruleObj["intervals"];
+            int intervalCount = 0;
+            for (uint16_t interval : intervals) {
+                if (intervalCount >= MAX_B_SIGNALS_PER_RULE - 1) break;
+                rule.intervals[intervalCount++] = interval;
+            }
+            
+            rule.repeatCount = ruleObj["repeatCount"] | 1;
+            rule.valid = true;
+            
+            if (mapper.addRule(rule)) {
+                successCount++;
+            }
+        }
+        
+        DynamicJsonDocument response(256);
+        response["success"] = true;
+        response["message"] = "Rules updated";
+        response["count"] = successCount;
+        String output;
+        serializeJson(response, output);
+        publishState("success", output);
     } else {
-        publishState("error", "Failed to update rule");
+        // 单个更新（保持向后兼容）
+        uint8_t id = doc["id"] | 0;
+        if (id == 0) {
+            publishState("error", "Invalid rule ID or missing 'rules' array");
+            return;
+        }
+        
+        JsonObject ruleObj = doc["rule"];
+        if (ruleObj.isNull()) {
+            publishState("error", "Missing 'rule' field");
+            return;
+        }
+        
+        IR_MapRule rule;
+        
+        JsonObject aSignal = ruleObj["aSignal"];
+        rule.aSignal.protocol = aSignal["protocol"] | 0;
+        rule.aSignal.data = aSignal["data"] | 0;
+        rule.aSignal.hash = aSignal["hash"] | 0;
+        rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
+        
+        JsonArray bSignals = ruleObj["bSignals"];
+        rule.bSignalCount = 0;
+        for (JsonObject bSignal : bSignals) {
+            if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
+            
+            rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
+            rule.bSignals[rule.bSignalCount].data = bSignal["data"] | 0;
+            rule.bSignals[rule.bSignalCount].hash = bSignal["hash"] | 0;
+            rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
+            rule.bSignalCount++;
+        }
+        
+        JsonArray intervals = ruleObj["intervals"];
+        int intervalCount = 0;
+        for (uint16_t interval : intervals) {
+            if (intervalCount >= MAX_B_SIGNALS_PER_RULE - 1) break;
+            rule.intervals[intervalCount++] = interval;
+        }
+        
+        rule.repeatCount = ruleObj["repeatCount"] | 1;
+        rule.valid = true;
+        
+        if (mapper.updateRule(id, rule)) {
+            publishState("success", "Rule updated");
+        } else {
+            publishState("error", "Failed to update rule");
+        }
     }
 }
 
@@ -504,12 +584,6 @@ void HAMQTTHandler::handleGetLogs() {
     publishState("success", output);
 }
 
-void HAMQTTHandler::handleUploadSignal(const String& json) {
-    // 上传自定义B信号序列
-    // 实现逻辑类似添加映射规则，但用于上传信号数据
-    publishState("success", "Signal uploaded");
-}
-
 void HAMQTTHandler::handleStartLearn(const String& json) {
     if (learner == nullptr) {
         publishState("error", "Learner service not initialized");
@@ -546,6 +620,38 @@ void HAMQTTHandler::handleStartLearn(const String& json) {
     
     if (commandNames.length() == 0) {
         publishState("error", "Missing 'commandNames' field");
+        return;
+    }
+    
+    // 先检查命令数量是否超过限制
+    int commandCount = 0;
+    if (commandNames.length() > 0) {
+        int startPos = 0;
+        int commaPos = commandNames.indexOf(',');
+        while (commaPos >= 0) {
+            String cmdName = commandNames.substring(startPos, commaPos);
+            cmdName.trim();
+            if (cmdName.length() > 0) {
+                commandCount++;
+            }
+            startPos = commaPos + 1;
+            commaPos = commandNames.indexOf(',', startPos);
+        }
+        // 处理最后一个命令
+        if (startPos < commandNames.length()) {
+            String cmdName = commandNames.substring(startPos);
+            cmdName.trim();
+            if (cmdName.length() > 0) {
+                commandCount++;
+            }
+        }
+    }
+    
+    // 检查命令数量限制
+    if (commandCount > MAX_LEARN_COMMANDS) {
+        char errorMsg[128];
+        snprintf(errorMsg, sizeof(errorMsg), "命令数量超过限制，最多支持 %d 个命令，当前有 %d 个", MAX_LEARN_COMMANDS, commandCount);
+        publishState("error", errorMsg);
         return;
     }
     
@@ -644,14 +750,30 @@ void HAMQTTHandler::handleQueryLearnResult(const String& json) {
         return;
     }
     
-    LearnedDevice device;
-    if (!learner->getLearnedDevice(device)) {
+    // 首先检查内存，确保有足够空间（至少需要6KB）
+    size_t freeHeap = ESP.getFreeHeap();
+    if (freeHeap < 6144) {
+        publishState("error", "Low Memory");
+        return;
+    }
+    
+    // 不要复制整个LearnedDevice结构体到栈上（约5KB，会导致栈溢出）
+    int commandCount = learner->getLearnedCommandCount();
+    
+    if (commandCount == 0) {
         publishState("error", "No learned device found");
         return;
     }
     
-    String smartIRJson = learner->convertToSmartIRFormat();
-    publishState("success", smartIRJson);
+    // 默认使用base64格式
+    String resultJson = learner->convertToBase64Format();
+    
+    if (resultJson.length() == 0 || resultJson == "{}") {
+        publishState("error", "Failed to convert format");
+        return;
+    }
+    
+    publishState("success", resultJson);
 }
 
 void HAMQTTHandler::handleGetRecentSignals(const String& json) {
@@ -678,33 +800,81 @@ void HAMQTTHandler::handleGetRecentSignals(const String& json) {
     publishState("success", output);
 }
 
-void HAMQTTHandler::handleSendSignal(const String& json) {
-    DynamicJsonDocument doc(512);
-    DeserializationError error = deserializeJson(doc, json);
-    
-    if (error) {
-        publishState("error", "Invalid JSON");
+void HAMQTTHandler::handleSendSignal(const String& payload) {
+    if (ESP.getFreeHeap() < 2048) {
+        publishState("error", "Low Memory");
         return;
     }
     
-    JsonObject signalObj = doc["signal"];
-    if (signalObj.isNull()) {
-        publishState("error", "Missing 'signal' field");
+    String trimmed = payload;
+    trimmed.trim();
+    
+    if (trimmed.length() == 0) {
+        publishState("error", "Empty payload");
         return;
     }
     
-    SignalID signal;
-    signal.protocol = signalObj["protocol"] | 0;
-    signal.data = signalObj["data"] | 0;
-    signal.hash = signalObj["hash"] | 0;
-    signal.isProtocol = signalObj["isProtocol"] | false;
+    // 检测格式：如果是JSON格式（SignalID对象），按JSON解析；否则按字符串格式解析
+    IRLearner::SignalFormat format = IRLearner::detectSignalFormat(trimmed);
     
-    uint8_t repeatCount = doc["repeatCount"] | 1;
-    
-    if (forwarder.sendSignal(signal, repeatCount)) {
-        publishState("executing", "Signal sent");
+    if (format == IRLearner::FORMAT_SIGNALID) {
+        // SignalID对象格式（JSON）
+        size_t jsonSize = trimmed.length() + 256;
+        if (jsonSize > 1024) jsonSize = 1024;
+        if (jsonSize < 256) jsonSize = 256;
+        
+        DynamicJsonDocument doc(jsonSize);
+        DeserializationError error = deserializeJson(doc, trimmed);
+        
+        if (error) {
+            publishState("error", "Invalid JSON");
+            return;
+        }
+        
+        JsonObject signalObj = doc["signal"];
+        if (signalObj.isNull()) {
+            publishState("error", "Missing 'signal' field");
+            return;
+        }
+        
+        uint8_t repeatCount = doc["repeatCount"] | 1;
+        
+        SignalID signal;
+        signal.protocol = signalObj["protocol"] | 0;
+        signal.data = signalObj["data"] | 0;
+        signal.hash = signalObj["hash"] | 0;
+        signal.isProtocol = signalObj["isProtocol"] | false;
+        
+        if (forwarder.sendSignal(signal, repeatCount)) {
+            publishState("executing", "Signal sent");
+        } else {
+            publishState("error", "Failed to send signal");
+        }
     } else {
-        publishState("error", "Failed to send signal");
+        // 字符串格式（Base64/数组/协议），使用统一解析函数
+        SignalID signalId;
+        static IRTiming timing[MAX_LEARN_TIMING_COUNT];
+        int timingCount = 0;
+        uint8_t repeatCount = 1;
+        
+        if (!IRLearner::parseSignalPayload(trimmed, signalId, timing, timingCount, MAX_LEARN_TIMING_COUNT, repeatCount, format)) {
+            publishState("error", "Failed to parse signal");
+            return;
+        }
+        
+        // 根据格式发送信号
+        bool success = false;
+        if (format == IRLearner::FORMAT_PROTOCOL) {
+            success = forwarder.sendSignal(signalId, repeatCount);
+        } else {
+            success = forwarder.sendRawTiming(timing, timingCount, repeatCount);
+        }
+        
+        if (success) {
+            publishState("executing", "Signal sent");
+        } else {
+            publishState("error", "Failed to send signal");
+        }
     }
 }
 
@@ -728,92 +898,50 @@ void HAMQTTHandler::handleSetForwardingEnabled(const String& json) {
     publishState("success", output);
 }
 
-void HAMQTTHandler::handleUpdateMaps(const String& json) {
-    // 内存保护：检查可用内存（批量更新需要更多内存）
-    if (ESP.getFreeHeap() < 4096) {
-        publishState("error", "Low Memory");
+void HAMQTTHandler::handleSmartIRSignal(const String& payload) {
+    // SmartIR 发送的格式（纯字符串）：Base64、数组、协议格式
+    if (ESP.getFreeHeap() < 2048) {
+        Serial.println("[SmartIR] 内存不足，跳过信号处理");
         return;
     }
     
-    // 优化：根据json长度动态计算JSON大小
-    size_t jsonSize = json.length() + 1024;
-    if (jsonSize > 6144) jsonSize = 6144; // 限制最大6KB
-    if (jsonSize < 1024) jsonSize = 1024;
-    
-    // 检查是否有足够内存
-    if (ESP.getFreeHeap() < jsonSize + 2048) {
-        publishState("error", "Insufficient Memory");
+    if (payload.length() == 0) {
+        Serial.println("[SmartIR] 收到空的 payload");
         return;
     }
     
-    DynamicJsonDocument doc(jsonSize);
-    DeserializationError error = deserializeJson(doc, json);
+    Serial.printf("[SmartIR] 收到信号，长度: %d bytes\n", payload.length());
     
-    if (error) {
-        publishState("error", "Invalid JSON");
+    // 使用统一解析函数
+    SignalID signalId;
+    static IRTiming timing[MAX_LEARN_TIMING_COUNT];
+    int timingCount = 0;
+    uint8_t repeatCount = 1;
+    IRLearner::SignalFormat format;
+    
+    if (!IRLearner::parseSignalPayload(payload, signalId, timing, timingCount, MAX_LEARN_TIMING_COUNT, repeatCount, format)) {
+        Serial.println("[SmartIR] 信号解析失败");
         return;
     }
     
-    if (!doc.containsKey("rules")) {
-        publishState("error", "Missing 'rules' array");
-        return;
+    // 根据格式发送信号
+    bool success = false;
+    if (format == IRLearner::FORMAT_PROTOCOL) {
+        // 协议格式
+        Serial.printf("[SmartIR] 协议格式：protocol=%d, data=0x%X, repeat=%d\n", 
+                     signalId.protocol, signalId.data, repeatCount);
+        success = forwarder.sendSignal(signalId, repeatCount);
+    } else {
+        // Base64或数组格式
+        Serial.printf("[SmartIR] 时序格式：点数=%d, repeat=%d\n", timingCount, repeatCount);
+        success = forwarder.sendRawTiming(timing, timingCount, repeatCount);
     }
     
-    JsonArray rulesArray = doc["rules"];
-    
-    // 清空所有现有规则
-    IR_MapRule rules[MAX_MAP_RULES];
-    int count = mapper.getRuleCount();
-    mapper.getAllRules(rules, count);
-    for (int i = 0; i < count; i++) {
-        mapper.deleteRule(rules[i].id);
+    if (success) {
+        Serial.println("[SmartIR] 信号发送成功");
+    } else {
+        Serial.println("[SmartIR] 信号发送失败");
     }
-    
-    // 添加新规则
-    int successCount = 0;
-    for (JsonObject ruleObj : rulesArray) {
-        IR_MapRule rule;
-        
-        JsonObject aSignal = ruleObj["aSignal"];
-        rule.aSignal.protocol = aSignal["protocol"] | 0;
-        rule.aSignal.data = aSignal["data"] | 0;
-        rule.aSignal.hash = aSignal["hash"] | 0;
-        rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
-        
-        JsonArray bSignals = ruleObj["bSignals"];
-        rule.bSignalCount = 0;
-        for (JsonObject bSignal : bSignals) {
-            if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
-            
-            rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
-            rule.bSignals[rule.bSignalCount].data = bSignal["data"] | 0;
-            rule.bSignals[rule.bSignalCount].hash = bSignal["hash"] | 0;
-            rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
-            rule.bSignalCount++;
-        }
-        
-        JsonArray intervals = ruleObj["intervals"];
-        int intervalCount = 0;
-        for (uint16_t interval : intervals) {
-            if (intervalCount >= MAX_B_SIGNALS_PER_RULE - 1) break;
-            rule.intervals[intervalCount++] = interval;
-        }
-        
-        rule.repeatCount = ruleObj["repeatCount"] | 1;
-        rule.valid = true;
-        
-        if (mapper.addRule(rule)) {
-            successCount++;
-        }
-    }
-    
-    DynamicJsonDocument response(256);
-    response["success"] = true;
-    response["message"] = "Rules updated";
-    response["count"] = successCount;
-    String output;
-    serializeJson(response, output);
-    publishState("success", output);
 }
 
 void HAMQTTHandler::publishEnhancedState() {

@@ -39,9 +39,8 @@ private:
     void processCommand(const String& payload);
     void publishDiscoveryConfig();
     void handleQueryMaps();
-    void handleUpdateMap(const String& json);
+    void handleUpdateMap(const String& json);  // 支持单个和批量更新
     void handleGetLogs();
-    void handleUploadSignal(const String& json);
     void handleStartLearn(const String& json);
     void handleQueryLearnStatus(const String& json);
     void handleStopLearn(const String& json);
@@ -49,7 +48,7 @@ private:
     void handleGetRecentSignals(const String& json);
     void handleSendSignal(const String& json);
     void handleSetForwardingEnabled(const String& json);
-    void handleUpdateMaps(const String& json);  // 批量更新映射规则
+    void handleSmartIRSignal(const String& payload);  // 处理 SmartIR 发送的信号（Base64/数组/协议格式）
     
     static void mqttCallback(char* topic, byte* payload, unsigned int length);
     static HAMQTTHandler* instance;

@@ -144,6 +144,23 @@ bool IRForwarder::isForwarding() const {
     return forwarding || transmitter.isTransmitting();
 }
 
+bool IRForwarder::sendRawTiming(const IRTiming* timing, int count, uint8_t repeatCount) {
+    if (timing == nullptr || count <= 0 || repeatCount == 0) {
+        return false;
+    }
+    
+    for (uint8_t i = 0; i < repeatCount; i++) {
+        if (!transmitter.transmit(timing, count)) {
+            return false;
+        }
+        if (i < repeatCount - 1) {
+            delay(100);  // 重复发送之间的延迟
+        }
+    }
+    
+    return true;
+}
+
 bool IRForwarder::compileSignal(const BSignal& signal, IRTiming* timing, int& count) {
     // 统一使用时序生成器编译信号
     // 对于协议信号，使用IRGenerator生成时序

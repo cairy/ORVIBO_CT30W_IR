@@ -21,6 +21,7 @@ public:
     void setEnabled(bool enabled);  // 启用/禁用转发功能
     bool isEnabled() const;          // 获取转发功能状态
     bool sendSignal(const SignalID& signal, uint8_t repeatCount = 1);  // 直接发送信号
+    bool sendRawTiming(const IRTiming* timing, int count, uint8_t repeatCount = 1);  // 发送原始时序数据
 
 private:
     IRMapper& mapper;

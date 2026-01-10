@@ -564,64 +564,24 @@ void WebServer::handleAPILearnStatus() {
         return;
     }
     
-    // 内存保护：检查可用内存（提高阈值，因为需要创建JSON和String对象）
-    if (ESP.getFreeHeap() < 3072) {
-        sendErrorResponse(503, "Low Memory");
-        return;
-    }
-    
     bool isLearning = learner->isLearningDevice();
     
-    // 根据是否在学习中动态调整JSON大小（增加大小以避免溢出）
-    size_t jsonSize = isLearning ? 1024 : 256;
-    
-    // 再次检查内存，确保有足够空间
-    if (ESP.getFreeHeap() < jsonSize + 1024) {
-        sendErrorResponse(503, "Low Memory");
-        return;
-    }
-    
-    DynamicJsonDocument doc(jsonSize);
+    // 使用固定大小的JSON文档（512字节足够）
+    DynamicJsonDocument doc(512);
     doc["isLearning"] = isLearning;
     
     if (isLearning) {
-        // 直接使用String对象，但立即添加到JSON中，避免同时持有多个String对象
-        String deviceName = learner->getDeviceName();
-        doc["deviceName"] = deviceName;
-        deviceName = "";  // 立即释放
-        
         String progress = learner->getLearnProgress();
         doc["progress"] = progress;
-        progress = "";  // 立即释放
         
         String currentCommand = learner->getCurrentCommandName();
         doc["currentCommand"] = currentCommand;
-        currentCommand = "";  // 立即释放
-        
-        doc["learnedCount"] = learner->getLearnedCommandCount();
-        doc["totalCount"] = learner->getTotalCommandCount();
-        
-        // 使用const char*指针数组，避免创建String对象，节省内存
-        const char* learnedNames[MAX_LEARN_COMMANDS];
-        learner->getLearnedCommandNames(learnedNames, MAX_LEARN_COMMANDS);
-        JsonArray learnedCommandsArray = doc.createNestedArray("learnedCommands");
-        int learnedCount = learner->getLearnedCommandCount();
-        for (int i = 0; i < learnedCount && i < MAX_LEARN_COMMANDS; i++) {
-            if (learnedNames[i] != nullptr && strlen(learnedNames[i]) > 0) {
-                learnedCommandsArray.add(learnedNames[i]);
-            }
-        }
     } else {
-        doc["deviceName"] = "";
         doc["progress"] = "";
         doc["currentCommand"] = "";
-        doc["learnedCount"] = 0;
-        doc["totalCount"] = 0;
-        doc.createNestedArray("learnedCommands");  // 创建空数组以保持JSON结构一致
     }
     
     String output;
-    output.reserve(jsonSize);
     serializeJson(doc, output);
     sendJSONResponse(200, output);
 }
@@ -647,52 +607,39 @@ void WebServer::handleAPILearnStop() {
 
 void WebServer::handleAPILearnResult() {
     if (learner == nullptr) {
-        Serial.println("[handleAPILearnResult] 错误：learner为null");
         sendErrorResponse(500, "Service not initialized");
         return;
     }
     
-    // 首先检查内存，确保有足够空间
-    size_t freeHeap = ESP.getFreeHeap();
-    if (freeHeap < 6144) {  // 至少需要6KB空闲内存
-        Serial.printf("[handleAPILearnResult] 错误：内存严重不足（需要: 6144, 可用: %d）\n", freeHeap);
-        sendErrorResponse(503, "Low Memory");
-        return;
-    }
-    
-    // 不要复制整个LearnedDevice结构体到栈上（约5KB，会导致栈溢出）
-    // 直接检查学习状态，然后调用convertToSmartIRFormat
     int commandCount = learner->getLearnedCommandCount();
-    
     if (commandCount == 0) {
-        Serial.println("[handleAPILearnResult] 错误：未找到学习设备（命令数为0）");
         sendErrorResponse(404, "No learned device found");
         return;
     }
     
-    // 转换为SmartIR格式
-    String smartIRJson;
-    {
-        // 使用作用域确保临时对象及时释放
-        smartIRJson = learner->convertToSmartIRFormat();
+    // 获取格式参数（默认base64）
+    String format = server.arg("format");
+    if (format.length() == 0) {
+        format = "base64";  // 默认格式
+    }
+    format.toLowerCase();  // 转换为小写，使比较大小写不敏感
+    
+    String resultJson;
+    if (format == "signalid") {
+        resultJson = learner->convertToSignalIDFormat();
+    } else if (format == "array") {
+        resultJson = learner->convertToArrayFormat();
+    } else {
+        // 默认使用base64格式
+        resultJson = learner->convertToBase64Format();
     }
     
-    // 检查转换是否成功（如果内存不足，可能返回空字符串或"{}"）
-    if (smartIRJson.length() == 0 || smartIRJson == "{}") {
-        Serial.println("[handleAPILearnResult] 错误：转换失败或返回空JSON");
-        sendErrorResponse(503, "Failed to convert to SmartIR format (memory insufficient)");
+    if (resultJson.length() == 0 || resultJson == "{}") {
+        sendErrorResponse(503, "Failed to convert format");
         return;
     }
     
-    // 检查内存是否仍然足够发送响应
-    size_t freeHeapAfter = ESP.getFreeHeap();
-    if (freeHeapAfter < smartIRJson.length() + 2048) {
-        Serial.println("[handleAPILearnResult] 错误：内存不足，无法发送响应");
-        sendErrorResponse(503, "Low Memory");
-        return;
-    }
-    sendJSONResponse(200, smartIRJson);
-    Serial.println("[handleAPILearnResult] 响应发送完成");
+    sendJSONResponse(200, resultJson);
 }
 
 void WebServer::handleAPIRecentSignals() {
@@ -743,47 +690,90 @@ void WebServer::handleAPISendSignal() {
         return;
     }
     
-    // 简化：根据body长度动态计算JSON大小
-    size_t jsonSize = body.length() + 256;
-    if (jsonSize > 1024) jsonSize = 1024;
-    if (jsonSize < 256) jsonSize = 256;
+    String trimmed = body;
+    trimmed.trim();
     
-    DynamicJsonDocument doc(jsonSize);
-    DeserializationError error = deserializeJson(doc, body);
-    
-    if (error) {
-        // 优化：避免创建临时String对象
-        char errorMsg[64];
-        snprintf(errorMsg, sizeof(errorMsg), "Invalid JSON: %s", error.c_str());
-        sendErrorResponse(400, errorMsg);
+    if (trimmed.length() == 0) {
+        sendErrorResponse(400, "Empty request body");
         return;
     }
     
-    JsonObject signalObj = doc["signal"];
-    if (signalObj.isNull()) {
-        sendErrorResponse(400, "Missing 'signal' field");
-        return;
-    }
+    // 检测格式
+    IRLearner::SignalFormat format = IRLearner::detectSignalFormat(trimmed);
     
-    SignalID signal;
-    signal.protocol = signalObj["protocol"] | 0;
-    signal.data = signalObj["data"] | 0;
-    signal.hash = signalObj["hash"] | 0;
-    signal.isProtocol = signalObj["isProtocol"] | false;
-    
-    uint8_t repeatCount = doc["repeatCount"] | 1;
-    
-    // 直接发送信号（不经过转发规则）
-    if (forwarder->sendSignal(signal, repeatCount)) {
-        DynamicJsonDocument response(192);
-        response["success"] = true;
-        response["message"] = "Signal sent";
-        String output;
-        output.reserve(192);
-        serializeJson(response, output);
-        sendJSONResponse(200, output);
+    // 如果检测到JSON格式（FORMAT_SIGNALID），按JSON格式解析
+    if (format == IRLearner::FORMAT_SIGNALID) {
+        // SignalID对象格式（JSON）
+        size_t jsonSize = trimmed.length() + 256;
+        if (jsonSize > 1024) jsonSize = 1024;
+        if (jsonSize < 256) jsonSize = 256;
+        
+        DynamicJsonDocument doc(jsonSize);
+        DeserializationError error = deserializeJson(doc, trimmed);
+        
+        if (error) {
+            char errorMsg[64];
+            snprintf(errorMsg, sizeof(errorMsg), "Invalid JSON: %s", error.c_str());
+            sendErrorResponse(400, errorMsg);
+            return;
+        }
+        
+        JsonObject signalObj = doc["signal"];
+        if (signalObj.isNull()) {
+            sendErrorResponse(400, "Missing 'signal' field");
+            return;
+        }
+        
+        uint8_t repeatCount = doc["repeatCount"] | 1;
+        
+        SignalID signal;
+        signal.protocol = signalObj["protocol"] | 0;
+        signal.data = signalObj["data"] | 0;
+        signal.hash = signalObj["hash"] | 0;
+        signal.isProtocol = signalObj["isProtocol"] | false;
+        
+        if (forwarder->sendSignal(signal, repeatCount)) {
+            DynamicJsonDocument response(192);
+            response["success"] = true;
+            response["message"] = "Signal sent";
+            String output;
+            output.reserve(192);
+            serializeJson(response, output);
+            sendJSONResponse(200, output);
+        } else {
+            sendErrorResponse(500, "Failed to send signal");
+        }
     } else {
-        sendErrorResponse(500, "Failed to send signal");
+        // 字符串格式（Base64/数组/协议），使用统一解析函数
+        SignalID signalId;
+        static IRTiming timing[MAX_LEARN_TIMING_COUNT];
+        int timingCount = 0;
+        uint8_t repeatCount = 1;
+        
+        if (!IRLearner::parseSignalPayload(trimmed, signalId, timing, timingCount, MAX_LEARN_TIMING_COUNT, repeatCount, format)) {
+            sendErrorResponse(400, "Failed to parse signal");
+            return;
+        }
+        
+        // 根据格式发送信号
+        bool success = false;
+        if (format == IRLearner::FORMAT_PROTOCOL) {
+            success = forwarder->sendSignal(signalId, repeatCount);
+        } else {
+            success = forwarder->sendRawTiming(timing, timingCount, repeatCount);
+        }
+        
+        if (success) {
+            DynamicJsonDocument response(192);
+            response["success"] = true;
+            response["message"] = "Signal sent";
+            String output;
+            output.reserve(192);
+            serializeJson(response, output);
+            sendJSONResponse(200, output);
+        } else {
+            sendErrorResponse(500, "Failed to send signal");
+        }
     }
 }
 
