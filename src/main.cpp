@@ -4,7 +4,6 @@
 // 配置
 #include "config/pins.h"
 #include "config/constants.h"
-#include "utils/memory_monitor.h"
 
 // 工具
 #include "utils/storage.h"

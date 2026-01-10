@@ -308,35 +308,12 @@ bool IRMapper::exportToJSON(String& json) {
     DynamicJsonDocument doc(jsonSize);
     JsonArray rulesArray = doc.to<JsonArray>();
     
+    // 使用统一方法，设置hexFormat=true，统一使用十六进制格式（与saveToFlash一致）
     for (int i = 0; i < ruleCount; i++) {
         if (!rules[i].valid) continue;
         
         JsonObject ruleObj = rulesArray.createNestedObject();
-        ruleObj["id"] = rules[i].id;
-        
-        JsonObject aSignal = ruleObj.createNestedObject("aSignal");
-        aSignal["protocol"] = rules[i].aSignal.protocol;
-        aSignal["data"] = rules[i].aSignal.data;
-        aSignal["hash"] = rules[i].aSignal.hash;
-        aSignal["isProtocol"] = rules[i].aSignal.isProtocol;
-        
-        JsonArray bSignals = ruleObj.createNestedArray("bSignals");
-        for (int j = 0; j < rules[i].bSignalCount; j++) {
-            JsonObject bSignal = bSignals.createNestedObject();
-            bSignal["protocol"] = rules[i].bSignals[j].protocol;
-            bSignal["data"] = rules[i].bSignals[j].data;
-            bSignal["hash"] = rules[i].bSignals[j].hash;
-            bSignal["isProtocol"] = rules[i].bSignals[j].isProtocol;
-        }
-        
-        ruleObj["bSignalCount"] = rules[i].bSignalCount;
-        
-        JsonArray intervals = ruleObj.createNestedArray("intervals");
-        for (int j = 0; j < rules[i].bSignalCount - 1; j++) {
-            intervals.add(rules[i].intervals[j]);
-        }
-        
-        ruleObj["repeatCount"] = rules[i].repeatCount;
+        ruleToJsonObject(rules[i], ruleObj, true);  // true表示使用hex格式
     }
     
     serializeJson(doc, json);
