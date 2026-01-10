@@ -221,34 +221,8 @@ bool IRMapper::saveToFlash() {
         if (!rules[i].valid) continue;
         
         JsonObject ruleObj = rulesArray.createNestedObject();
-        ruleObj["id"] = rules[i].id;
-        
-        // A信号
-        JsonObject aSignal = ruleObj.createNestedObject("aSignal");
-        aSignal["protocol"] = rules[i].aSignal.protocol;
-        aSignal["data"] = rules[i].aSignal.data;
-        aSignal["hash"] = rules[i].aSignal.hash;
-        aSignal["isProtocol"] = rules[i].aSignal.isProtocol;
-        
-        // B信号序列
-        JsonArray bSignals = ruleObj.createNestedArray("bSignals");
-        for (int j = 0; j < rules[i].bSignalCount; j++) {
-            JsonObject bSignal = bSignals.createNestedObject();
-            bSignal["protocol"] = rules[i].bSignals[j].protocol;
-            bSignal["data"] = rules[i].bSignals[j].data;
-            bSignal["hash"] = rules[i].bSignals[j].hash;
-            bSignal["isProtocol"] = rules[i].bSignals[j].isProtocol;
-        }
-        
-        ruleObj["bSignalCount"] = rules[i].bSignalCount;
-        
-        // 间隔
-        JsonArray intervals = ruleObj.createNestedArray("intervals");
-        for (int j = 0; j < rules[i].bSignalCount - 1; j++) {
-            intervals.add(rules[i].intervals[j]);
-        }
-        
-        ruleObj["repeatCount"] = rules[i].repeatCount;
+        // 使用统一方法，设置hexFormat=true，统一使用十六进制格式
+        ruleToJsonObject(rules[i], ruleObj, true);
     }
     
     String output;
@@ -258,8 +232,16 @@ bool IRMapper::saveToFlash() {
 
 bool IRMapper::loadFromFlash() {
     String content = Storage::readFile(CONFIG_FILE_MAPS);
+    
+    // 情况1：文件不存在，创建空数组文件
     if (content.length() == 0) {
-        return true;  // 文件不存在，返回成功（空映射表）
+        Serial.println("[IRMapper] Maps文件不存在，创建空文件");
+        if (Storage::saveFile(CONFIG_FILE_MAPS, "[]")) {
+            ruleCount = 0;
+            nextId = 1;
+            return true;
+        }
+        return false;
     }
     
     // 动态计算JSON大小：文件大小加上解析开销
@@ -267,54 +249,53 @@ bool IRMapper::loadFromFlash() {
     if (jsonSize < 4096) jsonSize = 4096;
     DynamicJsonDocument doc(jsonSize);
     DeserializationError error = deserializeJson(doc, content);
+    
+    // 情况2：JSON解析失败（可能是旧格式或损坏）
     if (error) {
+        Serial.println("[IRMapper] Maps文件格式错误，重置为空文件");
+        if (Storage::saveFile(CONFIG_FILE_MAPS, "[]")) {
+            ruleCount = 0;
+            nextId = 1;
+            return true;
+        }
         return false;
     }
     
     JsonArray rulesArray = doc.as<JsonArray>();
     ruleCount = 0;
     nextId = 1;
+    bool hasValidRules = false;
+    int originalRuleCount = rulesArray.size();
     
+    // 尝试加载规则
     for (JsonObject ruleObj : rulesArray) {
         if (ruleCount >= MAX_MAP_RULES) break;
         
         IR_MapRule& rule = rules[ruleCount];
+        // 使用统一方法解析（仅支持十六进制字符串格式）
+        if (!jsonObjectToRule(ruleObj, rule)) {
+            // 解析失败，可能是旧格式
+            continue;
+        }
+        
         rule.id = ruleObj["id"] | 0;
         if (rule.id >= nextId) {
             nextId = rule.id + 1;
         }
         
-        // A信号
-        JsonObject aSignal = ruleObj["aSignal"];
-        rule.aSignal.protocol = aSignal["protocol"] | 0;
-        rule.aSignal.data = aSignal["data"] | 0;
-        rule.aSignal.hash = aSignal["hash"] | 0;
-        rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
-        
-        // B信号序列
-        JsonArray bSignals = ruleObj["bSignals"];
-        rule.bSignalCount = 0;
-        for (JsonObject bSignal : bSignals) {
-            if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
-            
-            rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
-            rule.bSignals[rule.bSignalCount].data = bSignal["data"] | 0;
-            rule.bSignals[rule.bSignalCount].hash = bSignal["hash"] | 0;
-            rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
-            rule.bSignalCount++;
-        }
-        
-        // 间隔
-        JsonArray intervals = ruleObj["intervals"];
-        int intervalCount = 0;
-        for (uint16_t interval : intervals) {
-            if (intervalCount >= MAX_B_SIGNALS_PER_RULE - 1) break;
-            rule.intervals[intervalCount++] = interval;
-        }
-        
-        rule.repeatCount = ruleObj["repeatCount"] | 1;
-        rule.valid = true;
         ruleCount++;
+        hasValidRules = true;
+    }
+    
+    // 情况3：文件存在但所有规则都是旧格式（解析失败）
+    if (!hasValidRules && originalRuleCount > 0) {
+        Serial.println("[IRMapper] 检测到旧格式数据，重置为空文件");
+        if (Storage::saveFile(CONFIG_FILE_MAPS, "[]")) {
+            ruleCount = 0;
+            nextId = 1;
+            return true;
+        }
+        return false;
     }
     
     return true;
@@ -381,36 +362,12 @@ bool IRMapper::importFromJSON(const String& json) {
         if (ruleCount >= MAX_MAP_RULES) break;
         
         IR_MapRule rule;
+        // 使用统一方法解析（仅支持十六进制字符串格式）
+        if (!jsonObjectToRule(ruleObj, rule)) {
+            continue;  // 解析失败，跳过这条规则
+        }
+        
         rule.id = ruleObj["id"] | 0;
-        
-        JsonObject aSignal = ruleObj["aSignal"];
-        rule.aSignal.protocol = aSignal["protocol"] | 0;
-        rule.aSignal.data = aSignal["data"] | 0;
-        rule.aSignal.hash = aSignal["hash"] | 0;
-        rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
-        
-        JsonArray bSignals = ruleObj["bSignals"];
-        rule.bSignalCount = 0;
-        for (JsonObject bSignal : bSignals) {
-            if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
-            
-            rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
-            rule.bSignals[rule.bSignalCount].data = bSignal["data"] | 0;
-            rule.bSignals[rule.bSignalCount].hash = bSignal["hash"] | 0;
-            rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
-            rule.bSignalCount++;
-        }
-        
-        JsonArray intervals = ruleObj["intervals"];
-        int intervalCount = 0;
-        for (uint16_t interval : intervals) {
-            if (intervalCount >= MAX_B_SIGNALS_PER_RULE - 1) break;
-            rule.intervals[intervalCount++] = interval;
-        }
-        
-        rule.repeatCount = ruleObj["repeatCount"] | 1;
-        rule.valid = true;
-        
         rules[ruleCount++] = rule;
         if (rule.id >= nextId) {
             nextId = rule.id + 1;
@@ -518,15 +475,16 @@ bool IRMapper::jsonObjectToRule(JsonObject& obj, IR_MapRule& rule) {
         return false;
     }
     rule.aSignal.protocol = aSignal["protocol"] | 0;
+    // 仅支持十六进制字符串格式
     if (aSignal["data"].is<const char*>()) {
         rule.aSignal.data = parseUint32FromHexString(aSignal["data"].as<const char*>());
     } else {
-        rule.aSignal.data = aSignal["data"] | 0;
+        return false;  // 不支持数字格式
     }
     if (aSignal["hash"].is<const char*>()) {
         rule.aSignal.hash = parseUint32FromHexString(aSignal["hash"].as<const char*>());
     } else {
-        rule.aSignal.hash = aSignal["hash"] | 0;
+        return false;  // 不支持数字格式
     }
     rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
     
@@ -537,15 +495,16 @@ bool IRMapper::jsonObjectToRule(JsonObject& obj, IR_MapRule& rule) {
         if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
         
         rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
+        // 仅支持十六进制字符串格式
         if (bSignal["data"].is<const char*>()) {
             rule.bSignals[rule.bSignalCount].data = parseUint32FromHexString(bSignal["data"].as<const char*>());
         } else {
-            rule.bSignals[rule.bSignalCount].data = bSignal["data"] | 0;
+            return false;  // 不支持数字格式
         }
         if (bSignal["hash"].is<const char*>()) {
             rule.bSignals[rule.bSignalCount].hash = parseUint32FromHexString(bSignal["hash"].as<const char*>());
         } else {
-            rule.bSignals[rule.bSignalCount].hash = bSignal["hash"] | 0;
+            return false;  // 不支持数字格式
         }
         rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
         rule.bSignalCount++;
