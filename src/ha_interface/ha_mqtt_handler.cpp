@@ -1,6 +1,9 @@
 #include "ha_mqtt_handler.h"
 #include "ir_core/ir_learner.h"
 #include "utils/hex_utils.h"
+#include "utils/memory_monitor.h"
+#include "utils/api_response.h"
+#include "config/constants.h"
 #include <ArduinoJson.h>
 
 HAMQTTHandler* HAMQTTHandler::instance = nullptr;
@@ -30,35 +33,27 @@ void HAMQTTHandler::update() {
     if (isConnected && !wasConnected) {
         // 刚连接成功，订阅命令主题和 SmartIR 主题
         // 检查内存后再操作
-        if (ESP.getFreeHeap() >= 2048) {
-            Serial.println("[HA MQTT] MQTT 已连接，订阅命令主题...");
+        if (MemoryMonitor::checkMemory(2048)) {
+            DEBUG_PRINTLN("[HA MQTT] MQTT 已连接，订阅命令主题...");
             if (mqtt.subscribe(MQTT_TOPIC_COMMAND)) {
-                Serial.println("[HA MQTT] ✓ 已订阅: " + String(MQTT_TOPIC_COMMAND));
+                DEBUG_PRINTLN("[HA MQTT] ✓ 已订阅命令主题");
             } else {
-                Serial.println("[HA MQTT] ✗ 订阅失败: " + String(MQTT_TOPIC_COMMAND));
+                DEBUG_PRINTLN("[HA MQTT] ✗ 订阅失败");
             }
             
             // 订阅 SmartIR 主题（直接接收 Base64 字符串）
-            Serial.println("[HA MQTT] 订阅 SmartIR 主题...");
-            if (mqtt.subscribe("smartir/climate/+/send")) {
-                Serial.println("[HA MQTT] ✓ 已订阅: smartir/climate/+/send");
-            }
-            if (mqtt.subscribe("smartir/media_player/+/send")) {
-                Serial.println("[HA MQTT] ✓ 已订阅: smartir/media_player/+/send");
-            }
-            if (mqtt.subscribe("smartir/fan/+/send")) {
-                Serial.println("[HA MQTT] ✓ 已订阅: smartir/fan/+/send");
-            }
-            if (mqtt.subscribe("smartir/light/+/send")) {
-                Serial.println("[HA MQTT] ✓ 已订阅: smartir/light/+/send");
-            }
+            DEBUG_PRINTLN("[HA MQTT] 订阅 SmartIR 主题...");
+            mqtt.subscribe("smartir/climate/+/send");
+            mqtt.subscribe("smartir/media_player/+/send");
+            mqtt.subscribe("smartir/fan/+/send");
+            mqtt.subscribe("smartir/light/+/send");
         } else {
-            Serial.printf("[HA MQTT] 内存不足，跳过订阅 (空闲: %d bytes)\n", ESP.getFreeHeap());
+            DEBUG_PRINTF("[HA MQTT] 内存不足，跳过订阅 (空闲: %d bytes)\n", ESP.getFreeHeap());
         }
         wasConnected = true;
     } else if (!isConnected && wasConnected) {
         // 连接断开
-        Serial.println("[HA MQTT] MQTT 连接已断开");
+        DEBUG_PRINTLN("[HA MQTT] MQTT 连接已断开");
         wasConnected = false;
         discoveryPublished = false;
         lastDiscoveryAttempt = 0;
@@ -135,19 +130,19 @@ void HAMQTTHandler::publishDiscoveryConfig() {
     if (discoveryPublished) return;
     
     if (!mqtt.isConnected()) {
-        Serial.println("[HA Discovery] MQTT 未连接，无法发布 Discovery 配置");
+        DEBUG_PRINTLN("[HA Discovery] MQTT 未连接，无法发布 Discovery 配置");
         return;
     }
     
     // 检查可用内存，如果内存不足则跳过发布
     size_t freeHeap = ESP.getFreeHeap();
     if (freeHeap < 4096) {  // 至少需要4KB空闲内存
-        Serial.printf("[HA Discovery] 内存不足，跳过发布 (空闲: %d bytes)\n", freeHeap);
+        DEBUG_PRINTF("[HA Discovery] 内存不足，跳过发布 (空闲: %d bytes)\n", freeHeap);
         return;
     }
     
-    Serial.println("[HA Discovery] 开始发布 Home Assistant Discovery 配置...");
-    Serial.printf("[HA Discovery] MQTT 缓冲区大小: %d bytes, 空闲内存: %d bytes\n", 
+    DEBUG_PRINTLN("[HA Discovery] 开始发布 Home Assistant Discovery 配置...");
+    DEBUG_PRINTF("[HA Discovery] MQTT 缓冲区大小: %d bytes, 空闲内存: %d bytes\n", 
                   MQTT_BUFFER_SIZE, freeHeap);
     
     // 使用const char*避免不必要的String对象创建
@@ -189,14 +184,11 @@ void HAMQTTHandler::publishDiscoveryConfig() {
                  MQTT_DISCOVERY_PREFIX, deviceId);
         String statusPayload;
         serializeJson(statusConfig, statusPayload);
-        Serial.printf("[HA Discovery] 二进制传感器消息大小: %d bytes (主题: %d bytes)\n", 
-                      statusPayload.length(), strlen(statusTopic));
+        DEBUG_PRINTF("[HA Discovery] 二进制传感器消息大小: %d bytes\n", statusPayload.length());
         if (mqtt.publish(statusTopic, statusPayload, true)) {
-            Serial.printf("[HA Discovery] ✓ 二进制传感器配置已发布: %s\n", statusTopic);
+            DEBUG_PRINTLN("[HA Discovery] ✓ 二进制传感器配置已发布");
         } else {
-            Serial.printf("[HA Discovery] ✗ 二进制传感器配置发布失败: %s\n", statusTopic);
-            Serial.printf("[HA Discovery] 总消息大小: %d bytes (可能超过缓冲区限制)\n", 
-                          strlen(statusTopic) + statusPayload.length());
+            DEBUG_PRINTLN("[HA Discovery] ✗ 二进制传感器配置发布失败");
             allPublished = false;
         }
     }  // statusConfig在这里销毁，释放内存
@@ -231,14 +223,11 @@ void HAMQTTHandler::publishDiscoveryConfig() {
                  MQTT_DISCOVERY_PREFIX, deviceId);
         String statePayload;
         serializeJson(stateConfig, statePayload);
-        Serial.printf("[HA Discovery] 传感器消息大小: %d bytes (主题: %d bytes)\n", 
-                      statePayload.length(), strlen(stateTopic));
+        DEBUG_PRINTF("[HA Discovery] 传感器消息大小: %d bytes\n", statePayload.length());
         if (mqtt.publish(stateTopic, statePayload, true)) {
-            Serial.printf("[HA Discovery] ✓ 传感器配置已发布: %s\n", stateTopic);
+            DEBUG_PRINTLN("[HA Discovery] ✓ 传感器配置已发布");
         } else {
-            Serial.printf("[HA Discovery] ✗ 传感器配置发布失败: %s\n", stateTopic);
-            Serial.printf("[HA Discovery] 总消息大小: %d bytes (可能超过缓冲区限制)\n", 
-                          strlen(stateTopic) + statePayload.length());
+            DEBUG_PRINTLN("[HA Discovery] ✗ 传感器配置发布失败");
             allPublished = false;
         }
     }  // stateConfig在这里销毁，释放内存
@@ -246,7 +235,7 @@ void HAMQTTHandler::publishDiscoveryConfig() {
     // 检查内存，如果不足则跳过后续发布
     freeHeap = ESP.getFreeHeap();
     if (freeHeap < 2048) {
-        Serial.printf("[HA Discovery] 内存不足，跳过后续发布 (空闲: %d bytes)\n", freeHeap);
+        DEBUG_PRINTF("[HA Discovery] 内存不足，跳过后续发布 (空闲: %d bytes)\n", freeHeap);
         if (allPublished) {
             discoveryPublished = true;
         }
@@ -270,39 +259,36 @@ void HAMQTTHandler::publishDiscoveryConfig() {
                  MQTT_DISCOVERY_PREFIX, deviceId);
         String logPayload;
         serializeJson(logConfig, logPayload);
-        Serial.printf("[HA Discovery] 日志传感器消息大小: %d bytes (主题: %d bytes)\n", 
-                      logPayload.length(), strlen(logTopic));
+        DEBUG_PRINTF("[HA Discovery] 日志传感器消息大小: %d bytes\n", logPayload.length());
         if (mqtt.publish(logTopic, logPayload, true)) {
-            Serial.printf("[HA Discovery] ✓ 日志传感器配置已发布: %s\n", logTopic);
+            DEBUG_PRINTLN("[HA Discovery] ✓ 日志传感器配置已发布");
         } else {
-            Serial.printf("[HA Discovery] ✗ 日志传感器配置发布失败: %s\n", logTopic);
-            Serial.printf("[HA Discovery] 总消息大小: %d bytes (可能超过缓冲区限制)\n", 
-                          strlen(logTopic) + logPayload.length());
+            DEBUG_PRINTLN("[HA Discovery] ✗ 日志传感器配置发布失败");
             allPublished = false;
         }
     }  // logConfig在这里销毁，释放内存
     
     if (allPublished) {
         discoveryPublished = true;
-        Serial.println("[HA Discovery] ✓ 所有 Discovery 配置已成功发布");
+        DEBUG_PRINTLN("[HA Discovery] ✓ 所有 Discovery 配置已成功发布");
         logger.log("mqtt", "Home Assistant Discovery 配置已发布");
         
         // 发布初始状态（检查内存）
-        if (ESP.getFreeHeap() >= 1024) {
+        if (MemoryMonitor::checkMemory(1024)) {
             char statusTopic[128];
             snprintf(statusTopic, sizeof(statusTopic), "%s/status", MQTT_TOPIC_STATE);
             mqtt.publish(statusTopic, "online", true);
             publishState("ready", "设备已就绪");
         }
     } else {
-        Serial.println("[HA Discovery] ✗ 部分配置发布失败，将在下次重试");
+        DEBUG_PRINTLN("[HA Discovery] ✗ 部分配置发布失败，将在下次重试");
     }
 }
 
 void HAMQTTHandler::processCommand(const String& payload) {
-    // 内存保护：检查可用内存
-    if (ESP.getFreeHeap() < 2048) {
-        Serial.println("[HA MQTT] 内存不足，跳过命令处理");
+    // 使用统一的内存检查
+    if (!MemoryMonitor::checkMemory(2048)) {
+        DEBUG_PRINTLN("[HA MQTT] 内存不足，跳过命令处理");
         return;
     }
     
@@ -350,62 +336,25 @@ void HAMQTTHandler::processCommand(const String& payload) {
 }
 
 void HAMQTTHandler::handleQueryMaps() {
-    // 内存保护：检查可用内存
-    if (ESP.getFreeHeap() < 2048) {
+    // 使用统一的内存检查
+    int count = mapper.getRuleCount();
+    size_t jsonSize = MemoryMonitor::calculateRulesJsonSize(count);
+    
+    if (!MemoryMonitor::checkMemory(jsonSize + 1024)) {
         publishState("error", "Low Memory");
         return;
     }
     
     IR_MapRule rules[MAX_MAP_RULES];
-    int count = mapper.getRuleCount();
     mapper.getAllRules(rules, count);
-    
-    // 优化：更精确的JSON大小计算
-    size_t jsonSize = 256; // 基础开销
-    for (int i = 0; i < count; i++) {
-        jsonSize += 120; // 规则基础开销
-        jsonSize += rules[i].bSignalCount * 40;
-        jsonSize += (rules[i].bSignalCount > 0 ? rules[i].bSignalCount - 1 : 0) * 4;
-    }
-    if (jsonSize > 8192) jsonSize = 8192; // 限制最大8KB
-    if (jsonSize < 512) jsonSize = 512;
-    
-    // 检查是否有足够内存
-    if (ESP.getFreeHeap() < jsonSize + 1024) {
-        publishState("error", "Insufficient Memory");
-        return;
-    }
     
     DynamicJsonDocument doc(jsonSize);
     JsonArray rulesArray = doc.to<JsonArray>();
     
+    // 使用统一的转换方法
     for (int i = 0; i < count; i++) {
         JsonObject ruleObj = rulesArray.createNestedObject();
-        ruleObj["id"] = rules[i].id;
-        
-        JsonObject aSignal = ruleObj.createNestedObject("aSignal");
-        aSignal["protocol"] = rules[i].aSignal.protocol;
-        aSignal["data"] = uint32ToHexString(rules[i].aSignal.data);
-        aSignal["hash"] = uint32ToHexString(rules[i].aSignal.hash);
-        aSignal["isProtocol"] = rules[i].aSignal.isProtocol;
-        
-        JsonArray bSignals = ruleObj.createNestedArray("bSignals");
-        for (int j = 0; j < rules[i].bSignalCount; j++) {
-            JsonObject bSignal = bSignals.createNestedObject();
-            bSignal["protocol"] = rules[i].bSignals[j].protocol;
-            bSignal["data"] = uint32ToHexString(rules[i].bSignals[j].data);
-            bSignal["hash"] = uint32ToHexString(rules[i].bSignals[j].hash);
-            bSignal["isProtocol"] = rules[i].bSignals[j].isProtocol;
-        }
-        
-        ruleObj["bSignalCount"] = rules[i].bSignalCount;
-        
-        JsonArray intervals = ruleObj.createNestedArray("intervals");
-        for (int j = 0; j < rules[i].bSignalCount - 1; j++) {
-            intervals.add(rules[i].intervals[j]);
-        }
-        
-        ruleObj["repeatCount"] = rules[i].repeatCount;
+        IRMapper::ruleToJsonObject(rules[i], ruleObj, true);  // true表示使用hex格式
     }
     
     String output;
@@ -414,16 +363,15 @@ void HAMQTTHandler::handleQueryMaps() {
 }
 
 void HAMQTTHandler::handleUpdateMap(const String& json) {
-    // 内存保护：检查可用内存（批量更新需要更多内存）
-    if (ESP.getFreeHeap() < 4096) {
+    // 使用统一的内存检查
+    size_t jsonSize = json.length() + 1024;
+    if (jsonSize > 6144) jsonSize = 6144;
+    if (jsonSize < 512) jsonSize = 512;
+    
+    if (!MemoryMonitor::checkMemory(jsonSize + 2048)) {
         publishState("error", "Low Memory");
         return;
     }
-    
-    // 优化：根据json长度动态计算JSON大小
-    size_t jsonSize = json.length() + 1024;
-    if (jsonSize > 6144) jsonSize = 6144; // 限制最大6KB
-    if (jsonSize < 512) jsonSize = 512;
     
     DynamicJsonDocument doc(jsonSize);
     DeserializationError error = deserializeJson(doc, json);
@@ -446,67 +394,20 @@ void HAMQTTHandler::handleUpdateMap(const String& json) {
             mapper.deleteRule(rules[i].id);
         }
         
-        // 添加新规则
+        // 添加新规则（使用统一的转换方法）
         int successCount = 0;
         for (JsonObject ruleObj : rulesArray) {
             IR_MapRule rule;
-            
-            JsonObject aSignal = ruleObj["aSignal"];
-            rule.aSignal.protocol = aSignal["protocol"] | 0;
-            if (aSignal["data"].is<const char*>()) {
-                rule.aSignal.data = parseUint32FromHexString(aSignal["data"].as<const char*>());
-            } else {
-                rule.aSignal.data = 0;
-            }
-            if (aSignal["hash"].is<const char*>()) {
-                rule.aSignal.hash = parseUint32FromHexString(aSignal["hash"].as<const char*>());
-            } else {
-                rule.aSignal.hash = 0;
-            }
-            rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
-            
-            JsonArray bSignals = ruleObj["bSignals"];
-            rule.bSignalCount = 0;
-            for (JsonObject bSignal : bSignals) {
-                if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
-                
-                rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
-                if (bSignal["data"].is<const char*>()) {
-                    rule.bSignals[rule.bSignalCount].data = parseUint32FromHexString(bSignal["data"].as<const char*>());
-                } else {
-                    rule.bSignals[rule.bSignalCount].data = 0;
+            if (IRMapper::jsonObjectToRule(ruleObj, rule)) {
+                if (mapper.addRule(rule)) {
+                    successCount++;
                 }
-                if (bSignal["hash"].is<const char*>()) {
-                    rule.bSignals[rule.bSignalCount].hash = parseUint32FromHexString(bSignal["hash"].as<const char*>());
-                } else {
-                    rule.bSignals[rule.bSignalCount].hash = 0;
-                }
-                rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
-                rule.bSignalCount++;
-            }
-            
-            JsonArray intervals = ruleObj["intervals"];
-            int intervalCount = 0;
-            for (uint16_t interval : intervals) {
-                if (intervalCount >= MAX_B_SIGNALS_PER_RULE - 1) break;
-                rule.intervals[intervalCount++] = interval;
-            }
-            
-            rule.repeatCount = ruleObj["repeatCount"] | 1;
-            rule.valid = true;
-            
-            if (mapper.addRule(rule)) {
-                successCount++;
             }
         }
         
-        DynamicJsonDocument response(256);
-        response["success"] = true;
-        response["message"] = "Rules updated";
-        response["count"] = successCount;
-        String output;
-        serializeJson(response, output);
-        publishState("success", output);
+        char responseMsg[64];
+        snprintf(responseMsg, sizeof(responseMsg), "Rules updated, count: %d", successCount);
+        publishState("success", responseMsg);
     } else {
         // 单个更新（保持向后兼容）
         uint8_t id = doc["id"] | 0;
@@ -522,85 +423,30 @@ void HAMQTTHandler::handleUpdateMap(const String& json) {
         }
         
         IR_MapRule rule;
-        
-        JsonObject aSignal = ruleObj["aSignal"];
-        rule.aSignal.protocol = aSignal["protocol"] | 0;
-        if (aSignal["data"].is<const char*>()) {
-            rule.aSignal.data = parseUint32FromHexString(aSignal["data"].as<const char*>());
-        } else {
-            rule.aSignal.data = 0;
-        }
-        if (aSignal["hash"].is<const char*>()) {
-            rule.aSignal.hash = parseUint32FromHexString(aSignal["hash"].as<const char*>());
-        } else {
-            rule.aSignal.hash = 0;
-        }
-        rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
-        
-        JsonArray bSignals = ruleObj["bSignals"];
-        rule.bSignalCount = 0;
-        for (JsonObject bSignal : bSignals) {
-            if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
-            
-            rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
-            if (bSignal["data"].is<const char*>()) {
-                rule.bSignals[rule.bSignalCount].data = parseUint32FromHexString(bSignal["data"].as<const char*>());
+        if (IRMapper::jsonObjectToRule(ruleObj, rule)) {
+            if (mapper.updateRule(id, rule)) {
+                publishState("success", "Rule updated");
             } else {
-                rule.bSignals[rule.bSignalCount].data = 0;
+                publishState("error", "Failed to update rule");
             }
-            if (bSignal["hash"].is<const char*>()) {
-                rule.bSignals[rule.bSignalCount].hash = parseUint32FromHexString(bSignal["hash"].as<const char*>());
-            } else {
-                rule.bSignals[rule.bSignalCount].hash = 0;
-            }
-            rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
-            rule.bSignalCount++;
-        }
-        
-        JsonArray intervals = ruleObj["intervals"];
-        int intervalCount = 0;
-        for (uint16_t interval : intervals) {
-            if (intervalCount >= MAX_B_SIGNALS_PER_RULE - 1) break;
-            rule.intervals[intervalCount++] = interval;
-        }
-        
-        rule.repeatCount = ruleObj["repeatCount"] | 1;
-        rule.valid = true;
-        
-        if (mapper.updateRule(id, rule)) {
-            publishState("success", "Rule updated");
         } else {
-            publishState("error", "Failed to update rule");
+            publishState("error", "Invalid rule format");
         }
     }
 }
 
 void HAMQTTHandler::handleGetLogs() {
-    // 内存保护：检查可用内存
-    if (ESP.getFreeHeap() < 1536) {
+    // 使用统一的内存检查和JSON大小计算
+    int count = logger.getLogCount();
+    size_t jsonSize = MemoryMonitor::calculateLogsJsonSize(count);
+    
+    if (!MemoryMonitor::checkMemory(jsonSize + 1024)) {
         publishState("error", "Low Memory");
         return;
     }
     
     LogEntry entries[MAX_LOG_ENTRIES];
-    int count = logger.getLogCount();
     logger.getLogs(entries, count);
-    
-    // 优化：更精确的JSON大小计算
-    size_t jsonSize = 256;
-    for (int i = 0; i < count; i++) {
-        jsonSize += 108;
-        jsonSize += strlen(entries[i].type);
-        jsonSize += strlen(entries[i].content);
-    }
-    if (jsonSize > 4096) jsonSize = 4096;
-    if (jsonSize < 512) jsonSize = 512;
-    
-    // 检查是否有足够内存
-    if (ESP.getFreeHeap() < jsonSize + 1024) {
-        publishState("error", "Insufficient Memory");
-        return;
-    }
     
     DynamicJsonDocument doc(jsonSize);
     JsonArray logArray = doc.to<JsonArray>();
@@ -623,8 +469,8 @@ void HAMQTTHandler::handleStartLearn(const String& json) {
         return;
     }
     
-    // 内存保护：检查可用内存
-    if (ESP.getFreeHeap() < 2048) {
+    // 使用统一的内存检查
+    if (!MemoryMonitor::checkMemory(2048)) {
         publishState("error", "Low Memory");
         return;
     }
@@ -702,8 +548,8 @@ void HAMQTTHandler::handleQueryLearnStatus(const String& json) {
         return;
     }
     
-    // 内存保护：检查可用内存（提高阈值，因为需要创建JSON和String对象）
-    if (ESP.getFreeHeap() < 3072) {
+    // 使用统一的内存检查
+    if (!MemoryMonitor::checkMemory(3072)) {
         publishState("error", "Low Memory");
         return;
     }
@@ -783,9 +629,8 @@ void HAMQTTHandler::handleQueryLearnResult(const String& json) {
         return;
     }
     
-    // 首先检查内存，确保有足够空间（至少需要6KB）
-    size_t freeHeap = ESP.getFreeHeap();
-    if (freeHeap < 6144) {
+    // 使用统一的内存检查
+    if (!MemoryMonitor::checkMemory(6144)) {
         publishState("error", "Low Memory");
         return;
     }
@@ -834,7 +679,7 @@ void HAMQTTHandler::handleGetRecentSignals(const String& json) {
 }
 
 void HAMQTTHandler::handleSendSignal(const String& payload) {
-    if (ESP.getFreeHeap() < 2048) {
+    if (!MemoryMonitor::checkMemory(2048)) {
         publishState("error", "Low Memory");
         return;
     }
@@ -847,75 +692,11 @@ void HAMQTTHandler::handleSendSignal(const String& payload) {
         return;
     }
     
-    // 检测格式：如果是JSON格式（SignalID对象），按JSON解析；否则按字符串格式解析
-    IRLearner::SignalFormat format = IRLearner::detectSignalFormat(trimmed);
-    
-    if (format == IRLearner::FORMAT_SIGNALID) {
-        // SignalID对象格式（JSON）
-        size_t jsonSize = trimmed.length() + 256;
-        if (jsonSize > 1024) jsonSize = 1024;
-        if (jsonSize < 256) jsonSize = 256;
-        
-        DynamicJsonDocument doc(jsonSize);
-        DeserializationError error = deserializeJson(doc, trimmed);
-        
-        if (error) {
-            publishState("error", "Invalid JSON");
-            return;
-        }
-        
-        JsonObject signalObj = doc["signal"];
-        if (signalObj.isNull()) {
-            publishState("error", "Missing 'signal' field");
-            return;
-        }
-        
-        uint8_t repeatCount = doc["repeatCount"] | 1;
-        
-        SignalID signal;
-        signal.protocol = signalObj["protocol"] | 0;
-        if (signalObj["data"].is<const char*>()) {
-            signal.data = parseUint32FromHexString(signalObj["data"].as<const char*>());
-        } else {
-            signal.data = 0;
-        }
-        if (signalObj["hash"].is<const char*>()) {
-            signal.hash = parseUint32FromHexString(signalObj["hash"].as<const char*>());
-        } else {
-            signal.hash = 0;
-        }
-        signal.isProtocol = signalObj["isProtocol"] | false;
-        
-        if (forwarder.sendSignal(signal, repeatCount)) {
-            publishState("executing", "Signal sent");
-        } else {
-            publishState("error", "Failed to send signal");
-        }
+    // 使用统一的解析和发送方法
+    if (forwarder.parseAndSendSignal(trimmed)) {
+        publishState("executing", "Signal sent");
     } else {
-        // 字符串格式（Base64/数组/协议），使用统一解析函数
-        SignalID signalId;
-        static IRTiming timing[MAX_LEARN_TIMING_COUNT];
-        int timingCount = 0;
-        uint8_t repeatCount = 1;
-        
-        if (!IRLearner::parseSignalPayload(trimmed, signalId, timing, timingCount, MAX_LEARN_TIMING_COUNT, repeatCount, format)) {
-            publishState("error", "Failed to parse signal");
-            return;
-        }
-        
-        // 根据格式发送信号
-        bool success = false;
-        if (format == IRLearner::FORMAT_PROTOCOL) {
-            success = forwarder.sendSignal(signalId, repeatCount);
-        } else {
-            success = forwarder.sendRawTiming(timing, timingCount, repeatCount);
-        }
-        
-        if (success) {
-            publishState("executing", "Signal sent");
-        } else {
-            publishState("error", "Failed to send signal");
-        }
+        publishState("error", "Failed to send signal");
     }
 }
 
@@ -941,54 +722,29 @@ void HAMQTTHandler::handleSetForwardingEnabled(const String& json) {
 
 void HAMQTTHandler::handleSmartIRSignal(const String& payload) {
     // SmartIR 发送的格式（纯字符串）：Base64、数组、协议格式
-    if (ESP.getFreeHeap() < 2048) {
-        Serial.println("[SmartIR] 内存不足，跳过信号处理");
+    if (!MemoryMonitor::checkMemory(2048)) {
+        DEBUG_PRINTLN("[SmartIR] 内存不足，跳过信号处理");
         return;
     }
     
     if (payload.length() == 0) {
-        Serial.println("[SmartIR] 收到空的 payload");
+        DEBUG_PRINTLN("[SmartIR] 收到空的 payload");
         return;
     }
     
-    Serial.printf("[SmartIR] 收到信号，长度: %d bytes\n", payload.length());
+    DEBUG_PRINTF("[SmartIR] 收到信号，长度: %d bytes\n", payload.length());
     
-    // 使用统一解析函数
-    SignalID signalId;
-    static IRTiming timing[MAX_LEARN_TIMING_COUNT];
-    int timingCount = 0;
-    uint8_t repeatCount = 1;
-    IRLearner::SignalFormat format;
-    
-    if (!IRLearner::parseSignalPayload(payload, signalId, timing, timingCount, MAX_LEARN_TIMING_COUNT, repeatCount, format)) {
-        Serial.println("[SmartIR] 信号解析失败");
-        return;
-    }
-    
-    // 根据格式发送信号
-    bool success = false;
-    if (format == IRLearner::FORMAT_PROTOCOL) {
-        // 协议格式
-        Serial.printf("[SmartIR] 协议格式：protocol=%d, data=0x%X, repeat=%d\n", 
-                     signalId.protocol, signalId.data, repeatCount);
-        success = forwarder.sendSignal(signalId, repeatCount);
+    // 使用统一的解析和发送方法
+    if (forwarder.parseAndSendSignal(payload)) {
+        DEBUG_PRINTLN("[SmartIR] 信号发送成功");
     } else {
-        // Base64或数组格式
-        Serial.printf("[SmartIR] 时序格式：点数=%d, repeat=%d\n", timingCount, repeatCount);
-        success = forwarder.sendRawTiming(timing, timingCount, repeatCount);
-    }
-    
-    if (success) {
-        Serial.println("[SmartIR] 信号发送成功");
-    } else {
-        Serial.println("[SmartIR] 信号发送失败");
+        DEBUG_PRINTLN("[SmartIR] 信号发送失败");
     }
 }
 
 void HAMQTTHandler::publishEnhancedState() {
-    // 检查可用内存
-    size_t freeHeap = ESP.getFreeHeap();
-    if (freeHeap < 2048) {  // 至少需要2KB空闲内存
+    // 使用统一的内存检查
+    if (!MemoryMonitor::checkMemory(2048)) {
         return;  // 内存不足，跳过发布
     }
     
@@ -1031,7 +787,7 @@ void HAMQTTHandler::publishEnhancedState() {
     doc["rule_count"] = mapper.getRuleCount();
     
     // 最近接收的信号（只在内存充足时添加）
-    if (freeHeap >= 3072) {
+    if (MemoryMonitor::checkMemory(3072)) {
         RecentSignal signals[MAX_RECENT_SIGNALS];
         int signalCount = logger.getRecentSignals(signals, 1);  // 只获取最近1条
         if (signalCount > 0) {

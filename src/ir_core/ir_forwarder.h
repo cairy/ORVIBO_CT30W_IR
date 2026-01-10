@@ -22,6 +22,7 @@ public:
     bool isEnabled() const;          // 获取转发功能状态
     bool sendSignal(const SignalID& signal, uint8_t repeatCount = 1);  // 直接发送信号
     bool sendRawTiming(const IRTiming* timing, int count, uint8_t repeatCount = 1);  // 发送原始时序数据
+    bool parseAndSendSignal(const String& payload);  // 统一解析和发送信号（供API使用）
 
 private:
     IRMapper& mapper;

@@ -67,5 +67,18 @@
 #define CONFIG_FILE_MAPS "/ir_maps.json"
 #define LOG_FILE "/ir_logs.json"
 
+// 调试宏定义（注释掉以禁用调试输出）
+// #define DEBUG_ENABLED
+
+#ifdef DEBUG_ENABLED
+    #define DEBUG_PRINT(x) Serial.print(x)
+    #define DEBUG_PRINTLN(x) Serial.println(x)
+    #define DEBUG_PRINTF(...) Serial.printf(__VA_ARGS__)
+#else
+    #define DEBUG_PRINT(x)
+    #define DEBUG_PRINTLN(x)
+    #define DEBUG_PRINTF(...)
+#endif
+
 #endif // CONSTANTS_H
 

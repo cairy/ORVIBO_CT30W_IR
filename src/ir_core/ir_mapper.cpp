@@ -1,5 +1,6 @@
 #include "ir_mapper.h"
 #include <ArduinoJson.h>
+#include "utils/hex_utils.h"
 
 IRMapper::IRMapper() : ruleCount(0), nextId(1) {
     for (int i = 0; i < MAX_MAP_RULES; i++) {
@@ -465,3 +466,101 @@ uint32_t IRMapper::signalIdToKey(const SignalID& signalId) const {
     }
 }
 
+// 统一的规则转JSON方法
+void IRMapper::ruleToJsonObject(const IR_MapRule& rule, JsonObject& obj, bool hexFormat) {
+    obj["id"] = rule.id;
+    
+    // A信号
+    JsonObject aSignal = obj.createNestedObject("aSignal");
+    aSignal["protocol"] = rule.aSignal.protocol;
+    if (hexFormat) {
+        aSignal["data"] = uint32ToHexString(rule.aSignal.data);
+        aSignal["hash"] = uint32ToHexString(rule.aSignal.hash);
+    } else {
+        aSignal["data"] = rule.aSignal.data;
+        aSignal["hash"] = rule.aSignal.hash;
+    }
+    aSignal["isProtocol"] = rule.aSignal.isProtocol;
+    
+    // B信号序列
+    JsonArray bSignals = obj.createNestedArray("bSignals");
+    for (int j = 0; j < rule.bSignalCount; j++) {
+        JsonObject bSignal = bSignals.createNestedObject();
+        bSignal["protocol"] = rule.bSignals[j].protocol;
+        if (hexFormat) {
+            bSignal["data"] = uint32ToHexString(rule.bSignals[j].data);
+            bSignal["hash"] = uint32ToHexString(rule.bSignals[j].hash);
+        } else {
+            bSignal["data"] = rule.bSignals[j].data;
+            bSignal["hash"] = rule.bSignals[j].hash;
+        }
+        bSignal["isProtocol"] = rule.bSignals[j].isProtocol;
+    }
+    
+    obj["bSignalCount"] = rule.bSignalCount;
+    
+    // 间隔
+    JsonArray intervals = obj.createNestedArray("intervals");
+    for (int j = 0; j < rule.bSignalCount - 1; j++) {
+        intervals.add(rule.intervals[j]);
+    }
+    
+    obj["repeatCount"] = rule.repeatCount;
+}
+
+// 统一的JSON转规则方法
+bool IRMapper::jsonObjectToRule(JsonObject& obj, IR_MapRule& rule) {
+    rule.id = obj["id"] | 0;
+    
+    // A信号
+    JsonObject aSignal = obj["aSignal"];
+    if (aSignal.isNull()) {
+        return false;
+    }
+    rule.aSignal.protocol = aSignal["protocol"] | 0;
+    if (aSignal["data"].is<const char*>()) {
+        rule.aSignal.data = parseUint32FromHexString(aSignal["data"].as<const char*>());
+    } else {
+        rule.aSignal.data = aSignal["data"] | 0;
+    }
+    if (aSignal["hash"].is<const char*>()) {
+        rule.aSignal.hash = parseUint32FromHexString(aSignal["hash"].as<const char*>());
+    } else {
+        rule.aSignal.hash = aSignal["hash"] | 0;
+    }
+    rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
+    
+    // B信号序列
+    JsonArray bSignals = obj["bSignals"];
+    rule.bSignalCount = 0;
+    for (JsonObject bSignal : bSignals) {
+        if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
+        
+        rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
+        if (bSignal["data"].is<const char*>()) {
+            rule.bSignals[rule.bSignalCount].data = parseUint32FromHexString(bSignal["data"].as<const char*>());
+        } else {
+            rule.bSignals[rule.bSignalCount].data = bSignal["data"] | 0;
+        }
+        if (bSignal["hash"].is<const char*>()) {
+            rule.bSignals[rule.bSignalCount].hash = parseUint32FromHexString(bSignal["hash"].as<const char*>());
+        } else {
+            rule.bSignals[rule.bSignalCount].hash = bSignal["hash"] | 0;
+        }
+        rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
+        rule.bSignalCount++;
+    }
+    
+    // 间隔
+    JsonArray intervals = obj["intervals"];
+    int intervalCount = 0;
+    for (uint16_t interval : intervals) {
+        if (intervalCount >= MAX_B_SIGNALS_PER_RULE - 1) break;
+        rule.intervals[intervalCount++] = interval;
+    }
+    
+    rule.repeatCount = obj["repeatCount"] | 1;
+    rule.valid = true;
+    
+    return true;
+}

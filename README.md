@@ -226,7 +226,11 @@ GET http://设备IP/api/learn/result?format=array     # 数组格式
 
 **格式说明：**
 - **Base64格式**（默认）：输出SmartIR JSON配置文件格式，可直接复制到SmartIR JSON配置文件使用
-- **协议格式**（`format=signalid`）：如果信号解析成功，输出协议格式字符串（`protocol,data,repeatCount`），protocol是数字常量（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung）。如果解析失败，会回退到Base64格式
+- **协议格式**（`format=signalid`）：如果信号解析成功，输出协议格式字符串
+  - 有hash时输出5参数格式：`protocol,data,hash,isProtocol,repeatCount`
+  - 无hash时输出3参数格式：`protocol,data,repeatCount`（向后兼容）
+  - protocol是数字常量（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung，0表示非标准协议）
+  - 如果解析失败，会回退到Base64格式
 - **数组格式**（`format=array`）：输出数组格式字符串，兼容SmartIR JSON配置文件格式
 
 **重要**：
@@ -272,16 +276,20 @@ HTTP API和MQTT接口使用完全统一的格式，都直接接收字符串格�
 POST http://设备IP/api/signals/send
 Content-Type: text/plain
 
-Base64字符串
+Base64字符串|repeatCount
 ```
+- 格式：`Base64字符串|repeatCount`（`|repeatCount`可选，默认为1）
+- 示例：`"ABC123==|2"` 表示重复2次，`"ABC123=="` 表示重复1次
 
 **格式2：数组字符串**（纯字符串，Content-Type: text/plain）
 ```bash
 POST http://设备IP/api/signals/send
 Content-Type: text/plain
 
-[8991,-4546,553,-578,...]
+[8991,-4546,553,-578,...]|repeatCount
 ```
+- 格式：`[数组]|repeatCount`（`|repeatCount`可选，默认为1）
+- 示例：`"[8991,-4546]|3"` 表示重复3次，`"[8991,-4546]"` 表示重复1次
 
 **格式3：协议格式字符串**（纯字符串，Content-Type: text/plain）
 ```bash
@@ -290,10 +298,17 @@ Content-Type: text/plain
 
 1,0xFF00FF00,1
 ```
-- 格式：`protocol,data,repeatCount`
-- protocol：协议编号（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung）
-- data：协议数据（十六进制格式，如0xFF00FF00）
-- repeatCount：重复次数（默认1）
+- **2参数格式**（向后兼容）：`protocol,data`（repeatCount默认为1，hash默认为0）
+- **3参数格式**（向后兼容）：`protocol,data,repeatCount`（hash默认为0）
+- **5参数格式**（完整格式）：`protocol,data,hash,isProtocol,repeatCount`
+  - protocol：协议编号（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung，0表示非标准协议）
+  - data：协议数据（十六进制格式，如0xFF00FF00）
+  - hash：时序特征哈希（十六进制格式，如0x12345678，非标准协议时使用）
+  - isProtocol：是否为标准协议（true/false）
+  - repeatCount：重复次数（默认1）
+- 示例：
+  - 标准协议：`"1,0xFF00FF00,0x00000000,true,2"`
+  - 非标准协议：`"0,0x00000000,0x12345678,false,1"`
 
 **格式4：SignalID对象格式**（保留现有格式，Content-Type: application/json）
 ```bash
@@ -388,9 +403,12 @@ Content-Type: application/json
 - `smartir/light/+/send` - 灯光设备
 
 **支持的格式**：
-- Base64字符串：`Base64字符串`
-- 数组字符串：`[8991,-4546,553,-578,...]`
-- 协议格式字符串：`1,0xFF00FF00,1`（格式：`protocol,data,repeatCount`）
+- Base64字符串：`Base64字符串|repeatCount`（`|repeatCount`可选）
+- 数组字符串：`[8991,-4546,553,-578,...]|repeatCount`（`|repeatCount`可选）
+- 协议格式字符串：
+  - 2参数：`protocol,data`（向后兼容）
+  - 3参数：`protocol,data,repeatCount`（向后兼容）
+  - 5参数：`protocol,data,hash,isProtocol,repeatCount`（完整格式，支持hash）
 
 SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被设备自动解析和处理，无需任何转换。
 
@@ -637,10 +655,17 @@ Payload（数组字符串）：
 Payload（协议格式字符串）：
 1,0xFF00FF00,1
 ```
-- 格式：`protocol,data,repeatCount`
-- protocol：协议编号（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung）
-- data：协议数据（十六进制格式，如0xFF00FF00）
-- repeatCount：重复次数（默认1）
+- **2参数格式**（向后兼容）：`protocol,data`（repeatCount默认为1，hash默认为0）
+- **3参数格式**（向后兼容）：`protocol,data,repeatCount`（hash默认为0）
+- **5参数格式**（完整格式）：`protocol,data,hash,isProtocol,repeatCount`
+  - protocol：协议编号（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung，0表示非标准协议）
+  - data：协议数据（十六进制格式，如0xFF00FF00）
+  - hash：时序特征哈希（十六进制格式，如0x12345678，非标准协议时使用）
+  - isProtocol：是否为标准协议（true/false）
+  - repeatCount：重复次数（默认1）
+- 示例：
+  - 标准协议：`"1,0xFF00FF00,0x00000000,true,2"`
+  - 非标准协议：`"0,0x00000000,0x12345678,false,1"`
 
 **格式4：SignalID对象格式**（保留现有格式，JSON格式）
 ```json

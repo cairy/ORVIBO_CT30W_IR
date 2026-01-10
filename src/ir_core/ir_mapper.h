@@ -6,6 +6,9 @@
 #include "config/constants.h"
 #include "utils/storage.h"
 
+// 前向声明
+#include <ArduinoJson.h>
+
 // B信号定义
 struct BSignal {
     uint32_t protocol;
@@ -48,6 +51,12 @@ public:
     bool loadFromFlash();
     bool exportToJSON(String& json);
     bool importFromJSON(const String& json);
+    
+    // 统一的JSON转换方法（供API使用）
+    // 将规则转换为JSON对象（支持hex格式）
+    static void ruleToJsonObject(const IR_MapRule& rule, JsonObject& obj, bool hexFormat = false);
+    // 从JSON对象解析规则（支持hex格式）
+    static bool jsonObjectToRule(JsonObject& obj, IR_MapRule& rule);
 
 private:
     IR_MapRule rules[MAX_MAP_RULES];

@@ -37,6 +37,28 @@ public:
     
     // 获取内存使用信息字符串
     static String getMemoryInfoString();
+    
+    // 统一的内存检查函数
+    // requiredBytes: 所需的最小连续内存块大小（字节）
+    // maxUsagePercent: 最大允许的内存使用率（默认93%）
+    // 返回true表示内存充足，false表示内存不足
+    static bool checkMemory(size_t requiredBytes, float maxUsagePercent = 93.0f);
+    
+    // JSON大小估算函数
+    // baseSize: 基础开销（通常256字节）
+    // itemCount: 项目数量
+    // itemSize: 每个项目的平均大小（字节）
+    // 返回估算的JSON文档大小
+    static size_t calculateJsonSize(size_t baseSize, int itemCount, size_t itemSize);
+    
+    // 根据规则数量计算JSON大小
+    static size_t calculateRulesJsonSize(int ruleCount);
+    
+    // 根据日志数量计算JSON大小
+    static size_t calculateLogsJsonSize(int logCount);
+    
+    // 根据信号数量计算JSON大小
+    static size_t calculateSignalsJsonSize(int signalCount);
 };
 
 #endif // MEMORY_MONITOR_H

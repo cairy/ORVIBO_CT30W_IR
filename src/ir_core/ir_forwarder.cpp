@@ -1,5 +1,8 @@
 #include "ir_forwarder.h"
 #include "utils/precise_timer.h"
+#include "ir_core/ir_learner.h"
+#include "utils/hex_utils.h"
+#include <ArduinoJson.h>
 
 IRForwarder::IRForwarder(IRMapper& mapper, IRTransmitter& transmitter, MessageQueue& queue)
     : mapper(mapper), transmitter(transmitter), queue(queue), forwarding(false), enabled(true) {
@@ -261,3 +264,68 @@ void IRForwarder::delayPrecise(unsigned long ms) {
     PreciseTimer::delayPreciseMs(ms);
 }
 
+bool IRForwarder::parseAndSendSignal(const String& payload) {
+    String trimmed = payload;
+    trimmed.trim();
+    
+    if (trimmed.length() == 0) {
+        return false;
+    }
+    
+    // 检测格式
+    IRLearner::SignalFormat format = IRLearner::detectSignalFormat(trimmed);
+    
+    if (format == IRLearner::FORMAT_SIGNALID) {
+        // SignalID对象格式（JSON）
+        size_t jsonSize = trimmed.length() + 256;
+        if (jsonSize > 1024) jsonSize = 1024;
+        if (jsonSize < 256) jsonSize = 256;
+        
+        DynamicJsonDocument doc(jsonSize);
+        DeserializationError error = deserializeJson(doc, trimmed);
+        
+        if (error) {
+            return false;
+        }
+        
+        JsonObject signalObj = doc["signal"];
+        if (signalObj.isNull()) {
+            return false;
+        }
+        
+        uint8_t repeatCount = doc["repeatCount"] | 1;
+        
+        SignalID signal;
+        signal.protocol = signalObj["protocol"] | 0;
+        if (signalObj["data"].is<const char*>()) {
+            signal.data = parseUint32FromHexString(signalObj["data"].as<const char*>());
+        } else {
+            signal.data = signalObj["data"] | 0;
+        }
+        if (signalObj["hash"].is<const char*>()) {
+            signal.hash = parseUint32FromHexString(signalObj["hash"].as<const char*>());
+        } else {
+            signal.hash = signalObj["hash"] | 0;
+        }
+        signal.isProtocol = signalObj["isProtocol"] | false;
+        
+        return sendSignal(signal, repeatCount);
+    } else {
+        // 字符串格式（Base64/数组/协议），使用统一解析函数
+        SignalID signalId;
+        static IRTiming timing[MAX_LEARN_TIMING_COUNT];
+        int timingCount = 0;
+        uint8_t repeatCount = 1;
+        
+        if (!IRLearner::parseSignalPayload(trimmed, signalId, timing, timingCount, MAX_LEARN_TIMING_COUNT, repeatCount, format)) {
+            return false;
+        }
+        
+        // 根据格式发送信号
+        if (format == IRLearner::FORMAT_PROTOCOL) {
+            return sendSignal(signalId, repeatCount);
+        } else {
+            return sendRawTiming(timing, timingCount, repeatCount);
+        }
+    }
+}

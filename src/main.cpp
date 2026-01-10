@@ -4,6 +4,7 @@
 // 配置
 #include "config/pins.h"
 #include "config/constants.h"
+#include "utils/memory_monitor.h"
 
 // 工具
 #include "utils/storage.h"
@@ -292,17 +293,14 @@ void loop() {
         // 内存保护：内存不足时停止Web服务器
         bool shouldRunWebServer = false;
         unsigned long elapsedSinceStart = now - systemStartTime;
-        size_t freeHeap = ESP.getFreeHeap();
-        size_t maxBlock = ESP.getMaxFreeBlockSize();
         float usagePercent = MemoryMonitor::getUsagePercent();
         
         // 内存不足时强制停止Web服务器
         // 检查条件：内存使用率超过92% 或 空闲内存小于1KB 或 最大连续块小于512字节
         // 调整阈值，在真正内存紧张时才停止Web服务器
-        if (usagePercent > 92.0f || freeHeap < 1024 || maxBlock < 512) {
+        if (usagePercent > 92.0f || !MemoryMonitor::checkMemory(1024)) {
             if (webServer.isRunning()) {
-                Serial.printf("[Web服务器] 内存不足，停止Web服务器 (使用率: %.1f%%, 空闲: %d bytes, 最大块: %d bytes)\n", 
-                             usagePercent, freeHeap, maxBlock);
+                DEBUG_PRINTF("[Web服务器] 内存不足，停止Web服务器 (使用率: %.1f%%)\n", usagePercent);
                 webServer.stop();
             }
             shouldRunWebServer = false;
@@ -373,15 +371,14 @@ void loop() {
     if (now - lastMemoryCheckTime >= MEMORY_CHECK_INTERVAL) {
         lastMemoryCheckTime = now;
         
-        size_t freeHeap = ESP.getFreeHeap();
-        size_t maxBlock = ESP.getMaxFreeBlockSize();
         float usagePercent = MemoryMonitor::getUsagePercent();
-        float fragPercent = MemoryMonitor::getFragmentationPercent();
         
-        // 内存使用率超过警告阈值时打印警告
+        // 内存使用率超过警告阈值时打印警告（仅调试模式）
         if (usagePercent > MEMORY_WARNING_THRESHOLD) {
-            Serial.printf("[内存警告] 使用率: %.1f%%, 空闲: %d bytes (%.2f KB), 最大连续块: %d bytes (%.2f KB), 碎片率: %.1f%%\n",
-                         usagePercent, freeHeap, freeHeap / 1024.0f, maxBlock, maxBlock / 1024.0f, fragPercent);
+            DEBUG_PRINTF("[内存警告] 使用率: %.1f%%, 空闲: %d bytes, 最大连续块: %d bytes, 碎片率: %.1f%%\n",
+                         usagePercent, MemoryMonitor::getFreeHeap(), 
+                         MemoryMonitor::getLargestFreeBlock(), 
+                         MemoryMonitor::getFragmentationPercent());
         }
         
         // 内存清理策略：85%开始清理，90%强制清理
@@ -392,53 +389,24 @@ void loop() {
         // 清理条件：当前是临界状态，或者连续两次检查都超过清理阈值
         if (currentMemoryCritical || (currentMemoryCleanup && lastMemoryCleanup)) {
             // 连续两次检查都超过阈值时才清理（避免频繁清理）
-            Serial.println("[内存清理] 内存使用率过高，开始自动清理...");
-            
-            size_t beforeFreeHeap = ESP.getFreeHeap();
+            DEBUG_PRINTLN("[内存清理] 内存使用率过高，开始自动清理...");
             
             // 1. 清理消息队列（释放队列中的任务）
             if (forwardQueue.size() > 0) {
-                Serial.printf("[内存清理] 清理消息队列 (%d 个任务)...\n", forwardQueue.size());
+                DEBUG_PRINTF("[内存清理] 清理消息队列 (%d 个任务)...\n", forwardQueue.size());
                 forwardQueue.clear();
             }
             
             // 2. 清理部分日志（保留最近5条）
             if (logger.getLogCount() > 5) {
-                Serial.printf("[内存清理] 清理旧日志 (当前: %d 条)...\n", logger.getLogCount());
+                DEBUG_PRINTF("[内存清理] 清理旧日志 (当前: %d 条)...\n", logger.getLogCount());
                 logger.clearLogs();
             }
             
             // 3. 先保存日志（避免丢失重要信息）
             logger.flush();
             
-            // 4. 触发垃圾回收（更有效的方法）
-            // 通过分配和释放临时对象来触发碎片整理
-            for (int i = 0; i < 5; i++) {
-                ESP.wdtFeed();
-                // 创建临时String对象并立即释放，触发垃圾回收
-                {
-                    String temp;
-                    temp.reserve(256);
-                    temp = "cleanup";
-                    temp = "";
-                }
-                delay(20);  // 增加延迟，给垃圾回收更多时间
-            }
-            
-            // 5. 多次调用getFreeHeap()触发内存整理
-            for (int i = 0; i < 3; i++) {
-                ESP.getFreeHeap();
-                ESP.getMaxFreeBlockSize();
-                delay(10);
-            }
-            
-            size_t afterFreeHeap = ESP.getFreeHeap();
-            int freedBytes = afterFreeHeap - beforeFreeHeap;
-            
-            Serial.printf("[内存清理] 清理完成 - 清理前: %d bytes (%.2f KB), 清理后: %d bytes (%.2f KB), 释放: %d bytes (%.2f KB)\n",
-                         beforeFreeHeap, beforeFreeHeap / 1024.0f,
-                         afterFreeHeap, afterFreeHeap / 1024.0f,
-                         freedBytes, freedBytes / 1024.0f);
+            DEBUG_PRINTLN("[内存清理] 清理完成");
             
             lastMemoryCleanup = true;
         } else {

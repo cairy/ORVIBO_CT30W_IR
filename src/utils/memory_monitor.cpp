@@ -126,3 +126,66 @@ String MemoryMonitor::getMemoryInfoString() {
     return info;
 }
 
+bool MemoryMonitor::checkMemory(size_t requiredBytes, float maxUsagePercent) {
+    size_t freeHeap = getFreeHeap();
+    size_t maxBlock = getLargestFreeBlock();
+    float usagePercent = getUsagePercent();
+    
+    // 优先检查实际可用内存，而不是百分比
+    // 如果空闲内存足够（大于2KB）且最大连续块足够，即使使用率高也允许请求
+    if (freeHeap >= 2048 && maxBlock >= requiredBytes + 512) {
+        return true;
+    }
+    
+    // 如果空闲内存不足，再检查百分比
+    if (usagePercent > maxUsagePercent) {
+        return false;
+    }
+    
+    // 空闲内存小于512字节时拒绝请求
+    if (freeHeap < 512) {
+        return false;
+    }
+    
+    // 最大连续块小于所需大小+256字节安全余量时拒绝请求
+    if (maxBlock < requiredBytes + 256) {
+        return false;
+    }
+    
+    return true;
+}
+
+size_t MemoryMonitor::calculateJsonSize(size_t baseSize, int itemCount, size_t itemSize) {
+    // 基础开销 + 项目数量 * 每个项目大小
+    size_t size = baseSize + (itemCount * itemSize);
+    
+    // 限制最大大小（避免内存溢出）
+    if (size > 8192) size = 8192;
+    
+    // 确保最小大小
+    if (size < 256) size = 256;
+    
+    return size;
+}
+
+size_t MemoryMonitor::calculateRulesJsonSize(int ruleCount) {
+    // 每条规则约120字节基础开销 + 每个B信号约40字节
+    // 假设平均每条规则有2个B信号
+    size_t baseSize = 256;
+    size_t itemSize = 120 + (2 * 40);  // 平均每条规则200字节
+    return calculateJsonSize(baseSize, ruleCount, itemSize);
+}
+
+size_t MemoryMonitor::calculateLogsJsonSize(int logCount) {
+    // 每条日志约108字节（包含时间戳、类型、内容）
+    size_t baseSize = 256;
+    size_t itemSize = 108;
+    return calculateJsonSize(baseSize, logCount, itemSize);
+}
+
+size_t MemoryMonitor::calculateSignalsJsonSize(int signalCount) {
+    // 每个信号约100字节（包含时间戳、匹配状态、信号信息）
+    size_t baseSize = 256;
+    size_t itemSize = 100;
+    return calculateJsonSize(baseSize, signalCount, itemSize);
+}

@@ -5,6 +5,7 @@
 #include "utils/logger.h"
 #include "utils/memory_monitor.h"
 #include "utils/hex_utils.h"
+#include "utils/api_response.h"
 #include "config/constants.h"
 #include <ArduinoJson.h>
 
@@ -193,36 +194,7 @@ void WebServer::sendErrorResponse(int code, const String& error) {
 // requiredBytes: 所需的最小连续内存块大小（字节）
 // 返回true表示内存充足，false表示内存不足
 bool WebServer::checkMemoryBeforeAPI(size_t requiredBytes) {
-    size_t freeHeap = ESP.getFreeHeap();
-    size_t maxBlock = ESP.getMaxFreeBlockSize();
-    float usagePercent = MemoryMonitor::getUsagePercent();
-    
-    // 优先检查实际可用内存，而不是百分比
-    // 如果空闲内存足够（大于2KB）且最大连续块足够，即使使用率高也允许请求
-    if (freeHeap >= 2048 && maxBlock >= requiredBytes + 512) {
-        return true;
-    }
-    
-    // 如果空闲内存不足，再检查百分比（提高到93%）
-    if (usagePercent > 93.0f) {
-        Serial.printf("[Web服务器] 内存使用率过高 (%.1f%%), 拒绝API请求\n", usagePercent);
-        return false;
-    }
-    
-    // 空闲内存小于512字节时拒绝请求
-    if (freeHeap < 512) {
-        Serial.printf("[Web服务器] 空闲内存不足 (%d bytes), 拒绝API请求\n", freeHeap);
-        return false;
-    }
-    
-    // 最大连续块小于所需大小+256字节安全余量时拒绝请求
-    if (maxBlock < requiredBytes + 256) {
-        Serial.printf("[Web服务器] 最大连续块不足 (%d bytes < %d bytes), 拒绝API请求\n", 
-                     maxBlock, requiredBytes + 256);
-        return false;
-    }
-    
-    return true;
+    return MemoryMonitor::checkMemory(requiredBytes);
 }
 
 void WebServer::handleAPIStatus() {
@@ -280,41 +252,16 @@ void WebServer::handleAPIMaps() {
         return;
     }
     
-    // 优化JSON大小估算：基础开销 + 每条规则约200字节，限制最大4KB
-    size_t jsonSize = 256 + (maxRules * 200);
-    if (jsonSize > 4096) jsonSize = 4096;
-    if (jsonSize < 512) jsonSize = 512;
+    // 使用统一的内存监控工具计算JSON大小
+    size_t jsonSize = MemoryMonitor::calculateRulesJsonSize(maxRules);
     
     DynamicJsonDocument doc(jsonSize);
     JsonArray rulesArray = doc.to<JsonArray>();
     
+    // 使用统一的转换方法
     for (int i = 0; i < maxRules; i++) {
         JsonObject ruleObj = rulesArray.createNestedObject();
-        ruleObj["id"] = rules[i].id;
-        
-        JsonObject aSignal = ruleObj.createNestedObject("aSignal");
-        aSignal["protocol"] = rules[i].aSignal.protocol;
-        aSignal["data"] = uint32ToHexString(rules[i].aSignal.data);
-        aSignal["hash"] = uint32ToHexString(rules[i].aSignal.hash);
-        aSignal["isProtocol"] = rules[i].aSignal.isProtocol;
-        
-        JsonArray bSignals = ruleObj.createNestedArray("bSignals");
-        for (int j = 0; j < rules[i].bSignalCount; j++) {
-            JsonObject bSignal = bSignals.createNestedObject();
-            bSignal["protocol"] = rules[i].bSignals[j].protocol;
-            bSignal["data"] = uint32ToHexString(rules[i].bSignals[j].data);
-            bSignal["hash"] = uint32ToHexString(rules[i].bSignals[j].hash);
-            bSignal["isProtocol"] = rules[i].bSignals[j].isProtocol;
-        }
-        
-        ruleObj["bSignalCount"] = rules[i].bSignalCount;
-        
-        JsonArray intervals = ruleObj.createNestedArray("intervals");
-        for (int j = 0; j < rules[i].bSignalCount - 1; j++) {
-            intervals.add(rules[i].intervals[j]);
-        }
-        
-        ruleObj["repeatCount"] = rules[i].repeatCount;
+        IRMapper::ruleToJsonObject(rules[i], ruleObj, true);  // true表示使用hex格式
     }
     
     // 立即释放规则数组内存
@@ -387,68 +334,18 @@ void WebServer::handleAPIUpdateMap() {
             mapper->deleteRule(ruleIds[i]);
         }
         
-        // 添加新规则
+        // 添加新规则（使用统一的转换方法）
         int successCount = 0;
         for (JsonObject ruleObj : rulesArray) {
             IR_MapRule rule;
-            
-            JsonObject aSignal = ruleObj["aSignal"];
-            rule.aSignal.protocol = aSignal["protocol"] | 0;
-            if (aSignal["data"].is<const char*>()) {
-                rule.aSignal.data = parseUint32FromHexString(aSignal["data"].as<const char*>());
-            } else {
-                rule.aSignal.data = 0;
-            }
-            if (aSignal["hash"].is<const char*>()) {
-                rule.aSignal.hash = parseUint32FromHexString(aSignal["hash"].as<const char*>());
-            } else {
-                rule.aSignal.hash = 0;
-            }
-            rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
-            
-            JsonArray bSignals = ruleObj["bSignals"];
-            rule.bSignalCount = 0;
-            for (JsonObject bSignal : bSignals) {
-                if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
-                
-                rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
-                if (bSignal["data"].is<const char*>()) {
-                    rule.bSignals[rule.bSignalCount].data = parseUint32FromHexString(bSignal["data"].as<const char*>());
-                } else {
-                    rule.bSignals[rule.bSignalCount].data = 0;
+            if (IRMapper::jsonObjectToRule(ruleObj, rule)) {
+                if (mapper->addRule(rule)) {
+                    successCount++;
                 }
-                if (bSignal["hash"].is<const char*>()) {
-                    rule.bSignals[rule.bSignalCount].hash = parseUint32FromHexString(bSignal["hash"].as<const char*>());
-                } else {
-                    rule.bSignals[rule.bSignalCount].hash = 0;
-                }
-                rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
-                rule.bSignalCount++;
-            }
-            
-            JsonArray intervals = ruleObj["intervals"];
-            int intervalCount = 0;
-            for (uint16_t interval : intervals) {
-                if (intervalCount >= MAX_B_SIGNALS_PER_RULE - 1) break;
-                rule.intervals[intervalCount++] = interval;
-            }
-            
-            rule.repeatCount = ruleObj["repeatCount"] | 1;
-            rule.valid = true;
-            
-            if (mapper->addRule(rule)) {
-                successCount++;
             }
         }
         
-        DynamicJsonDocument response(192);
-        response["success"] = true;
-        response["message"] = "Rules updated";
-        response["count"] = successCount;
-        String output;
-        output.reserve(192);
-        serializeJson(response, output);
-        sendJSONResponse(200, output);
+        sendJSONResponse(200, APIResponse::success(String("Rules updated, count: ") + String(successCount)));
     } else {
         // 单个更新（保持向后兼容）
         uint8_t id = doc["id"] | 0;
@@ -464,61 +361,14 @@ void WebServer::handleAPIUpdateMap() {
         }
         
         IR_MapRule rule;
-        
-        JsonObject aSignal = ruleObj["aSignal"];
-        rule.aSignal.protocol = aSignal["protocol"] | 0;
-        if (aSignal["data"].is<const char*>()) {
-            rule.aSignal.data = parseUint32FromHexString(aSignal["data"].as<const char*>());
-        } else {
-            rule.aSignal.data = 0;
-        }
-        if (aSignal["hash"].is<const char*>()) {
-            rule.aSignal.hash = parseUint32FromHexString(aSignal["hash"].as<const char*>());
-        } else {
-            rule.aSignal.hash = 0;
-        }
-        rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
-        
-        JsonArray bSignals = ruleObj["bSignals"];
-        rule.bSignalCount = 0;
-        for (JsonObject bSignal : bSignals) {
-            if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
-            
-            rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
-            if (bSignal["data"].is<const char*>()) {
-                rule.bSignals[rule.bSignalCount].data = parseUint32FromHexString(bSignal["data"].as<const char*>());
+        if (IRMapper::jsonObjectToRule(ruleObj, rule)) {
+            if (mapper->updateRule(id, rule)) {
+                sendJSONResponse(200, APIResponse::success("Rule updated"));
             } else {
-                rule.bSignals[rule.bSignalCount].data = 0;
+                sendErrorResponse(500, "Failed to update rule");
             }
-            if (bSignal["hash"].is<const char*>()) {
-                rule.bSignals[rule.bSignalCount].hash = parseUint32FromHexString(bSignal["hash"].as<const char*>());
-            } else {
-                rule.bSignals[rule.bSignalCount].hash = 0;
-            }
-            rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
-            rule.bSignalCount++;
-        }
-        
-        JsonArray intervals = ruleObj["intervals"];
-        int intervalCount = 0;
-        for (uint16_t interval : intervals) {
-            if (intervalCount >= MAX_B_SIGNALS_PER_RULE - 1) break;
-            rule.intervals[intervalCount++] = interval;
-        }
-        
-        rule.repeatCount = ruleObj["repeatCount"] | 1;
-        rule.valid = true;
-        
-        if (mapper->updateRule(id, rule)) {
-            DynamicJsonDocument response(128);
-            response["success"] = true;
-            response["message"] = "Rule updated";
-            String output;
-            output.reserve(128);
-            serializeJson(response, output);
-            sendJSONResponse(200, output);
         } else {
-            sendErrorResponse(500, "Failed to update rule");
+            sendErrorResponse(400, "Invalid rule format");
         }
     }
 }
@@ -868,13 +718,7 @@ void WebServer::handleAPISendSignal() {
         signal.isProtocol = signalObj["isProtocol"] | false;
         
         if (forwarder->sendSignal(signal, repeatCount)) {
-            DynamicJsonDocument response(192);
-            response["success"] = true;
-            response["message"] = "Signal sent";
-            String output;
-            output.reserve(192);
-            serializeJson(response, output);
-            sendJSONResponse(200, output);
+            sendJSONResponse(200, APIResponse::executing("Signal sent"));
         } else {
             sendErrorResponse(500, "Failed to send signal");
         }
@@ -890,33 +734,9 @@ void WebServer::handleAPISendSignal() {
             return;
         }
         
-        // 字符串格式（Base64/数组/协议），使用统一解析函数
-        SignalID signalId;
-        static IRTiming timing[MAX_LEARN_TIMING_COUNT];
-        int timingCount = 0;
-        uint8_t repeatCount = 1;
-        
-        if (!IRLearner::parseSignalPayload(trimmed, signalId, timing, timingCount, MAX_LEARN_TIMING_COUNT, repeatCount, format)) {
-            sendErrorResponse(400, "Failed to parse signal");
-            return;
-        }
-        
-        // 根据格式发送信号
-        bool success = false;
-        if (format == IRLearner::FORMAT_PROTOCOL) {
-            success = forwarder->sendSignal(signalId, repeatCount);
-        } else {
-            success = forwarder->sendRawTiming(timing, timingCount, repeatCount);
-        }
-        
-        if (success) {
-            DynamicJsonDocument response(192);
-            response["success"] = true;
-            response["message"] = "Signal sent";
-            String output;
-            output.reserve(192);
-            serializeJson(response, output);
-            sendJSONResponse(200, output);
+        // 使用统一的解析和发送方法
+        if (forwarder->parseAndSendSignal(trimmed)) {
+            sendJSONResponse(200, APIResponse::executing("Signal sent"));
         } else {
             sendErrorResponse(500, "Failed to send signal");
         }
