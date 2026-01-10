@@ -477,16 +477,22 @@ void WebServer::handleAPILearnStart() {
         return;
     }
     
-    // 内存保护：检查可用内存
-    if (ESP.getFreeHeap() < 2048) {
-        sendErrorResponse(503, "Low Memory");
-        return;
-    }
+    // 内存保护：检查可用内存和最大连续块
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t maxBlock = ESP.getMaxFreeBlockSize();
     
-    // 解析JSON
+    // 估算所需内存：JSON解析 + String对象 + 学习数据结构初始化
     size_t jsonSize = body.length() + 256;
     if (jsonSize > 1024) jsonSize = 1024;
     if (jsonSize < 256) jsonSize = 256;
+    
+    // 检查内存：需要足够的空闲内存和最大连续块
+    if (freeHeap < 1536 || maxBlock < jsonSize) {
+        Serial.printf("[API] /api/learn/start: Insufficient memory (free: %d bytes, max block: %d bytes, required: %d bytes)\n", 
+                     freeHeap, maxBlock, jsonSize);
+        sendErrorResponse(503, "Low Memory");
+        return;
+    }
     
     DynamicJsonDocument doc(jsonSize);
     DeserializationError error = deserializeJson(doc, body);
@@ -614,6 +620,16 @@ void WebServer::handleAPILearnResult() {
     int commandCount = learner->getLearnedCommandCount();
     if (commandCount == 0) {
         sendErrorResponse(404, "No learned device found");
+        return;
+    }
+    
+    // 检查内存：如果内存不足，提前返回错误
+    // 降低阈值，避免在内存紧张时误报
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t maxBlock = ESP.getMaxFreeBlockSize();
+    if (freeHeap < 2048 || maxBlock < 1024) {
+        Serial.printf("[API] /api/learn/result: Insufficient memory (free: %d bytes, max block: %d bytes)\n", freeHeap, maxBlock);
+        sendErrorResponse(503, "Insufficient memory");
         return;
     }
     

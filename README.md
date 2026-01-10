@@ -177,7 +177,7 @@ POST http://设备IP/api/learn/stop
 ```bash
 GET http://设备IP/api/learn/result
 GET http://设备IP/api/learn/result?format=base64    # Base64格式（默认）
-GET http://设备IP/api/learn/result?format=signalid  # SignalID格式（如果解析成功）
+GET http://设备IP/api/learn/result?format=signalid  # 协议格式（如果解析成功，否则回退到Base64）
 GET http://设备IP/api/learn/result?format=array     # 数组格式
 ```
 
@@ -226,8 +226,8 @@ GET http://设备IP/api/learn/result?format=array     # 数组格式
 
 **格式说明：**
 - **Base64格式**（默认）：输出SmartIR JSON配置文件格式，可直接复制到SmartIR JSON配置文件使用
-- **协议格式**：如果信号解析成功，输出协议格式字符串（`protocol,data,repeatCount`），protocol是数字常量（1=NEC, 2=RC5等）
-- **数组格式**：输出数组格式字符串，兼容SmartIR JSON配置文件格式
+- **协议格式**（`format=signalid`）：如果信号解析成功，输出协议格式字符串（`protocol,data,repeatCount`），protocol是数字常量（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung）。如果解析失败，会回退到Base64格式
+- **数组格式**（`format=array`）：输出数组格式字符串，兼容SmartIR JSON配置文件格式
 
 **重要**：
 - 学习结果输出为**完整的SmartIR JSON配置文件格式**，可以直接复制到SmartIR JSON配置文件中使用

@@ -411,8 +411,31 @@ String IRLearner::convertToBase64Format() {
         return "{}";
     }
     
-    // 使用固定大小的JSON文档（2KB足够）
-    DynamicJsonDocument doc(2048);
+    // 检查内存：如果内存不足，提前返回错误
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t maxBlock = ESP.getMaxFreeBlockSize();
+    
+    // 动态计算所需内存：基础JSON结构 + 每个命令的Base64字符串
+    // 基础结构约200字节，每个命令的Base64字符串平均200-400字节
+    size_t estimatedSize = 512 + (learnedDevice.commandCount * 512);
+    if (estimatedSize > 3072) estimatedSize = 3072;  // 限制最大3KB
+    if (estimatedSize < 1024) estimatedSize = 1024;  // 至少1KB
+    
+    // 需要至少：估算大小 + 1KB安全余量，但不超过可用内存的80%
+    size_t requiredMemory = estimatedSize + 1024;
+    size_t maxAllowedMemory = (freeHeap * 80) / 100;  // 最多使用80%的可用内存
+    if (requiredMemory > maxAllowedMemory) {
+        requiredMemory = maxAllowedMemory;
+    }
+    
+    // 检查最大连续块是否足够
+    if (freeHeap < 2048 || maxBlock < estimatedSize) {
+        Serial.printf("[IRLearner] convertToBase64Format: Insufficient memory (free: %d bytes, max block: %d bytes, required: %d bytes)\n", 
+                     freeHeap, maxBlock, estimatedSize);
+        return "{}";
+    }
+    
+    DynamicJsonDocument doc(estimatedSize);
     
     // SmartIR JSON配置文件格式
     doc["manufacturer"] = "Learned";
@@ -431,6 +454,12 @@ String IRLearner::convertToBase64Format() {
             continue;
         }
         
+        // 检查内存：如果内存不足，停止处理
+        if (ESP.getFreeHeap() < 2048) {
+            Serial.println("[IRLearner] convertToBase64Format: Memory low during processing, stopping");
+            break;
+        }
+        
         // 编码Base64
         String base64 = encodeTimingToBase64(cmd.timing, cmd.timingCount);
         if (base64.length() == 0) {
@@ -444,6 +473,7 @@ String IRLearner::convertToBase64Format() {
     
     // 序列化为字符串
     String output;
+    output.reserve(estimatedSize);  // 预分配内存
     serializeJson(doc, output);
     return output;
 }
@@ -453,8 +483,25 @@ String IRLearner::convertToSignalIDFormat() {
         return "{}";
     }
     
-    // 使用固定大小的JSON文档（2KB足够）
-    DynamicJsonDocument doc(2048);
+    // 检查内存：如果内存不足，提前返回错误
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t maxBlock = ESP.getMaxFreeBlockSize();
+    
+    // 估算JSON大小：基础结构 + 每个命令的平均大小
+    // 基础结构约200字节，每个命令平均50-100字节（协议格式字符串较短）
+    size_t estimatedSize = 256 + (learnedDevice.commandCount * 128);
+    if (estimatedSize > 2048) estimatedSize = 2048;  // 限制最大2KB
+    if (estimatedSize < 512) estimatedSize = 512;  // 至少512字节
+    
+    // 检查最大连续块是否足够（需要额外空间用于字符串操作）
+    size_t requiredMemory = estimatedSize + 512;  // 额外512字节用于字符串操作
+    if (freeHeap < 1500 || maxBlock < requiredMemory) {
+        Serial.printf("[IRLearner] convertToSignalIDFormat: Insufficient memory (free: %d bytes, max block: %d bytes, required: %d bytes)\n", 
+                     freeHeap, maxBlock, requiredMemory);
+        return "{}";
+    }
+    
+    DynamicJsonDocument doc(estimatedSize);
     
     // SmartIR JSON配置文件格式
     doc["manufacturer"] = "Learned";
@@ -466,6 +513,12 @@ String IRLearner::convertToSignalIDFormat() {
     // 创建commands对象
     JsonObject commands = doc.createNestedObject("commands");
     
+    int protocolCount = 0;
+    int base64Count = 0;
+    
+    // 复用单个JSON文档用于SignalID对象（避免在循环中创建多个文档）
+    DynamicJsonDocument signalDoc(256);
+    
     // 遍历所有命令
     for (int i = 0; i < learnedDevice.commandCount && i < MAX_LEARN_COMMANDS; i++) {
         const LearnedCommand& cmd = learnedDevice.commands[i];
@@ -475,24 +528,49 @@ String IRLearner::convertToSignalIDFormat() {
         
         const char* cmdName = (cmd.name[0] != '\0') ? cmd.name : "";
         
+        // 检查内存：如果内存不足，停止处理（降低阈值，因为协议格式字符串较短）
+        if (ESP.getFreeHeap() < 1500) {
+            break;
+        }
+        
         if (cmd.hasProtocol) {
             // 如果解析成功，输出协议格式字符串：protocol,data,repeatCount
             // protocol是数字常量，data是十六进制格式
-            String protocolStr = String(cmd.signalId.protocol) + ",";
-            protocolStr += "0x" + String(cmd.signalId.data, HEX);
-            protocolStr += ",1";  // 默认重复1次
+            // 使用更节省内存的方式构建字符串
+            char protocolStr[64];
+            snprintf(protocolStr, sizeof(protocolStr), "%u,0x%X,1", 
+                     cmd.signalId.protocol, cmd.signalId.data);
             commands[cmdName] = protocolStr;
+            protocolCount++;
+        } else if (cmd.signalId.hash != 0) {
+            // 如果没有协议但有SignalID（hash），输出SignalID JSON对象格式
+            // 复用signalDoc避免重复分配内存
+            signalDoc.clear();
+            JsonObject signalObj = signalDoc.to<JsonObject>();
+            signalObj["protocol"] = cmd.signalId.protocol;
+            signalObj["data"] = cmd.signalId.data;
+            signalObj["hash"] = cmd.signalId.hash;
+            signalObj["isProtocol"] = cmd.signalId.isProtocol;
+            
+            // 使用固定大小的缓冲区序列化
+            char signalJsonBuffer[256];
+            serializeJson(signalObj, signalJsonBuffer, sizeof(signalJsonBuffer));
+            commands[cmdName] = signalJsonBuffer;
+            protocolCount++;
         } else {
-            // 如果解析失败，回退到Base64格式
+            // 如果parseSignal()返回false，回退到Base64格式
             String base64 = encodeTimingToBase64(cmd.timing, cmd.timingCount);
             if (base64.length() > 0) {
                 commands[cmdName] = base64;
+                base64Count++;
             }
+            // 立即释放base64字符串的内存（通过作用域）
         }
     }
     
     // 序列化为字符串
     String output;
+    output.reserve(estimatedSize);  // 预分配内存
     serializeJson(doc, output);
     return output;
 }
@@ -502,8 +580,24 @@ String IRLearner::convertToArrayFormat() {
         return "{}";
     }
     
-    // 使用固定大小的JSON文档（2KB足够）
-    DynamicJsonDocument doc(2048);
+    // 检查内存：如果内存不足，提前返回错误
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t maxBlock = ESP.getMaxFreeBlockSize();
+    
+    // 估算JSON大小：基础结构 + 每个命令的数组字符串
+    // 基础结构约200字节，每个命令的数组字符串平均200-400字节
+    size_t estimatedSize = 512 + (learnedDevice.commandCount * 512);
+    if (estimatedSize > 3072) estimatedSize = 3072;  // 限制最大3KB
+    if (estimatedSize < 1024) estimatedSize = 1024;  // 至少1KB
+    
+    // 检查最大连续块是否足够
+    if (freeHeap < 2048 || maxBlock < estimatedSize) {
+        Serial.printf("[IRLearner] convertToArrayFormat: Insufficient memory (free: %d bytes, max block: %d bytes, required: %d bytes)\n", 
+                     freeHeap, maxBlock, estimatedSize);
+        return "{}";
+    }
+    
+    DynamicJsonDocument doc(estimatedSize);
     
     // SmartIR JSON配置文件格式
     doc["manufacturer"] = "Learned";
@@ -522,8 +616,18 @@ String IRLearner::convertToArrayFormat() {
             continue;
         }
         
-        // 构建数组字符串
-        String arrayStr = "[";
+        // 检查内存：如果内存不足，停止处理
+        if (ESP.getFreeHeap() < 2048) {
+            Serial.println("[IRLearner] convertToArrayFormat: Memory low during processing, stopping");
+            break;
+        }
+        
+        // 使用预分配的String，减少内存碎片
+        String arrayStr;
+        // 估算数组字符串大小：每个数字平均8字节（包括逗号）
+        arrayStr.reserve(cmd.timingCount * 10 + 2);  // +2 for brackets
+        
+        arrayStr = "[";
         for (int j = 0; j < cmd.timingCount; j++) {
             if (j > 0) arrayStr += ",";
             // 正数表示高电平，负数表示低电平
@@ -542,6 +646,7 @@ String IRLearner::convertToArrayFormat() {
     
     // 序列化为字符串
     String output;
+    output.reserve(estimatedSize);  // 预分配内存
     serializeJson(doc, output);
     return output;
 }

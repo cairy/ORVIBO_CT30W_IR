@@ -207,15 +207,67 @@ bool IRParser::parseNEC(const IRTiming* timing, int count, SignalID& signalId) {
     // 扩展格式：地址(16位) + 命令(16位)
     // 重复码：9ms高 + 2.25ms低 + 560μs低（无数据）
     
-    if (count < 10) return false;  // 至少需要引导码
+    if (count < 10) {
+        return false;  // 至少需要引导码
+    }
     
     int idx = 0;
     
     // 检查引导码：第一个应该是高电平，持续时间约9ms（容差±20%）
-    if (!timing[idx].level || timing[idx].duration < 7200 || timing[idx].duration > 10800) {
+    // 注意：实际捕获的时序数据可能从低电平开始（空闲状态）
+    // 需要跳过初始的低电平或高电平
+    while (idx < count && timing[idx].duration < 100) {
+        idx++;  // 跳过很短的初始时序（可能是噪声）
+    }
+    
+    if (idx >= count) {
         return false;
     }
-    idx++;
+    
+    // 如果第一个有效时序是低电平，跳过它（可能是空闲状态）
+    if (!timing[idx].level) {
+        idx++;
+        if (idx >= count) {
+            return false;
+        }
+    }
+    
+    // 检查引导码：标准NEC是9ms高电平，但实际捕获可能是4.5ms
+    // 如果第一个高电平是4.5ms，且下一个低电平是560μs左右（数据位），
+    // 说明引导码的9ms高电平部分可能被省略了，直接开始解析数据
+    bool headerFound = false;
+    
+    if (timing[idx].level && timing[idx].duration >= 7200 && timing[idx].duration <= 10800) {
+        // 标准9ms引导码
+        headerFound = true;
+        idx++;
+        if (idx >= count) return false;
+    } else if (timing[idx].level && timing[idx].duration >= 3600 && timing[idx].duration <= 5400) {
+        // 可能是4.5ms高电平（非标准格式，或者时序数据从中间开始）
+        // 检查下一个低电平
+        idx++;
+        if (idx >= count) return false;
+        
+        if (!timing[idx].level && timing[idx].duration >= 3600 && timing[idx].duration <= 5400) {
+            // 下一个低电平也是4.5ms，这是引导码的低电平部分
+            headerFound = true;
+            idx++;
+        } else if (!timing[idx].level && timing[idx].duration >= 448 && timing[idx].duration <= 672) {
+            // 下一个低电平是560μs左右（数据位），说明引导码的低电平部分被省略了
+            // 这种情况下，4.5ms高电平可能是引导码的一部分，直接开始解析数据
+            headerFound = true;
+            // idx已经指向数据位的低电平部分，不需要回退
+            // 数据位从当前的低电平开始解析
+        } else {
+            return false;
+        }
+    } else {
+        return false;
+    }
+    
+    if (!headerFound) {
+        return false;
+    }
     
     if (idx >= count) return false;
     
@@ -231,14 +283,27 @@ bool IRParser::parseNEC(const IRTiming* timing, int count, SignalID& signalId) {
         return false;
     }
     
-    // 引导码的低电平部分，约4.5ms（容差±20%）
-    if (timing[idx].level || timing[idx].duration < 3600 || timing[idx].duration > 5400) {
-        return false;
+    // 如果处理的是9ms高电平，需要检查引导码的低电平部分（4.5ms）
+    // 如果处理的是4.5ms高+4.5ms低，已经处理完成，直接开始解析数据
+    // 如果处理的是4.5ms高+数据位低，需要检查是否已经跳过4.5ms低电平
+    bool needCheckLow = false;
+    if (idx > 0 && timing[idx-1].duration >= 7200 && timing[idx-1].duration <= 10800) {
+        // 上一个时序点是9ms高电平，需要检查4.5ms低电平
+        needCheckLow = true;
     }
-    idx++;
+    
+    if (needCheckLow) {
+        // 检查引导码的低电平部分，约4.5ms（容差±20%）
+        if (timing[idx].level || timing[idx].duration < 3600 || timing[idx].duration > 5400) {
+            return false;
+        }
+        idx++;
+    }
     
     // 解析32位数据
-    if (count < idx + 64) return false;  // 至少需要64个时序点（32位*2）
+    if (count < idx + 64) {
+        return false;  // 至少需要64个时序点（32位*2）
+    }
     
     uint32_t data = 0;
     for (int bit = 0; bit < 32; bit++) {
