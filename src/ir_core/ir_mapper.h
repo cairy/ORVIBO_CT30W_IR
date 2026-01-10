@@ -44,6 +44,7 @@ public:
     bool updateRule(uint8_t id, const IR_MapRule& rule);
     bool deleteRule(uint8_t id);
     IR_MapRule* findRule(const SignalID& aSignal);
+    bool isSignalInMappings(const SignalID& signal);  // 检查信号是否在映射表中（作为A信号或B信号）
     bool getRule(uint8_t id, IR_MapRule& rule);
     int getRuleCount() const;
     bool getAllRules(IR_MapRule* rules, int maxCount);

@@ -228,9 +228,11 @@ void loop() {
             // 使用IRremoteESP8266库解码（方案A：直接使用库）
             SignalID signalId;
             if (irParser.decodeWithLibrary(signalId)) {
-                // 查找映射规则
+                // 查找映射规则（用于转发）
                 IR_MapRule* rule = irMapper.findRule(signalId);
-                bool matched = (rule != nullptr);
+                // 检查信号是否在映射表中
+                // 如果已经匹配到A信号，直接设为matched；否则检查B信号
+                bool matched = (rule != nullptr) || irMapper.isSignalInMappings(signalId);
                 
                 // 记录信号（包含匹配信息）
                 logger.logReceiveSignal(signalId, matched);
@@ -239,6 +241,7 @@ void loop() {
                 ledControl.blink(1);
                 
                 // 查找映射并转发（优化：减少调试输出提升性能）
+                // 只有作为A信号时才转发（避免循环转发）
                 if (rule != nullptr) {
                     irForwarder.forwardSignal(signalId);
                 }

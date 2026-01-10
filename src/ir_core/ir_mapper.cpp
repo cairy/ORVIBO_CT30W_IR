@@ -166,6 +166,34 @@ IR_MapRule* IRMapper::findRule(const SignalID& aSignal) {
     return nullptr;
 }
 
+bool IRMapper::isSignalInMappings(const SignalID& signal) {
+    // 只检查B信号（A信号应该已经通过findRule检查过了）
+    for (int i = 0; i < ruleCount; i++) {
+        if (!rules[i].valid) continue;
+        
+        // 检查B信号
+        for (int j = 0; j < rules[i].bSignalCount; j++) {
+            const BSignal& bSignal = rules[i].bSignals[j];
+            if (signal.isProtocol == bSignal.isProtocol) {
+                if (signal.isProtocol) {
+                    // 协议信号：比较protocol和data
+                    if (signal.protocol == bSignal.protocol && 
+                        signal.data == bSignal.data) {
+                        return true;
+                    }
+                } else {
+                    // 哈希信号：比较hash
+                    if (signal.hash == bSignal.hash) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    
+    return false;
+}
+
 bool IRMapper::getRule(uint8_t id, IR_MapRule& rule) {
     int index;
     if (!findRuleIndexById(id, index)) {
