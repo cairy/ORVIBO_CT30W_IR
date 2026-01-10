@@ -4,6 +4,7 @@
 #include "ir_core/ir_learner.h"
 #include "utils/logger.h"
 #include "utils/memory_monitor.h"
+#include "utils/hex_utils.h"
 #include "config/constants.h"
 #include <ArduinoJson.h>
 
@@ -293,16 +294,16 @@ void WebServer::handleAPIMaps() {
         
         JsonObject aSignal = ruleObj.createNestedObject("aSignal");
         aSignal["protocol"] = rules[i].aSignal.protocol;
-        aSignal["data"] = rules[i].aSignal.data;
-        aSignal["hash"] = rules[i].aSignal.hash;
+        aSignal["data"] = uint32ToHexString(rules[i].aSignal.data);
+        aSignal["hash"] = uint32ToHexString(rules[i].aSignal.hash);
         aSignal["isProtocol"] = rules[i].aSignal.isProtocol;
         
         JsonArray bSignals = ruleObj.createNestedArray("bSignals");
         for (int j = 0; j < rules[i].bSignalCount; j++) {
             JsonObject bSignal = bSignals.createNestedObject();
             bSignal["protocol"] = rules[i].bSignals[j].protocol;
-            bSignal["data"] = rules[i].bSignals[j].data;
-            bSignal["hash"] = rules[i].bSignals[j].hash;
+            bSignal["data"] = uint32ToHexString(rules[i].bSignals[j].data);
+            bSignal["hash"] = uint32ToHexString(rules[i].bSignals[j].hash);
             bSignal["isProtocol"] = rules[i].bSignals[j].isProtocol;
         }
         
@@ -393,8 +394,16 @@ void WebServer::handleAPIUpdateMap() {
             
             JsonObject aSignal = ruleObj["aSignal"];
             rule.aSignal.protocol = aSignal["protocol"] | 0;
-            rule.aSignal.data = aSignal["data"] | 0;
-            rule.aSignal.hash = aSignal["hash"] | 0;
+            if (aSignal["data"].is<const char*>()) {
+                rule.aSignal.data = parseUint32FromHexString(aSignal["data"].as<const char*>());
+            } else {
+                rule.aSignal.data = 0;
+            }
+            if (aSignal["hash"].is<const char*>()) {
+                rule.aSignal.hash = parseUint32FromHexString(aSignal["hash"].as<const char*>());
+            } else {
+                rule.aSignal.hash = 0;
+            }
             rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
             
             JsonArray bSignals = ruleObj["bSignals"];
@@ -403,8 +412,16 @@ void WebServer::handleAPIUpdateMap() {
                 if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
                 
                 rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
-                rule.bSignals[rule.bSignalCount].data = bSignal["data"] | 0;
-                rule.bSignals[rule.bSignalCount].hash = bSignal["hash"] | 0;
+                if (bSignal["data"].is<const char*>()) {
+                    rule.bSignals[rule.bSignalCount].data = parseUint32FromHexString(bSignal["data"].as<const char*>());
+                } else {
+                    rule.bSignals[rule.bSignalCount].data = 0;
+                }
+                if (bSignal["hash"].is<const char*>()) {
+                    rule.bSignals[rule.bSignalCount].hash = parseUint32FromHexString(bSignal["hash"].as<const char*>());
+                } else {
+                    rule.bSignals[rule.bSignalCount].hash = 0;
+                }
                 rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
                 rule.bSignalCount++;
             }
@@ -450,8 +467,16 @@ void WebServer::handleAPIUpdateMap() {
         
         JsonObject aSignal = ruleObj["aSignal"];
         rule.aSignal.protocol = aSignal["protocol"] | 0;
-        rule.aSignal.data = aSignal["data"] | 0;
-        rule.aSignal.hash = aSignal["hash"] | 0;
+        if (aSignal["data"].is<const char*>()) {
+            rule.aSignal.data = parseUint32FromHexString(aSignal["data"].as<const char*>());
+        } else {
+            rule.aSignal.data = 0;
+        }
+        if (aSignal["hash"].is<const char*>()) {
+            rule.aSignal.hash = parseUint32FromHexString(aSignal["hash"].as<const char*>());
+        } else {
+            rule.aSignal.hash = 0;
+        }
         rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
         
         JsonArray bSignals = ruleObj["bSignals"];
@@ -460,8 +485,16 @@ void WebServer::handleAPIUpdateMap() {
             if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
             
             rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
-            rule.bSignals[rule.bSignalCount].data = bSignal["data"] | 0;
-            rule.bSignals[rule.bSignalCount].hash = bSignal["hash"] | 0;
+            if (bSignal["data"].is<const char*>()) {
+                rule.bSignals[rule.bSignalCount].data = parseUint32FromHexString(bSignal["data"].as<const char*>());
+            } else {
+                rule.bSignals[rule.bSignalCount].data = 0;
+            }
+            if (bSignal["hash"].is<const char*>()) {
+                rule.bSignals[rule.bSignalCount].hash = parseUint32FromHexString(bSignal["hash"].as<const char*>());
+            } else {
+                rule.bSignals[rule.bSignalCount].hash = 0;
+            }
             rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
             rule.bSignalCount++;
         }
@@ -755,8 +788,8 @@ void WebServer::handleAPIRecentSignals() {
         
         JsonObject signal = signalObj.createNestedObject("signal");
         signal["protocol"] = signals[i].signal.protocol;
-        signal["data"] = signals[i].signal.data;
-        signal["hash"] = signals[i].signal.hash;
+        signal["data"] = uint32ToHexString(signals[i].signal.data);
+        signal["hash"] = uint32ToHexString(signals[i].signal.hash);
         signal["isProtocol"] = signals[i].signal.isProtocol;
     }
     
@@ -822,8 +855,16 @@ void WebServer::handleAPISendSignal() {
         
         SignalID signal;
         signal.protocol = signalObj["protocol"] | 0;
-        signal.data = signalObj["data"] | 0;
-        signal.hash = signalObj["hash"] | 0;
+        if (signalObj["data"].is<const char*>()) {
+            signal.data = parseUint32FromHexString(signalObj["data"].as<const char*>());
+        } else {
+            signal.data = 0;
+        }
+        if (signalObj["hash"].is<const char*>()) {
+            signal.hash = parseUint32FromHexString(signalObj["hash"].as<const char*>());
+        } else {
+            signal.hash = 0;
+        }
         signal.isProtocol = signalObj["isProtocol"] | false;
         
         if (forwarder->sendSignal(signal, repeatCount)) {

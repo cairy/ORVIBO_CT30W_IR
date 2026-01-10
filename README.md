@@ -27,10 +27,10 @@
 
 ```json
 {
-  "protocol": 1,      // 协议类型：1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung
-  "data": 12345,      // 协议数据（标准协议解析出的数据值）
-  "hash": 0,          // 时序特征哈希（无法匹配标准协议时使用）
-  "isProtocol": true  // 是否为标准协议：true=标准协议，false=使用hash匹配
+  "protocol": 1,           // 协议类型：1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung
+  "data": "0x00003039",    // 协议数据（标准协议解析出的数据值，十六进制字符串格式）
+  "hash": "0x00000000",    // 时序特征哈希（无法匹配标准协议时使用，十六进制字符串格式）
+  "isProtocol": true       // 是否为标准协议：true=标准协议，false=使用hash匹配
 }
 ```
 
@@ -245,8 +245,8 @@ GET http://设备IP/api/signals/recent
   {
     "signal": {
       "protocol": 1,
-      "data": 12345,
-      "hash": 0,
+      "data": "0x00003039",
+      "hash": "0x00000000",
       "isProtocol": true
     },
     "timestamp": 1234567890,
@@ -257,8 +257,8 @@ GET http://设备IP/api/signals/recent
 
 **说明**：
 - `protocol`：协议类型（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung）
-- `data`：协议数据
-- `hash`：时序特征哈希（非标准协议时使用）
+- `data`：协议数据（十六进制字符串格式，如"0x00003039"）
+- `hash`：时序特征哈希（非标准协议时使用，十六进制字符串格式，如"0x00000000"）
 - `isProtocol`：是否为标准协议
 - `matched`：是否在映射库中匹配
 - 最多保留最近10条记录
@@ -303,8 +303,8 @@ Content-Type: application/json
 {
   "signal": {
     "protocol": 1,
-    "data": 12345,
-    "hash": 0,
+    "data": "0x00003039",
+    "hash": "0x00000000",
     "isProtocol": true
   },
   "repeatCount": 1
@@ -332,14 +332,14 @@ Content-Type: application/json
   "rule": {
     "aSignal": {
       "protocol": 1,
-      "data": 12345,
-      "hash": 0,
+      "data": "0x00003039",
+      "hash": "0x00000000",
       "isProtocol": true
     },
     "bSignals": [{
       "protocol": 1,
-      "data": 67890,
-      "hash": 0,
+      "data": "0x00010932",
+      "hash": "0x00000000",
       "isProtocol": true
     }],
     "bSignalCount": 1,
@@ -452,14 +452,14 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
   "rule": {
     "aSignal": {
       "protocol": 1,
-      "data": 12345,
-      "hash": 0,
+      "data": "0x00003039",
+      "hash": "0x00000000",
       "isProtocol": true
     },
     "bSignals": [{
       "protocol": 1,
-      "data": 67890,
-      "hash": 0,
+      "data": "0x00010932",
+      "hash": "0x00000000",
       "isProtocol": true
     }],
     "bSignalCount": 1,
@@ -477,14 +477,14 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
   "rule": {
     "aSignal": {
       "protocol": 1,
-      "data": 12345,
-      "hash": 0,
+      "data": "0x00003039",
+      "hash": "0x00000000",
       "isProtocol": true
     },
     "bSignals": [{
       "protocol": 1,
-      "data": 67890,
-      "hash": 0,
+      "data": "0x00010932",
+      "hash": "0x00000000",
       "isProtocol": true
     }],
     "bSignalCount": 1,
@@ -502,14 +502,14 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
     {
       "aSignal": {
         "protocol": 1,
-        "data": 12345,
-        "hash": 0,
+        "data": "0x00003039",
+        "hash": "0x00000000",
         "isProtocol": true
       },
       "bSignals": [{
         "protocol": 1,
-        "data": 67890,
-        "hash": 0,
+        "data": "0x00010932",
+        "hash": "0x00000000",
         "isProtocol": true
       }],
       "bSignalCount": 1,
@@ -648,8 +648,8 @@ Payload（协议格式字符串）：
   "action": "send_signal",
   "signal": {
     "protocol": 1,
-    "data": 12345,
-    "hash": 0,
+    "data": "0x00003039",
+    "hash": "0x00000000",
     "isProtocol": true
   },
   "repeatCount": 1
@@ -758,8 +758,8 @@ data:
       "action": "send_signal",
       "signal": {
         "protocol": 1,
-        "data": 12345,
-        "hash": 0,
+        "data": "0x00003039",
+        "hash": "0x00000000",
         "isProtocol": true
       },
       "repeatCount": 1
@@ -816,10 +816,10 @@ automation:
 
 ```json
 {
-  "protocol": 1,      // 协议类型：1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung
-  "data": 12345,      // 协议数据（标准协议解析出的数据值）
-  "hash": 0,          // 时序特征哈希（无法匹配标准协议时使用）
-  "isProtocol": true  // 是否为标准协议：true=标准协议，false=使用hash匹配
+  "protocol": 1,           // 协议类型：1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung
+  "data": "0x00003039",    // 协议数据（标准协议解析出的数据值，十六进制字符串格式）
+  "hash": "0x00000000",    // 时序特征哈希（无法匹配标准协议时使用，十六进制字符串格式）
+  "isProtocol": true       // 是否为标准协议：true=标准协议，false=使用hash匹配
 }
 ```
 

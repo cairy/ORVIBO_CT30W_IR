@@ -1,4 +1,5 @@
 #include "ir_learner.h"
+#include "utils/hex_utils.h"
 #include <ArduinoJson.h>
 
 // Base64编码表
@@ -578,8 +579,8 @@ String IRLearner::convertToSignalIDFormat() {
             signalDoc.clear();
             JsonObject signalObj = signalDoc.to<JsonObject>();
             signalObj["protocol"] = cmd.signalId.protocol;
-            signalObj["data"] = cmd.signalId.data;
-            signalObj["hash"] = cmd.signalId.hash;
+            signalObj["data"] = uint32ToHexString(cmd.signalId.data);
+            signalObj["hash"] = uint32ToHexString(cmd.signalId.hash);
             signalObj["isProtocol"] = cmd.signalId.isProtocol;
             
             // 使用固定大小的缓冲区序列化
