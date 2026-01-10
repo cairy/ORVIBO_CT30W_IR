@@ -565,12 +565,20 @@ String IRLearner::convertToSignalIDFormat() {
         }
         
         if (cmd.hasProtocol) {
-            // 如果解析成功，输出协议格式字符串：protocol,data,repeatCount
-            // protocol是数字常量，data是十六进制格式
-            // 使用更节省内存的方式构建字符串
-            char protocolStr[64];
-            snprintf(protocolStr, sizeof(protocolStr), "%u,0x%X,1", 
-                     cmd.signalId.protocol, cmd.signalId.data);
+            // 如果解析成功，输出协议格式字符串
+            // 有hash时输出5参数格式：protocol,data,hash,isProtocol,repeatCount
+            // 无hash时输出3参数格式：protocol,data,repeatCount（向后兼容）
+            char protocolStr[128];
+            if (cmd.signalId.hash != 0) {
+                // 5参数格式：protocol,data,hash,isProtocol,repeatCount
+                snprintf(protocolStr, sizeof(protocolStr), "%u,0x%08X,0x%08X,%s,1", 
+                         cmd.signalId.protocol, cmd.signalId.data, cmd.signalId.hash,
+                         cmd.signalId.isProtocol ? "true" : "false");
+            } else {
+                // 3参数格式：protocol,data,repeatCount（向后兼容）
+                snprintf(protocolStr, sizeof(protocolStr), "%u,0x%08X,1", 
+                         cmd.signalId.protocol, cmd.signalId.data);
+            }
             commands[cmdName] = protocolStr;
             protocolCount++;
         } else if (cmd.signalId.hash != 0) {
@@ -988,6 +996,14 @@ bool IRLearner::parseProtocolString(const String& protocolStr, SignalID& signalI
         return false;
     }
     
+    // 检测逗号数量以判断格式
+    int commaCount = 0;
+    for (int i = 0; i < trimmed.length(); i++) {
+        if (trimmed.charAt(i) == ',') {
+            commaCount++;
+        }
+    }
+    
     int comma2 = trimmed.indexOf(',', comma1 + 1);
     if (comma2 < 0) {
         // 只有两个参数：protocol,data（repeatCount默认为1）
@@ -1020,8 +1036,8 @@ bool IRLearner::parseProtocolString(const String& protocolStr, SignalID& signalI
         repeatCount = 1;
         
         return true;
-    } else {
-        // 三个参数：protocol,data,repeatCount
+    } else if (commaCount == 2) {
+        // 三个参数：protocol,data,repeatCount（向后兼容）
         String protocolStr_part = trimmed.substring(0, comma1);
         String dataStr = trimmed.substring(comma1 + 1, comma2);
         String repeatStr = trimmed.substring(comma2 + 1);
@@ -1056,6 +1072,65 @@ bool IRLearner::parseProtocolString(const String& protocolStr, SignalID& signalI
         repeatCount = repeat;
         
         return true;
+    } else if (commaCount == 4) {
+        // 五个参数：protocol,data,hash,isProtocol,repeatCount（新格式）
+        int comma3 = trimmed.indexOf(',', comma2 + 1);
+        int comma4 = trimmed.indexOf(',', comma3 + 1);
+        
+        if (comma3 < 0 || comma4 < 0) {
+            return false;
+        }
+        
+        String protocolStr_part = trimmed.substring(0, comma1);
+        String dataStr = trimmed.substring(comma1 + 1, comma2);
+        String hashStr = trimmed.substring(comma2 + 1, comma3);
+        String isProtocolStr = trimmed.substring(comma3 + 1, comma4);
+        String repeatStr = trimmed.substring(comma4 + 1);
+        
+        protocolStr_part.trim();
+        dataStr.trim();
+        hashStr.trim();
+        isProtocolStr.trim();
+        repeatStr.trim();
+        
+        uint32_t protocol = protocolStr_part.toInt();
+        uint32_t data = 0;
+        uint32_t hash = 0;
+        
+        // 解析data（十六进制）
+        if (dataStr.startsWith("0x") || dataStr.startsWith("0X")) {
+            data = strtoul(dataStr.c_str(), nullptr, 16);
+        } else {
+            char* endPtr;
+            data = strtoul(dataStr.c_str(), &endPtr, 16);
+            if (*endPtr != '\0' || (data == 0 && dataStr.length() > 0 && dataStr.charAt(0) != '0')) {
+                data = dataStr.toInt();
+            }
+        }
+        
+        // 解析hash（十六进制字符串，使用hex_utils函数）
+        hash = parseUint32FromHexString(hashStr.c_str());
+        
+        // 解析isProtocol（true/false或1/0）
+        bool isProtocol = false;
+        if (isProtocolStr == "true" || isProtocolStr == "1" || isProtocolStr == "True" || isProtocolStr == "TRUE") {
+            isProtocol = true;
+        }
+        
+        // 解析repeatCount
+        uint8_t repeat = repeatStr.toInt();
+        if (repeat == 0) repeat = 1;
+        
+        signalId.protocol = protocol;
+        signalId.data = data;
+        signalId.hash = hash;
+        signalId.isProtocol = isProtocol;
+        repeatCount = repeat;
+        
+        return true;
+    } else {
+        // 不支持的参数数量
+        return false;
     }
 }
 
@@ -1064,11 +1139,25 @@ bool IRLearner::parseSignalPayload(const String& payload, SignalID& signalId, IR
     
     switch (format) {
         case FORMAT_ARRAY: {
-            // 数组格式
-            if (!parseArrayString(payload, timing, timingCount, maxTimingCount)) {
-                return false;
+            // 数组格式：支持|repeatCount后缀
+            int pipePos = payload.lastIndexOf('|');
+            if (pipePos > 0 && pipePos < payload.length() - 1) {
+                // 有|后缀，解析repeatCount（使用atoi避免创建String对象）
+                repeatCount = atoi(payload.c_str() + pipePos + 1);
+                if (repeatCount == 0) repeatCount = 1;
+                
+                // 创建临时String用于数组解析
+                String arrayPart = payload.substring(0, pipePos);
+                if (!parseArrayString(arrayPart, timing, timingCount, maxTimingCount)) {
+                    return false;
+                }
+            } else {
+                // 无后缀，默认repeatCount=1
+                if (!parseArrayString(payload, timing, timingCount, maxTimingCount)) {
+                    return false;
+                }
+                repeatCount = 1;
             }
-            repeatCount = 1;  // 数组格式默认重复1次
             return true;
         }
         
@@ -1082,11 +1171,25 @@ bool IRLearner::parseSignalPayload(const String& payload, SignalID& signalId, IR
         }
         
         case FORMAT_BASE64: {
-            // Base64格式
-            if (!decodeBase64ToTiming(payload, timing, timingCount, maxTimingCount)) {
-                return false;
+            // Base64格式：支持|repeatCount后缀
+            int pipePos = payload.lastIndexOf('|');
+            if (pipePos > 0 && pipePos < payload.length() - 1) {
+                // 有|后缀，解析repeatCount（使用atoi避免创建String对象）
+                repeatCount = atoi(payload.c_str() + pipePos + 1);
+                if (repeatCount == 0) repeatCount = 1;
+                
+                // 创建临时String用于Base64解码
+                String base64Part = payload.substring(0, pipePos);
+                if (!decodeBase64ToTiming(base64Part, timing, timingCount, maxTimingCount)) {
+                    return false;
+                }
+            } else {
+                // 无后缀，默认repeatCount=1
+                if (!decodeBase64ToTiming(payload, timing, timingCount, maxTimingCount)) {
+                    return false;
+                }
+                repeatCount = 1;
             }
-            repeatCount = 1;  // Base64格式默认重复1次
             return true;
         }
         
