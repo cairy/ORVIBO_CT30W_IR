@@ -61,6 +61,9 @@ private:
     void sendJSONResponse(int code, const String& json);
     void sendErrorResponse(int code, const String& error);
     void addCORSHeaders();
+    
+    // 内存检查辅助方法
+    bool checkMemoryBeforeAPI(size_t requiredBytes = 2048);
 };
 
 #endif // WEB_SERVER_H

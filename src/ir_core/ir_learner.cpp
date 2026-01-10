@@ -7,15 +7,13 @@ static const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqr
 IRLearner::IRLearner(IRReceiver& receiver, IRParser& parser, Logger& logger)
     : receiver(receiver), parser(parser), logger(logger),
       mode(LEARN_NONE),
+      learnedDevice(nullptr),
       currentCommandIndex(0), commandNamesCount(0), lastSignalTime(0), learnTimeoutMs(0) {
-    learnedDevice.valid = false;
-    learnedDevice.commandCount = 0;
-    learnedDevice.deviceName[0] = '\0';
 }
 
 void IRLearner::init() {
     mode = LEARN_NONE;
-    learnedDevice.valid = false;
+    freeLearnedDevice();  // 确保没有遗留的内存
 }
 
 void IRLearner::update() {
@@ -45,23 +43,42 @@ bool IRLearner::startDeviceLearn(const String& deviceName, const String& command
         return false;  // 已有学习任务进行中
     }
     
+    // 检查内存是否足够分配LearnedDevice
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t requiredSize = sizeof(LearnedDevice);
+    if (freeHeap < requiredSize + 1024) {  // 需要至少1KB余量
+        Serial.printf("[IRLearner] 内存不足，无法开始学习 (需要: %d bytes, 可用: %d bytes)\n", 
+                     requiredSize, freeHeap);
+        return false;
+    }
+    
+    // 释放之前的学习数据（如果存在）
+    freeLearnedDevice();
+    
+    // 分配新的学习设备内存
+    learnedDevice = new (std::nothrow) LearnedDevice();
+    if (learnedDevice == nullptr) {
+        Serial.printf("[IRLearner] 内存分配失败，无法开始学习 (需要: %d bytes)\n", requiredSize);
+        return false;
+    }
+    
+    // 初始化学习设备
+    learnedDevice->valid = false;
+    learnedDevice->commandCount = 0;
+    learnedDevice->deviceName[0] = '\0';
+    
     // 禁用IRremoteESP8266库的接收，确保自定义接收器正常工作
     parser.disableLibraryReceiver();
     // 重新初始化自定义接收器的中断处理程序
     receiver.init();
     
-    // 清空之前的学习数据
-    learnedDevice.valid = false;
-    learnedDevice.commandCount = 0;
-    learnedDevice.deviceName[0] = '\0';
-    
     // 设置设备名称
     const char* deviceNameStr = deviceName.c_str();
     if (deviceNameStr != nullptr) {
-        strncpy(learnedDevice.deviceName, deviceNameStr, MAX_DEVICE_NAME_LEN - 1);
-        learnedDevice.deviceName[MAX_DEVICE_NAME_LEN - 1] = '\0';
+        strncpy(learnedDevice->deviceName, deviceNameStr, MAX_DEVICE_NAME_LEN - 1);
+        learnedDevice->deviceName[MAX_DEVICE_NAME_LEN - 1] = '\0';
     } else {
-        learnedDevice.deviceName[0] = '\0';
+        learnedDevice->deviceName[0] = '\0';
     }
     
     // 先统计命令数量，检查是否超过限制
@@ -113,10 +130,10 @@ bool IRLearner::startDeviceLearn(const String& deviceName, const String& command
     
     // 初始化指令数组
     for (int i = 0; i < MAX_LEARN_COMMANDS; i++) {
-        learnedDevice.commands[i].valid = false;
-        learnedDevice.commands[i].timingCount = 0;
-        learnedDevice.commands[i].hasProtocol = false;
-        learnedDevice.commands[i].name[0] = '\0';
+        learnedDevice->commands[i].valid = false;
+        learnedDevice->commands[i].timingCount = 0;
+        learnedDevice->commands[i].hasProtocol = false;
+        learnedDevice->commands[i].name[0] = '\0';
     }
     
     logger.logLearn("开始学习设备: " + deviceName + ", 指令数: " + String(commandNamesCount));
@@ -133,24 +150,26 @@ bool IRLearner::startDeviceLearn(const String& deviceName, const String& command
 }
 
 bool IRLearner::stopDeviceLearn() {
-    if (mode != LEARN_DEVICE) {
+    if (mode != LEARN_DEVICE || learnedDevice == nullptr) {
         return false;
     }
     
     // 标记学习完成（即使没有完成所有指令）
-    learnedDevice.valid = (learnedDevice.commandCount > 0);
+    learnedDevice->valid = (learnedDevice->commandCount > 0);
     
     mode = LEARN_NONE;
     
     // 重新启用IRremoteESP8266库的接收
     parser.enableLibraryReceiver();
     
-    String result = learnedDevice.valid ? 
-        ("学习完成，共学习 " + String(learnedDevice.commandCount) + " 个指令") :
+    String result = learnedDevice->valid ? 
+        ("学习完成，共学习 " + String(learnedDevice->commandCount) + " 个指令") :
         "学习已取消";
     
     logger.logLearn(result);
     Serial.println("=== " + result + " ===");
+    
+    // 注意：不立即释放内存，保留数据用于转换函数，在下次开始学习或手动释放时清理
     
     return true;
 }
@@ -174,11 +193,11 @@ String IRLearner::getLearnProgress() const {
 }
 
 bool IRLearner::getLearnedDevice(LearnedDevice& device) {
-    if (!learnedDevice.valid) {
+    if (learnedDevice == nullptr || !learnedDevice->valid) {
         return false;
     }
     
-    device = learnedDevice;
+    device = *learnedDevice;
     return true;
 }
 
@@ -197,12 +216,12 @@ String IRLearner::getCurrentCommandName() const {
 
 int IRLearner::getLearnedCommandCount() const {
     // 学习完成后，mode 变为 LEARN_NONE，但 learnedDevice 仍然有效
-    // 所以需要检查 learnedDevice.valid 而不是 mode
-    if (!learnedDevice.valid) {
+    // 所以需要检查 learnedDevice->valid 而不是 mode
+    if (learnedDevice == nullptr || !learnedDevice->valid) {
         return 0;
     }
     
-    return learnedDevice.commandCount;
+    return learnedDevice->commandCount;
 }
 
 int IRLearner::getTotalCommandCount() const {
@@ -214,22 +233,22 @@ int IRLearner::getTotalCommandCount() const {
 }
 
 String IRLearner::getDeviceName() const {
-    if (mode != LEARN_DEVICE) {
+    if (mode != LEARN_DEVICE || learnedDevice == nullptr) {
         return "";
     }
     
-    return String(learnedDevice.deviceName);
+    return String(learnedDevice->deviceName);
 }
 
 void IRLearner::getLearnedCommandNames(String* names, int maxCount) const {
-    if (names == nullptr || maxCount <= 0) {
+    if (names == nullptr || maxCount <= 0 || learnedDevice == nullptr) {
         return;
     }
     
     int count = 0;
-    for (int i = 0; i < learnedDevice.commandCount && i < maxCount && i < MAX_LEARN_COMMANDS; i++) {
-        if (learnedDevice.commands[i].valid) {
-            names[count++] = String(learnedDevice.commands[i].name);
+    for (int i = 0; i < learnedDevice->commandCount && i < maxCount && i < MAX_LEARN_COMMANDS; i++) {
+        if (learnedDevice->commands[i].valid) {
+            names[count++] = String(learnedDevice->commands[i].name);
         }
     }
     
@@ -240,14 +259,14 @@ void IRLearner::getLearnedCommandNames(String* names, int maxCount) const {
 }
 
 void IRLearner::getLearnedCommandNames(const char** names, int maxCount) const {
-    if (names == nullptr || maxCount <= 0) {
+    if (names == nullptr || maxCount <= 0 || learnedDevice == nullptr) {
         return;
     }
     
     int count = 0;
-    for (int i = 0; i < learnedDevice.commandCount && i < maxCount && i < MAX_LEARN_COMMANDS; i++) {
-        if (learnedDevice.commands[i].valid) {
-            names[count++] = learnedDevice.commands[i].name;
+    for (int i = 0; i < learnedDevice->commandCount && i < maxCount && i < MAX_LEARN_COMMANDS; i++) {
+        if (learnedDevice->commands[i].valid) {
+            names[count++] = learnedDevice->commands[i].name;
         }
     }
     
@@ -287,7 +306,11 @@ void IRLearner::processDeviceLearnSignal(const IRTiming* timing, int count) {
         return;
     }
     
-    LearnedCommand& cmd = learnedDevice.commands[currentCommandIndex];
+    if (learnedDevice == nullptr) {
+        return;
+    }
+    
+    LearnedCommand& cmd = learnedDevice->commands[currentCommandIndex];
     if (currentCommandIndex < commandNamesCount) {
         strncpy(cmd.name, commandNamesList[currentCommandIndex], MAX_COMMAND_NAME_LEN - 1);
         cmd.name[MAX_COMMAND_NAME_LEN - 1] = '\0';
@@ -321,18 +344,18 @@ void IRLearner::processDeviceLearnSignal(const IRTiming* timing, int count) {
     }
     
     cmd.valid = true;
-    learnedDevice.commandCount = currentCommandIndex + 1;
+    learnedDevice->commandCount = currentCommandIndex + 1;
     currentCommandIndex++;
     
     // 检查是否所有指令都已学习
     if (currentCommandIndex >= commandNamesCount) {
         // 所有指令学习完成
-        learnedDevice.valid = true;
+        learnedDevice->valid = true;
         mode = LEARN_NONE;
         // 重新启用IRremoteESP8266库的接收
         parser.enableLibraryReceiver();
-        logger.logLearn("设备学习完成: " + String(learnedDevice.deviceName) + 
-                       ", 共 " + String(learnedDevice.commandCount) + " 个指令");
+        logger.logLearn("设备学习完成: " + String(learnedDevice->deviceName) + 
+                       ", 共 " + String(learnedDevice->commandCount) + " 个指令");
         Serial.println("=== 所有指令学习完成 ===");
     } else {
         // 继续学习下一个指令
@@ -406,8 +429,15 @@ void IRLearner::parseCommandNames(const String& commandNamesStr) {
     }
 }
 
+void IRLearner::freeLearnedDevice() {
+    if (learnedDevice != nullptr) {
+        delete learnedDevice;
+        learnedDevice = nullptr;
+    }
+}
+
 String IRLearner::convertToBase64Format() {
-    if (!learnedDevice.valid || learnedDevice.commandCount == 0) {
+    if (learnedDevice == nullptr || !learnedDevice->valid || learnedDevice->commandCount == 0) {
         return "{}";
     }
     
@@ -417,7 +447,7 @@ String IRLearner::convertToBase64Format() {
     
     // 动态计算所需内存：基础JSON结构 + 每个命令的Base64字符串
     // 基础结构约200字节，每个命令的Base64字符串平均200-400字节
-    size_t estimatedSize = 512 + (learnedDevice.commandCount * 512);
+    size_t estimatedSize = 512 + (learnedDevice->commandCount * 512);
     if (estimatedSize > 3072) estimatedSize = 3072;  // 限制最大3KB
     if (estimatedSize < 1024) estimatedSize = 1024;  // 至少1KB
     
@@ -448,8 +478,8 @@ String IRLearner::convertToBase64Format() {
     JsonObject commands = doc.createNestedObject("commands");
     
     // 遍历所有命令，转换为Base64
-    for (int i = 0; i < learnedDevice.commandCount && i < MAX_LEARN_COMMANDS; i++) {
-        const LearnedCommand& cmd = learnedDevice.commands[i];
+    for (int i = 0; i < learnedDevice->commandCount && i < MAX_LEARN_COMMANDS; i++) {
+        const LearnedCommand& cmd = learnedDevice->commands[i];
         if (!cmd.valid) {
             continue;
         }
@@ -479,7 +509,7 @@ String IRLearner::convertToBase64Format() {
 }
 
 String IRLearner::convertToSignalIDFormat() {
-    if (!learnedDevice.valid || learnedDevice.commandCount == 0) {
+    if (learnedDevice == nullptr || !learnedDevice->valid || learnedDevice->commandCount == 0) {
         return "{}";
     }
     
@@ -489,7 +519,7 @@ String IRLearner::convertToSignalIDFormat() {
     
     // 估算JSON大小：基础结构 + 每个命令的平均大小
     // 基础结构约200字节，每个命令平均50-100字节（协议格式字符串较短）
-    size_t estimatedSize = 256 + (learnedDevice.commandCount * 128);
+    size_t estimatedSize = 256 + (learnedDevice->commandCount * 128);
     if (estimatedSize > 2048) estimatedSize = 2048;  // 限制最大2KB
     if (estimatedSize < 512) estimatedSize = 512;  // 至少512字节
     
@@ -520,8 +550,8 @@ String IRLearner::convertToSignalIDFormat() {
     DynamicJsonDocument signalDoc(256);
     
     // 遍历所有命令
-    for (int i = 0; i < learnedDevice.commandCount && i < MAX_LEARN_COMMANDS; i++) {
-        const LearnedCommand& cmd = learnedDevice.commands[i];
+    for (int i = 0; i < learnedDevice->commandCount && i < MAX_LEARN_COMMANDS; i++) {
+        const LearnedCommand& cmd = learnedDevice->commands[i];
         if (!cmd.valid) {
             continue;
         }
@@ -576,7 +606,7 @@ String IRLearner::convertToSignalIDFormat() {
 }
 
 String IRLearner::convertToArrayFormat() {
-    if (!learnedDevice.valid || learnedDevice.commandCount == 0) {
+    if (learnedDevice == nullptr || !learnedDevice->valid || learnedDevice->commandCount == 0) {
         return "{}";
     }
     
@@ -586,7 +616,7 @@ String IRLearner::convertToArrayFormat() {
     
     // 估算JSON大小：基础结构 + 每个命令的数组字符串
     // 基础结构约200字节，每个命令的数组字符串平均200-400字节
-    size_t estimatedSize = 512 + (learnedDevice.commandCount * 512);
+    size_t estimatedSize = 512 + (learnedDevice->commandCount * 512);
     if (estimatedSize > 3072) estimatedSize = 3072;  // 限制最大3KB
     if (estimatedSize < 1024) estimatedSize = 1024;  // 至少1KB
     
@@ -610,8 +640,8 @@ String IRLearner::convertToArrayFormat() {
     JsonObject commands = doc.createNestedObject("commands");
     
     // 遍历所有命令，转换为数组格式
-    for (int i = 0; i < learnedDevice.commandCount && i < MAX_LEARN_COMMANDS; i++) {
-        const LearnedCommand& cmd = learnedDevice.commands[i];
+    for (int i = 0; i < learnedDevice->commandCount && i < MAX_LEARN_COMMANDS; i++) {
+        const LearnedCommand& cmd = learnedDevice->commands[i];
         if (!cmd.valid) {
             continue;
         }

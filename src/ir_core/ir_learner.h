@@ -83,8 +83,8 @@ private:
     
     LearnMode mode;
     
-    // 设备学习相关
-    LearnedDevice learnedDevice;
+    // 设备学习相关（动态分配，节省启动内存）
+    LearnedDevice* learnedDevice;      // 仅在开始学习时分配，完成后保留直到下次学习或手动释放
     int currentCommandIndex;           // 当前学习的指令索引
     char commandNamesList[MAX_LEARN_COMMANDS][MAX_COMMAND_NAME_LEN];  // 指令名称列表（使用char数组节省内存）
     int commandNamesCount;             // 指令名称数量
@@ -95,6 +95,7 @@ private:
     void checkLearnTimeout();
     String encodeTimingToBase64(const IRTiming* timing, int count);
     void parseCommandNames(const String& commandNamesStr);
+    void freeLearnedDevice();  // 释放学习设备内存
 };
 
 #endif // IR_LEARNER_H

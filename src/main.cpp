@@ -297,9 +297,9 @@ void loop() {
         float usagePercent = MemoryMonitor::getUsagePercent();
         
         // 内存不足时强制停止Web服务器
-        // 检查条件：内存使用率超过95% 或 空闲内存小于1.5KB 或 最大连续块小于1KB
-        // 降低阈值，避免在内存紧张时误停止Web服务器
-        if (usagePercent > 95.0f || freeHeap < 1536 || maxBlock < 1024) {
+        // 检查条件：内存使用率超过92% 或 空闲内存小于1KB 或 最大连续块小于512字节
+        // 调整阈值，在真正内存紧张时才停止Web服务器
+        if (usagePercent > 92.0f || freeHeap < 1024 || maxBlock < 512) {
             if (webServer.isRunning()) {
                 Serial.printf("[Web服务器] 内存不足，停止Web服务器 (使用率: %.1f%%, 空闲: %d bytes, 最大块: %d bytes)\n", 
                              usagePercent, freeHeap, maxBlock);

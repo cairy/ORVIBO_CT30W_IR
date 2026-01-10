@@ -3,6 +3,7 @@
 #include "ir_core/ir_forwarder.h"
 #include "ir_core/ir_learner.h"
 #include "utils/logger.h"
+#include "utils/memory_monitor.h"
 #include "config/constants.h"
 #include <ArduinoJson.h>
 
@@ -115,9 +116,9 @@ String WebServer::getHTML() {
     NetworkConfig& config = configManager.getConfig();
     bool mqttConfigured = configManager.isMQTTConfigured();
     
-    // 简化：预分配固定大小，足够使用
+    // 优化：预分配更小的固定大小，减少内存占用
     String html;
-    html.reserve(1500);
+    html.reserve(800);  // 从1500降至800，节省700字节
     
     // 使用F()宏将字符串存储在Flash中，减少RAM占用
     html = F("<!DOCTYPE html><html><head><meta charset='UTF-8'>");
@@ -187,7 +188,49 @@ void WebServer::sendErrorResponse(int code, const String& error) {
     sendJSONResponse(code, output);
 }
 
+// 内存检查辅助函数：在API处理前检查内存是否充足
+// requiredBytes: 所需的最小连续内存块大小（字节）
+// 返回true表示内存充足，false表示内存不足
+bool WebServer::checkMemoryBeforeAPI(size_t requiredBytes) {
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t maxBlock = ESP.getMaxFreeBlockSize();
+    float usagePercent = MemoryMonitor::getUsagePercent();
+    
+    // 优先检查实际可用内存，而不是百分比
+    // 如果空闲内存足够（大于2KB）且最大连续块足够，即使使用率高也允许请求
+    if (freeHeap >= 2048 && maxBlock >= requiredBytes + 512) {
+        return true;
+    }
+    
+    // 如果空闲内存不足，再检查百分比（提高到93%）
+    if (usagePercent > 93.0f) {
+        Serial.printf("[Web服务器] 内存使用率过高 (%.1f%%), 拒绝API请求\n", usagePercent);
+        return false;
+    }
+    
+    // 空闲内存小于512字节时拒绝请求
+    if (freeHeap < 512) {
+        Serial.printf("[Web服务器] 空闲内存不足 (%d bytes), 拒绝API请求\n", freeHeap);
+        return false;
+    }
+    
+    // 最大连续块小于所需大小+256字节安全余量时拒绝请求
+    if (maxBlock < requiredBytes + 256) {
+        Serial.printf("[Web服务器] 最大连续块不足 (%d bytes < %d bytes), 拒绝API请求\n", 
+                     maxBlock, requiredBytes + 256);
+        return false;
+    }
+    
+    return true;
+}
+
 void WebServer::handleAPIStatus() {
+    // 简单API，使用较小的内存检查阈值
+    if (!checkMemoryBeforeAPI(256)) {
+        sendErrorResponse(503, "Insufficient memory");
+        return;
+    }
+    
     if (mapper == nullptr || forwarder == nullptr) {
         sendErrorResponse(500, "Service not initialized");
         return;
@@ -206,36 +249,39 @@ void WebServer::handleAPIStatus() {
 }
 
 void WebServer::handleAPIMaps() {
+    // 内存检查：需要较大内存用于规则数组和JSON
+    if (!checkMemoryBeforeAPI(3000)) {
+        sendErrorResponse(503, "Insufficient memory");
+        return;
+    }
+    
     if (mapper == nullptr) {
         sendErrorResponse(500, "Service not initialized");
         return;
     }
     
-    // 检查内存：避免在栈上分配大数组导致栈溢出
-    size_t freeHeap = ESP.getFreeHeap();
     int count = mapper->getRuleCount();
     
-    // 估算所需内存：每个规则约108字节，加上JSON开销
-    size_t estimatedMemory = count * 120;  // 规则数组 + 安全余量
-    if (freeHeap < estimatedMemory + 2048) {
-        sendErrorResponse(503, "Insufficient Memory");
+    // 限制最大数量到10个，避免栈溢出和内存不足
+    int maxRules = (count < 10) ? count : 10;
+    
+    // 使用堆分配而不是栈分配，避免栈溢出
+    IR_MapRule* rules = new (std::nothrow) IR_MapRule[maxRules];
+    if (rules == nullptr) {
+        sendErrorResponse(503, "Failed to allocate memory for rules");
         return;
     }
     
-    // 优化：只分配实际需要的数量，而不是MAX_MAP_RULES
-    // 限制最大数量，避免栈溢出
-    int maxRules = (count < MAX_MAP_RULES) ? count : MAX_MAP_RULES;
-    if (maxRules > 20) maxRules = 20;  // 进一步限制，避免栈溢出
-    
-    IR_MapRule rules[maxRules];
-    if (!mapper->getAllRules(rules, maxRules)) {
+    bool success = mapper->getAllRules(rules, maxRules);
+    if (!success) {
+        delete[] rules;
         sendErrorResponse(500, "Failed to get rules");
         return;
     }
     
-    // 简化：根据规则数量动态计算JSON大小
-    size_t jsonSize = 256 + (maxRules * 200);  // 基础开销 + 每条规则约200字节
-    if (jsonSize > 6144) jsonSize = 6144;   // 限制最大6KB
+    // 优化JSON大小估算：基础开销 + 每条规则约200字节，限制最大4KB
+    size_t jsonSize = 256 + (maxRules * 200);
+    if (jsonSize > 4096) jsonSize = 4096;
     if (jsonSize < 512) jsonSize = 512;
     
     DynamicJsonDocument doc(jsonSize);
@@ -270,6 +316,9 @@ void WebServer::handleAPIMaps() {
         ruleObj["repeatCount"] = rules[i].repeatCount;
     }
     
+    // 立即释放规则数组内存
+    delete[] rules;
+    
     String output;
     output.reserve(jsonSize);
     serializeJson(doc, output);
@@ -277,21 +326,28 @@ void WebServer::handleAPIMaps() {
 }
 
 void WebServer::handleAPIUpdateMap() {
-    if (mapper == nullptr) {
-        sendErrorResponse(500, "Service not initialized");
-        return;
-    }
-    
+    // 内存检查：需要解析JSON和更新规则
     String body = server.arg("plain");
     if (body.length() == 0) {
         sendErrorResponse(400, "Missing request body");
         return;
     }
     
-    // 简化：根据body长度动态计算JSON大小
+    // 根据body长度动态计算JSON大小，限制最大4KB
     size_t jsonSize = body.length() + 512;
-    if (jsonSize > 6144) jsonSize = 6144;
+    if (jsonSize > 4096) jsonSize = 4096;
     if (jsonSize < 512) jsonSize = 512;
+    
+    // 检查内存是否足够
+    if (!checkMemoryBeforeAPI(jsonSize + 1024)) {
+        sendErrorResponse(503, "Insufficient memory");
+        return;
+    }
+    
+    if (mapper == nullptr) {
+        sendErrorResponse(500, "Service not initialized");
+        return;
+    }
     
     DynamicJsonDocument doc(jsonSize);
     DeserializationError error = deserializeJson(doc, body);
@@ -311,12 +367,12 @@ void WebServer::handleAPIUpdateMap() {
         
         // 清空所有现有规则（避免在栈上分配大数组导致栈溢出）
         // 使用小数组存储规则ID，逐个删除
-        uint8_t ruleIds[20];  // 限制最多20个规则ID（每个ID 1字节，总共20字节）
+        uint8_t ruleIds[10];  // 限制最多10个规则ID（每个ID 1字节，总共10字节）
         int idCount = 0;
         
         // 获取所有规则ID（使用较小的临时数组，避免栈溢出）
         int count = mapper->getRuleCount();
-        if (count > 20) count = 20;  // 限制最多20个规则
+        if (count > 10) count = 10;  // 限制最多10个规则
         
         IR_MapRule tempRule;
         for (uint8_t id = 1; id <= 255 && idCount < count; id++) {
@@ -435,6 +491,12 @@ void WebServer::handleAPIUpdateMap() {
 }
 
 void WebServer::handleAPILogs() {
+    // 内存检查
+    if (!checkMemoryBeforeAPI(2048)) {
+        sendErrorResponse(503, "Insufficient memory");
+        return;
+    }
+    
     if (logger == nullptr) {
         sendErrorResponse(500, "Service not initialized");
         return;
@@ -444,7 +506,7 @@ void WebServer::handleAPILogs() {
     int count = logger->getLogCount();
     logger->getLogs(entries, count);
     
-    // 简化：根据日志数量计算JSON大小
+    // 优化：根据日志数量计算JSON大小，限制最大3KB
     size_t jsonSize = 256 + (count * 100);
     if (jsonSize > 3072) jsonSize = 3072;
     if (jsonSize < 512) jsonSize = 512;
@@ -466,31 +528,25 @@ void WebServer::handleAPILogs() {
 }
 
 void WebServer::handleAPILearnStart() {
-    if (learner == nullptr) {
-        sendErrorResponse(500, "Service not initialized");
-        return;
-    }
-    
     String body = server.arg("plain");
     if (body.length() == 0) {
         sendErrorResponse(400, "Missing request body");
         return;
     }
     
-    // 内存保护：检查可用内存和最大连续块
-    size_t freeHeap = ESP.getFreeHeap();
-    size_t maxBlock = ESP.getMaxFreeBlockSize();
-    
     // 估算所需内存：JSON解析 + String对象 + 学习数据结构初始化
     size_t jsonSize = body.length() + 256;
     if (jsonSize > 1024) jsonSize = 1024;
     if (jsonSize < 256) jsonSize = 256;
     
-    // 检查内存：需要足够的空闲内存和最大连续块
-    if (freeHeap < 1536 || maxBlock < jsonSize) {
-        Serial.printf("[API] /api/learn/start: Insufficient memory (free: %d bytes, max block: %d bytes, required: %d bytes)\n", 
-                     freeHeap, maxBlock, jsonSize);
-        sendErrorResponse(503, "Low Memory");
+    // 内存检查：学习功能需要较多内存
+    if (!checkMemoryBeforeAPI(jsonSize + 2048)) {
+        sendErrorResponse(503, "Insufficient memory");
+        return;
+    }
+    
+    if (learner == nullptr) {
+        sendErrorResponse(500, "Service not initialized");
         return;
     }
     
@@ -565,6 +621,12 @@ void WebServer::handleAPILearnStart() {
 }
 
 void WebServer::handleAPILearnStatus() {
+    // 简单API，使用较小的内存检查阈值
+    if (!checkMemoryBeforeAPI(256)) {
+        sendErrorResponse(503, "Insufficient memory");
+        return;
+    }
+    
     if (learner == nullptr) {
         sendErrorResponse(500, "Service not initialized");
         return;
@@ -593,6 +655,12 @@ void WebServer::handleAPILearnStatus() {
 }
 
 void WebServer::handleAPILearnStop() {
+    // 简单API，使用较小的内存检查阈值
+    if (!checkMemoryBeforeAPI(256)) {
+        sendErrorResponse(503, "Insufficient memory");
+        return;
+    }
+    
     if (learner == nullptr) {
         sendErrorResponse(500, "Service not initialized");
         return;
@@ -623,12 +691,8 @@ void WebServer::handleAPILearnResult() {
         return;
     }
     
-    // 检查内存：如果内存不足，提前返回错误
-    // 降低阈值，避免在内存紧张时误报
-    size_t freeHeap = ESP.getFreeHeap();
-    size_t maxBlock = ESP.getMaxFreeBlockSize();
-    if (freeHeap < 2048 || maxBlock < 1024) {
-        Serial.printf("[API] /api/learn/result: Insufficient memory (free: %d bytes, max block: %d bytes)\n", freeHeap, maxBlock);
+    // 内存检查：转换结果可能很大（最多3KB），需要更多内存
+    if (!checkMemoryBeforeAPI(4096)) {
         sendErrorResponse(503, "Insufficient memory");
         return;
     }
@@ -655,10 +719,18 @@ void WebServer::handleAPILearnResult() {
         return;
     }
     
+    // 立即发送响应，然后释放String对象
     sendJSONResponse(200, resultJson);
+    // String对象会在函数返回时自动释放
 }
 
 void WebServer::handleAPIRecentSignals() {
+    // 内存检查
+    if (!checkMemoryBeforeAPI(1536)) {
+        sendErrorResponse(503, "Insufficient memory");
+        return;
+    }
+    
     if (logger == nullptr) {
         sendErrorResponse(500, "Service not initialized");
         return;
@@ -668,7 +740,7 @@ void WebServer::handleAPIRecentSignals() {
     RecentSignal signals[MAX_RECENT_SIGNALS];
     int count = logger->getRecentSignals(signals, MAX_RECENT_SIGNALS);
     
-    // 简化：根据信号数量计算JSON大小
+    // 优化：根据信号数量计算JSON大小，限制最大1.5KB
     size_t jsonSize = 256 + (count * 100);
     if (jsonSize > 1536) jsonSize = 1536;
     if (jsonSize < 512) jsonSize = 512;
@@ -695,11 +767,6 @@ void WebServer::handleAPIRecentSignals() {
 }
 
 void WebServer::handleAPISendSignal() {
-    if (forwarder == nullptr) {
-        sendErrorResponse(500, "Service not initialized");
-        return;
-    }
-    
     String body = server.arg("plain");
     if (body.length() == 0) {
         sendErrorResponse(400, "Missing request body");
@@ -723,6 +790,17 @@ void WebServer::handleAPISendSignal() {
         size_t jsonSize = trimmed.length() + 256;
         if (jsonSize > 1024) jsonSize = 1024;
         if (jsonSize < 256) jsonSize = 256;
+        
+        // 内存检查
+        if (!checkMemoryBeforeAPI(jsonSize + 512)) {
+            sendErrorResponse(503, "Insufficient memory");
+            return;
+        }
+        
+        if (forwarder == nullptr) {
+            sendErrorResponse(500, "Service not initialized");
+            return;
+        }
         
         DynamicJsonDocument doc(jsonSize);
         DeserializationError error = deserializeJson(doc, trimmed);
@@ -760,6 +838,17 @@ void WebServer::handleAPISendSignal() {
             sendErrorResponse(500, "Failed to send signal");
         }
     } else {
+        // 内存检查：解析信号可能需要较多内存
+        if (!checkMemoryBeforeAPI(2048)) {
+            sendErrorResponse(503, "Insufficient memory");
+            return;
+        }
+        
+        if (forwarder == nullptr) {
+            sendErrorResponse(500, "Service not initialized");
+            return;
+        }
+        
         // 字符串格式（Base64/数组/协议），使用统一解析函数
         SignalID signalId;
         static IRTiming timing[MAX_LEARN_TIMING_COUNT];

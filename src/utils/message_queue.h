@@ -25,7 +25,7 @@ public:
     void clear();
 
 private:
-    static const int QUEUE_SIZE = 5;  // 固定大小数组，5个信号缓存
+    static const int QUEUE_SIZE = 3;  // 固定大小数组，3个信号缓存（从5减少到3，节省约70字节）
     ForwardTask queue[QUEUE_SIZE];
     volatile int head;
     volatile int tail;
