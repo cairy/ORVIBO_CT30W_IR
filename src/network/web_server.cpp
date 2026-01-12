@@ -389,19 +389,23 @@ void WebServer::handleAPILogs() {
     int count = logger->getLogCount();
     logger->getLogs(entries, count);
     
-    // 优化：根据日志数量计算JSON大小，限制最大3KB
-    size_t jsonSize = 256 + (count * 100);
-    if (jsonSize > 3072) jsonSize = 3072;
+    // 限制为最近3条（取最新的）
+    int returnCount = (count > 3) ? 3 : count;
+    int startIdx = (count > 3) ? count - 3 : 0;
+    
+    // 优化：根据返回的日志数量计算JSON大小（限制为3条）
+    size_t jsonSize = 256 + (returnCount * 100);
+    if (jsonSize > 1024) jsonSize = 1024;  // 最多1KB（3条日志）
     if (jsonSize < 512) jsonSize = 512;
     
     DynamicJsonDocument doc(jsonSize);
     JsonArray logArray = doc.to<JsonArray>();
     
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < returnCount; i++) {
         JsonObject entry = logArray.createNestedObject();
-        entry["timestamp"] = entries[i].timestamp;
-        entry["type"] = entries[i].type;
-        entry["content"] = entries[i].content;
+        entry["timestamp"] = entries[startIdx + i].timestamp;
+        entry["type"] = entries[startIdx + i].type;
+        entry["content"] = entries[startIdx + i].content;
     }
     
     String output;

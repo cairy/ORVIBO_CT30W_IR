@@ -34,7 +34,15 @@ private:
     unsigned long firstConnectedTime;  // MQTT首次连接时间
     int discoveryRetryCount;  // Discovery重试次数
     unsigned long lastStatePublishTime;  // 上次状态发布时间
-    static const unsigned long STATE_PUBLISH_INTERVAL = 10000;  // 10秒发布一次状态（从5秒增加，提升转发性能）
+    
+    // 状态缓存（使用固定大小数组，避免String的动态内存分配）
+    char lastPublishedStatus[16];  // 上次发布的状态（"ready"/"learning"/"error"）
+    bool lastPublishedForwardingEnabled;  // 上次发布的转发状态
+    char lastPublishedLearnMode[16];  // 上次发布的学习模式（"none"/"device"）
+    int lastPublishedRuleCount;  // 上次发布的规则数量
+    unsigned long lastStateCheckTime;  // 上次状态检查时间
+    bool stateCacheInitialized;  // 状态缓存是否已初始化
+    static const unsigned long STATE_CHECK_INTERVAL = 60000;  // 60秒检查一次状态（事件驱动：只在状态变化时发布）
     
     void processCommand(const String& payload);
     void publishDiscoveryConfig();

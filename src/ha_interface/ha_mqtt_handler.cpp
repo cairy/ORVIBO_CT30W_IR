@@ -13,7 +13,11 @@ HAMQTTHandler::HAMQTTHandler(MQTTClient& mqtt, IRMapper& mapper,
     : mqtt(mqtt), mapper(mapper), forwarder(forwarder), logger(logger), 
       learner(nullptr), discoveryPublished(false), 
       lastDiscoveryAttempt(0), firstConnectedTime(0), discoveryRetryCount(0),
-      lastStatePublishTime(0) {
+      lastStatePublishTime(0), lastPublishedForwardingEnabled(false),
+      lastPublishedRuleCount(0), lastStateCheckTime(0), stateCacheInitialized(false) {
+    // 初始化状态缓存数组
+    lastPublishedStatus[0] = '\0';
+    lastPublishedLearnMode[0] = '\0';
     instance = this;
 }
 
@@ -96,15 +100,20 @@ void HAMQTTHandler::update() {
         discoveryRetryCount = 0;
     }
     
-    // 定期发布增强的状态信息（每10秒，转发时跳过）
+    // 事件驱动状态发布（转发时跳过，状态变化时发布，60秒检查一次）
     if (isConnected && discoveryPublished) {
         unsigned long now = millis();
         // 如果正在转发，跳过状态发布，避免影响转发性能
         if (!forwarder.isForwarding()) {
-            // 如果 lastStatePublishTime 为 0，表示需要立即发布（Discovery 刚完成）
-            if (lastStatePublishTime == 0 || now - lastStatePublishTime >= STATE_PUBLISH_INTERVAL) {
-                lastStatePublishTime = now;
+            // 如果状态缓存未初始化，立即发布
+            if (!stateCacheInitialized) {
+                lastStateCheckTime = now;
                 publishEnhancedState();
+            }
+            // 如果超过60秒未检查，检查状态是否有变化（事件驱动）
+            else if (now - lastStateCheckTime >= STATE_CHECK_INTERVAL) {
+                lastStateCheckTime = now;
+                publishEnhancedState();  // 函数内部会检查状态是否有变化，无变化则跳过
             }
         }
         // 如果正在转发，跳过本次状态发布，等待下次机会
@@ -867,44 +876,68 @@ void HAMQTTHandler::publishEnhancedState() {
     // 喂看门狗，避免发布过程中超时
     ESP.wdtFeed();
     
+    // 获取当前状态值
+    const char* currentStatus = "ready";
+    if (learner != nullptr && learner->isLearningDevice()) {
+        currentStatus = "learning";
+    }
+    
+    bool currentForwardingEnabled = forwarder.isEnabled();
+    
+    const char* currentLearnMode = "none";
+    if (learner != nullptr && learner->isLearningDevice()) {
+        currentLearnMode = "device";
+    }
+    
+    int currentRuleCount = mapper.getRuleCount();
+    
+    // 检查状态是否有变化（事件驱动）
+    bool stateChanged = false;
+    if (!stateCacheInitialized) {
+        // 首次发布，立即发布
+        stateChanged = true;
+    } else {
+        // 比较各个状态字段
+        if (strcmp(currentStatus, lastPublishedStatus) != 0 ||
+            currentForwardingEnabled != lastPublishedForwardingEnabled ||
+            strcmp(currentLearnMode, lastPublishedLearnMode) != 0 ||
+            currentRuleCount != lastPublishedRuleCount) {
+            stateChanged = true;
+        }
+    }
+    
+    // 如果状态未变化且已初始化，跳过发布（节约资源）
+    if (!stateChanged && stateCacheInitialized) {
+        return;
+    }
+    
     // 使用较小的缓冲区（移除最近信号后可以减少）
     DynamicJsonDocument doc(512);
     
     // 主状态
-    String status = "ready";
-    if (learner != nullptr && learner->isLearningDevice()) {
-        status = "learning";
-    }
-    doc["status"] = status;
+    doc["status"] = currentStatus;
     
     // 转发状态
-    doc["forwarding_enabled"] = forwarder.isEnabled();
+    doc["forwarding_enabled"] = currentForwardingEnabled;
     
     // 学习状态（优化：避免在栈上创建大的LearnedDevice对象）
-    if (learner != nullptr) {
-        if (learner->isLearningDevice()) {
-            doc["learn_mode"] = "device";
-            // 直接获取设备名称字符串，避免复制整个LearnedDevice结构体
-            String deviceName = learner->getDeviceName();
-            doc["learn_device"] = deviceName;
-            deviceName = "";  // 立即释放
-            
-            String progress = learner->getLearnProgress();
-            doc["learn_progress"] = progress;
-            progress = "";  // 立即释放
-        } else {
-            doc["learn_mode"] = "none";
-            doc["learn_progress"] = "";
-            doc["learn_device"] = "";
-        }
+    doc["learn_mode"] = currentLearnMode;
+    if (learner != nullptr && learner->isLearningDevice()) {
+        // 直接获取设备名称字符串，避免复制整个LearnedDevice结构体
+        String deviceName = learner->getDeviceName();
+        doc["learn_device"] = deviceName;
+        deviceName = "";  // 立即释放
+        
+        String progress = learner->getLearnProgress();
+        doc["learn_progress"] = progress;
+        progress = "";  // 立即释放
     } else {
-        doc["learn_mode"] = "none";
         doc["learn_progress"] = "";
         doc["learn_device"] = "";
     }
     
     // 映射规则数量
-    doc["rule_count"] = mapper.getRuleCount();
+    doc["rule_count"] = currentRuleCount;
     
     // 注意：最近信号信息已移除，用户可通过 get_recent_signals API接口查询
     // 移除自动获取以减少内存分配和JSON构建开销，提升转发性能
@@ -917,6 +950,16 @@ void HAMQTTHandler::publishEnhancedState() {
     String output;
     serializeJson(doc, output);
     mqtt.publish(MQTT_TOPIC_STATE, output);
+    
+    // 更新状态缓存
+    strncpy(lastPublishedStatus, currentStatus, sizeof(lastPublishedStatus) - 1);
+    lastPublishedStatus[sizeof(lastPublishedStatus) - 1] = '\0';
+    lastPublishedForwardingEnabled = currentForwardingEnabled;
+    strncpy(lastPublishedLearnMode, currentLearnMode, sizeof(lastPublishedLearnMode) - 1);
+    lastPublishedLearnMode[sizeof(lastPublishedLearnMode) - 1] = '\0';
+    lastPublishedRuleCount = currentRuleCount;
+    lastStatePublishTime = millis();
+    stateCacheInitialized = true;
     
     // 发布完成后再次喂看门狗
     ESP.wdtFeed();

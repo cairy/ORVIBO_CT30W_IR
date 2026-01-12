@@ -54,8 +54,8 @@ void Logger::log(const String& type, const String& content) {
         log_count++;
     }
     
-    // 串口输出
-    Serial.printf("[%lu] [%s] %s\n", now, logs[log_index == 0 ? MAX_LOG_ENTRIES - 1 : log_index - 1].type, 
+    // 串口输出（统一格式：与MQTT日志传感器一致）
+    Serial.printf("[%s] %s\n", logs[log_index == 0 ? MAX_LOG_ENTRIES - 1 : log_index - 1].type, 
                   logs[log_index == 0 ? MAX_LOG_ENTRIES - 1 : log_index - 1].content);
     
     // 优化：只在达到阈值或内存压力大时才标记保存
@@ -102,8 +102,8 @@ void Logger::log(const char* type, const char* content) {
         log_count++;
     }
     
-    // 串口输出
-    Serial.printf("[%lu] [%s] %s\n", now, logs[log_index == 0 ? MAX_LOG_ENTRIES - 1 : log_index - 1].type, 
+    // 串口输出（统一格式：与MQTT日志传感器一致）
+    Serial.printf("[%s] %s\n", logs[log_index == 0 ? MAX_LOG_ENTRIES - 1 : log_index - 1].type, 
                   logs[log_index == 0 ? MAX_LOG_ENTRIES - 1 : log_index - 1].content);
     
     // 优化：只在达到阈值或内存压力大时才标记保存
