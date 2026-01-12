@@ -34,7 +34,7 @@ private:
     unsigned long firstConnectedTime;  // MQTT首次连接时间
     int discoveryRetryCount;  // Discovery重试次数
     unsigned long lastStatePublishTime;  // 上次状态发布时间
-    static const unsigned long STATE_PUBLISH_INTERVAL = 5000;  // 5秒发布一次状态
+    static const unsigned long STATE_PUBLISH_INTERVAL = 10000;  // 10秒发布一次状态（从5秒增加，提升转发性能）
     
     void processCommand(const String& payload);
     void publishDiscoveryConfig();

@@ -35,6 +35,8 @@ void HAMQTTHandler::update() {
         // 检查内存后再操作
         if (MemoryMonitor::checkMemory(2048)) {
             DEBUG_PRINTLN("[HA MQTT] MQTT 已连接，订阅命令主题...");
+            // 喂看门狗，避免订阅过程中超时
+            ESP.wdtFeed();
             if (mqtt.subscribe(MQTT_TOPIC_COMMAND)) {
                 DEBUG_PRINTLN("[HA MQTT] ✓ 已订阅命令主题");
             } else {
@@ -47,6 +49,7 @@ void HAMQTTHandler::update() {
             mqtt.subscribe("smartir/media_player/+/send");
             mqtt.subscribe("smartir/fan/+/send");
             mqtt.subscribe("smartir/light/+/send");
+            ESP.wdtFeed();  // 订阅完成后再次喂看门狗
         } else {
             DEBUG_PRINTF("[HA MQTT] 内存不足，跳过订阅 (空闲: %d bytes)\n", ESP.getFreeHeap());
         }
@@ -93,13 +96,18 @@ void HAMQTTHandler::update() {
         discoveryRetryCount = 0;
     }
     
-    // 定期发布增强的状态信息（每5秒）
+    // 定期发布增强的状态信息（每10秒，转发时跳过）
     if (isConnected && discoveryPublished) {
         unsigned long now = millis();
-        if (now - lastStatePublishTime >= STATE_PUBLISH_INTERVAL) {
-            lastStatePublishTime = now;
-            publishEnhancedState();
+        // 如果正在转发，跳过状态发布，避免影响转发性能
+        if (!forwarder.isForwarding()) {
+            // 如果 lastStatePublishTime 为 0，表示需要立即发布（Discovery 刚完成）
+            if (lastStatePublishTime == 0 || now - lastStatePublishTime >= STATE_PUBLISH_INTERVAL) {
+                lastStatePublishTime = now;
+                publishEnhancedState();
+            }
         }
+        // 如果正在转发，跳过本次状态发布，等待下次机会
     }
 }
 
@@ -118,12 +126,27 @@ void HAMQTTHandler::handleCommand(const String& topic, const String& payload) {
 }
 
 void HAMQTTHandler::publishState(const String& state, const String& message) {
-    // 使用增强的状态发布
-    publishEnhancedState();
+    // 优化：避免在MQTT回调中直接调用publishEnhancedState()，可能导致栈溢出
+    // 如果内存充足，直接发布简单状态；否则延迟到下次update()
+    if (MemoryMonitor::checkMemory(2048) && mqtt.isConnected()) {
+        // 使用较小的JSON文档，只发布基本状态
+        DynamicJsonDocument doc(256);
+        doc["status"] = state;
+        doc["message"] = message;
+        doc["timestamp"] = millis();
+        
+        String output;
+        serializeJson(doc, output);
+        mqtt.publish(MQTT_TOPIC_STATE, output);
+    }
+    // 如果内存不足，跳过发布（状态将在下次update()时通过publishEnhancedState()发布）
 }
 
 void HAMQTTHandler::publishLog(const String& logEntry) {
-    mqtt.publish(MQTT_TOPIC_LOG, logEntry);
+    if (mqtt.isConnected() && discoveryPublished) {
+        // 发布到日志主题，更新 Home Assistant 日志传感器状态
+        mqtt.publish(MQTT_TOPIC_LOG, logEntry);
+    }
 }
 
 void HAMQTTHandler::publishDiscoveryConfig() {
@@ -144,6 +167,9 @@ void HAMQTTHandler::publishDiscoveryConfig() {
     DEBUG_PRINTLN("[HA Discovery] 开始发布 Home Assistant Discovery 配置...");
     DEBUG_PRINTF("[HA Discovery] MQTT 缓冲区大小: %d bytes, 空闲内存: %d bytes\n", 
                   MQTT_BUFFER_SIZE, freeHeap);
+    
+    // 喂看门狗，避免发布过程中超时
+    ESP.wdtFeed();
     
     // 使用const char*避免不必要的String对象创建
     const char* deviceId = MQTT_DEVICE_ID;
@@ -193,6 +219,10 @@ void HAMQTTHandler::publishDiscoveryConfig() {
         }
     }  // statusConfig在这里销毁，释放内存
     
+    // 喂看门狗，避免长时间阻塞
+    ESP.wdtFeed();
+    yield();
+    
     // 检查内存，如果不足则跳过后续发布
     freeHeap = ESP.getFreeHeap();
     if (freeHeap < 2048) {
@@ -232,6 +262,10 @@ void HAMQTTHandler::publishDiscoveryConfig() {
         }
     }  // stateConfig在这里销毁，释放内存
     
+    // 喂看门狗，避免长时间阻塞
+    ESP.wdtFeed();
+    yield();
+    
     // 检查内存，如果不足则跳过后续发布
     freeHeap = ESP.getFreeHeap();
     if (freeHeap < 2048) {
@@ -252,6 +286,7 @@ void HAMQTTHandler::publishDiscoveryConfig() {
         snprintf(uniqueIdBuf, sizeof(uniqueIdBuf), "%s_log", deviceId);
         logConfig["unique_id"] = uniqueIdBuf;
         logConfig["state_topic"] = MQTT_TOPIC_LOG;
+        logConfig["icon"] = "mdi:text-box";
         logConfig["device"] = deviceDoc;
         
         char logTopic[128];
@@ -262,11 +297,75 @@ void HAMQTTHandler::publishDiscoveryConfig() {
         DEBUG_PRINTF("[HA Discovery] 日志传感器消息大小: %d bytes\n", logPayload.length());
         if (mqtt.publish(logTopic, logPayload, true)) {
             DEBUG_PRINTLN("[HA Discovery] ✓ 日志传感器配置已发布");
+            // 发布初始日志状态
+            if (MemoryMonitor::checkMemory(512)) {
+                // 获取最新日志（通过 getLogs 获取所有日志，取最后一个）
+                LogEntry entries[MAX_LOG_ENTRIES];
+                String initialLog = "无日志";
+                int logCount = logger.getLogCount();
+                if (logCount > 0 && logger.getLogs(entries, logCount)) {
+                    // 获取最后一个日志（最新的）
+                    LogEntry latestEntry = entries[logCount - 1];
+                    char logStr[128];
+                    snprintf(logStr, sizeof(logStr), "[%s] %s", 
+                            latestEntry.type, latestEntry.content);
+                    initialLog = String(logStr);
+                }
+                mqtt.publish(MQTT_TOPIC_LOG, initialLog, true);
+                DEBUG_PRINTLN("[HA Discovery] ✓ 日志传感器初始状态已发布");
+            }
         } else {
             DEBUG_PRINTLN("[HA Discovery] ✗ 日志传感器配置发布失败");
             allPublished = false;
         }
     }  // logConfig在这里销毁，释放内存
+    
+    // 喂看门狗，避免长时间阻塞
+    ESP.wdtFeed();
+    yield();
+    
+    // 检查内存，如果不足则跳过后续发布
+    freeHeap = ESP.getFreeHeap();
+    if (freeHeap < 2048) {
+        DEBUG_PRINTF("[HA Discovery] 内存不足，跳过后续发布 (空闲: %d bytes)\n", freeHeap);
+        if (allPublished) {
+            discoveryPublished = true;
+        }
+        return;
+    }
+    
+    // 4. 开关 - 启用转发（使用较小的缓冲区）
+    {
+        DynamicJsonDocument forwardingSwitchConfig(512);
+        char nameBuf[128];
+        snprintf(nameBuf, sizeof(nameBuf), "%s 转发开关", deviceName);
+        forwardingSwitchConfig["name"] = nameBuf;
+        char uniqueIdBuf[64];
+        snprintf(uniqueIdBuf, sizeof(uniqueIdBuf), "%s_forwarding_enabled", deviceId);
+        forwardingSwitchConfig["unique_id"] = uniqueIdBuf;
+        forwardingSwitchConfig["state_topic"] = MQTT_TOPIC_STATE;
+        forwardingSwitchConfig["value_template"] = "{{ 'true' if value_json.forwarding_enabled else 'false' }}";
+        forwardingSwitchConfig["command_topic"] = MQTT_TOPIC_COMMAND;
+        forwardingSwitchConfig["payload_on"] = "true";
+        forwardingSwitchConfig["payload_off"] = "false";
+        forwardingSwitchConfig["state_on"] = "true";
+        forwardingSwitchConfig["state_off"] = "false";
+        forwardingSwitchConfig["icon"] = "mdi:swap-horizontal";
+        forwardingSwitchConfig["device"] = deviceDoc;
+        
+        char forwardingSwitchTopic[128];
+        snprintf(forwardingSwitchTopic, sizeof(forwardingSwitchTopic), "%s/switch/%s/forwarding_enabled/config", 
+                 MQTT_DISCOVERY_PREFIX, deviceId);
+        String forwardingSwitchPayload;
+        serializeJson(forwardingSwitchConfig, forwardingSwitchPayload);
+        DEBUG_PRINTF("[HA Discovery] 转发开关消息大小: %d bytes\n", forwardingSwitchPayload.length());
+        if (mqtt.publish(forwardingSwitchTopic, forwardingSwitchPayload, true)) {
+            DEBUG_PRINTLN("[HA Discovery] ✓ 转发开关配置已发布");
+        } else {
+            DEBUG_PRINTLN("[HA Discovery] ✗ 转发开关配置发布失败");
+            allPublished = false;
+        }
+    }  // forwardingSwitchConfig在这里销毁，释放内存
     
     if (allPublished) {
         discoveryPublished = true;
@@ -274,11 +373,15 @@ void HAMQTTHandler::publishDiscoveryConfig() {
         logger.log("mqtt", "Home Assistant Discovery 配置已发布");
         
         // 发布初始状态（检查内存）
+        // 注意：不立即调用publishState()，避免在Discovery发布过程中触发栈溢出
+        // 状态将在下次update()时通过publishEnhancedState()发布
         if (MemoryMonitor::checkMemory(1024)) {
             char statusTopic[128];
             snprintf(statusTopic, sizeof(statusTopic), "%s/status", MQTT_TOPIC_STATE);
             mqtt.publish(statusTopic, "online", true);
-            publishState("ready", "设备已就绪");
+            // 延迟状态发布，避免栈溢出
+            // 重置时间戳，让下次update()立即发布状态（这样转发开关能获取到初始状态）
+            lastStatePublishTime = 0;
         }
     } else {
         DEBUG_PRINTLN("[HA Discovery] ✗ 部分配置发布失败，将在下次重试");
@@ -289,6 +392,19 @@ void HAMQTTHandler::processCommand(const String& payload) {
     // 使用统一的内存检查
     if (!MemoryMonitor::checkMemory(2048)) {
         DEBUG_PRINTLN("[HA MQTT] 内存不足，跳过命令处理");
+        return;
+    }
+    
+    // 检查是否是转发开关的命令（直接发送 true/false）
+    String trimmedPayload = payload;
+    trimmedPayload.trim();
+    if (trimmedPayload == "true" || trimmedPayload == "false") {
+        // 包装成JSON格式调用 handleSetForwardingEnabled()
+        DynamicJsonDocument doc(128);
+        doc["enabled"] = (trimmedPayload == "true");
+        String jsonPayload;
+        serializeJson(doc, jsonPayload);
+        handleSetForwardingEnabled(jsonPayload);
         return;
     }
     
@@ -748,8 +864,11 @@ void HAMQTTHandler::publishEnhancedState() {
         return;  // 内存不足，跳过发布
     }
     
-    // 使用较小的缓冲区，根据实际需要动态调整
-    DynamicJsonDocument doc(1024);
+    // 喂看门狗，避免发布过程中超时
+    ESP.wdtFeed();
+    
+    // 使用较小的缓冲区（移除最近信号后可以减少）
+    DynamicJsonDocument doc(512);
     
     // 主状态
     String status = "ready";
@@ -761,17 +880,18 @@ void HAMQTTHandler::publishEnhancedState() {
     // 转发状态
     doc["forwarding_enabled"] = forwarder.isEnabled();
     
-    // 学习状态
+    // 学习状态（优化：避免在栈上创建大的LearnedDevice对象）
     if (learner != nullptr) {
         if (learner->isLearningDevice()) {
             doc["learn_mode"] = "device";
-            doc["learn_progress"] = learner->getLearnProgress();
-            LearnedDevice device;
-            if (learner->getLearnedDevice(device)) {
-                doc["learn_device"] = device.deviceName;
-            } else {
-                doc["learn_device"] = "";
-            }
+            // 直接获取设备名称字符串，避免复制整个LearnedDevice结构体
+            String deviceName = learner->getDeviceName();
+            doc["learn_device"] = deviceName;
+            deviceName = "";  // 立即释放
+            
+            String progress = learner->getLearnProgress();
+            doc["learn_progress"] = progress;
+            progress = "";  // 立即释放
         } else {
             doc["learn_mode"] = "none";
             doc["learn_progress"] = "";
@@ -786,38 +906,47 @@ void HAMQTTHandler::publishEnhancedState() {
     // 映射规则数量
     doc["rule_count"] = mapper.getRuleCount();
     
-    // 最近接收的信号（只在内存充足时添加）
-    if (MemoryMonitor::checkMemory(3072)) {
-        RecentSignal signals[MAX_RECENT_SIGNALS];
-        int signalCount = logger.getRecentSignals(signals, 1);  // 只获取最近1条
-        if (signalCount > 0) {
-            JsonObject recentSignal = doc.createNestedObject("recent_signal");
-            recentSignal["timestamp"] = signals[0].timestamp;
-            recentSignal["matched"] = signals[0].matched;
-            
-            JsonObject signal = recentSignal.createNestedObject("signal");
-            signal["protocol"] = signals[0].signal.protocol;
-            signal["data"] = uint32ToHexString(signals[0].signal.data);
-            signal["hash"] = uint32ToHexString(signals[0].signal.hash);
-            signal["isProtocol"] = signals[0].signal.isProtocol;
-        }
-    }
+    // 注意：最近信号信息已移除，用户可通过 get_recent_signals API接口查询
+    // 移除自动获取以减少内存分配和JSON构建开销，提升转发性能
     
     doc["timestamp"] = millis();
+    
+    // 喂看门狗，避免序列化过程中超时
+    ESP.wdtFeed();
     
     String output;
     serializeJson(doc, output);
     mqtt.publish(MQTT_TOPIC_STATE, output);
+    
+    // 发布完成后再次喂看门狗
+    ESP.wdtFeed();
 }
 
 void HAMQTTHandler::mqttCallback(char* topic, byte* payload, unsigned int length) {
     if (instance == nullptr) return;
     
-    String topicStr = String(topic);
-    String payloadStr = "";
-    for (unsigned int i = 0; i < length; i++) {
-        payloadStr += (char)payload[i];
-    }
+    // 优化：避免在中断上下文中创建String对象，使用静态缓冲区
+    // 限制topic和payload的最大长度，避免栈溢出
+    const size_t MAX_TOPIC_LEN = 128;
+    const size_t MAX_PAYLOAD_LEN = 512;
+    
+    static char topicBuf[MAX_TOPIC_LEN];
+    static char payloadBuf[MAX_PAYLOAD_LEN];
+    
+    // 复制topic（限制长度）
+    size_t topicLen = strlen(topic);
+    if (topicLen >= MAX_TOPIC_LEN) topicLen = MAX_TOPIC_LEN - 1;
+    memcpy(topicBuf, topic, topicLen);
+    topicBuf[topicLen] = '\0';
+    
+    // 复制payload（限制长度）
+    size_t payloadLen = (length < MAX_PAYLOAD_LEN) ? length : MAX_PAYLOAD_LEN;
+    memcpy(payloadBuf, payload, payloadLen);
+    payloadBuf[payloadLen] = '\0';
+    
+    // 创建String对象（在中断上下文外，但使用静态缓冲区）
+    String topicStr = String(topicBuf);
+    String payloadStr = String(payloadBuf);
     
     instance->handleCommand(topicStr, payloadStr);
 }

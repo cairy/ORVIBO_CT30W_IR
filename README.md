@@ -725,12 +725,14 @@ Payload（协议格式字符串）：
     - `learn_device`：当前学习的设备名称
     - `learn_progress`：学习进度（如"2/5"）
     - `rule_count`：映射规则数量
-    - `recent_signal`：最近接收的信号信息
-- **传感器**：最近接收信号（`orvibo_ct30w_recent_signal`）
-  - 状态：最近接收信号的协议类型
-  - 属性：信号详细信息（协议、数据、是否匹配等）
+    - ~~`recent_signal`~~：已移除（为提升转发性能，不再自动更新）。如需最近信号信息，请使用 `get_recent_signals` API接口查询
 - **开关**：启用转发（`orvibo_ct30w_forwarding_enabled`）
+  - 状态：转发功能的启用状态（`true` / `false`）
+  - 可通过界面直接操作，或通过 MQTT 命令控制
 - **文本传感器**：日志信息（`orvibo_ct30w_log`）
+  - 状态：最新日志条目（格式：`[类型] 内容`）
+  - 事件驱动更新：仅在 Discovery 发布时更新初始状态，之后通过日志记录事件更新
+  - 如果无日志，显示"无日志"
 
 #### 使用说明
 
@@ -795,6 +797,16 @@ data:
 
 **3. 控制转发开关：**
 转发开关实体可以直接在 Home Assistant 界面中操作，也可以通过服务调用：
+
+方式一：直接发送 `true` 或 `false`（推荐，用于开关实体）：
+```yaml
+service: mqtt.publish
+data:
+  topic: homeassistant/orvibo-ct30w/command
+  payload: "true"  # 或 "false" 来禁用
+```
+
+方式二：使用 JSON 格式：
 ```yaml
 service: mqtt.publish
 data:
@@ -824,9 +836,8 @@ automation:
     trigger:
       - platform: mqtt
         topic: homeassistant/orvibo-ct30w/state
-    condition:
-      condition: template
-      value_template: "{{ trigger.payload_json.recent_signal.matched == false }}"
+    # 注意：recent_signal 属性已移除，需要通过API查询
+    # 如果需要基于信号触发，建议使用日志传感器或直接查询API
     action:
       - service: mqtt.publish
         data:
@@ -835,6 +846,7 @@ automation:
             {
               "action": "get_recent_signals"
             }
+      # 然后处理返回的信号数据
 ```
 
 #### 统一信号格式

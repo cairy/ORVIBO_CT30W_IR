@@ -25,9 +25,13 @@ void MQTTClient::update() {
         unsigned long now = millis();
         if (now - lastReconnectAttempt > 5000) {
             lastReconnectAttempt = now;
+            // 喂看门狗，避免连接过程中超时
+            ESP.wdtFeed();
             attemptReconnect();
         }
     } else {
+        // 喂看门狗，避免loop()处理消息时超时
+        ESP.wdtFeed();
         client.loop();
     }
 }
