@@ -204,7 +204,7 @@
 
 | 功能 | HTTP REST API | MQTT Action | 说明 |
 |------|---------------|-------------|------|
-| 获取设备状态 | GET `/api/status` | - | Web 特有 |
+| 获取设备状态 | GET `/api/status` | `get_status` | 返回设备状态信息 |
 | 查询映射规则 | GET `/api/maps` | `query_maps` | 返回所有规则数组 |
 | 更新映射规则 | PUT `/api/maps` | `update_map` | 支持单个和批量更新 |
 | 获取日志 | GET `/api/logs` | `get_logs` | 返回所有日志数组（系统只保留最近3条） |
@@ -555,6 +555,7 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 | `get_recent_signals` | 获取最近接收的信号 | 无 | GET `/api/signals/recent` |
 | `send_signal` | 发送红外信号 | `signal`, `repeatCount` | POST `/api/signals/send` |
 | `set_forwarding_enabled` | 设置转发启用状态 | `enabled` | - |
+| `get_status` | 获取设备状态 | 无 | GET `/api/status` |
 
 **指令示例：**
 
@@ -761,7 +762,15 @@ Payload：Base64字符串|repeatCount 或 [数组]|repeatCount 或 protocol,data
 所有MQTT接口使用统一的响应格式，详见 [4.1 统一数据结构格式](#41-统一数据结构格式)。
 
 **状态响应**（MQTT state主题）：
-所有指令执行后，设备会在 `state` 主题发布统一格式的响应。状态发布时，设备状态信息在`data`字段中：
+所有指令执行后，设备会在 `state` 主题发布统一格式的响应。设备状态发布采用**完全事件驱动**机制：
+
+- **事件驱动更新**：设备状态只在以下情况实际变化时发布：
+  - 学习开始/停止（`learn_mode`、`status` 变化）
+  - 转发开关变化（`forwarding_enabled` 变化）
+  - 映射规则数量变化（`rule_count` 变化）
+  - Discovery 发布成功后首次连接
+- **查询响应独立**：查询接口（如 `query_maps`、`get_logs` 等）的响应发布到 `state` 主题，不会被设备状态发布覆盖
+- **状态信息格式**：状态发布时，设备状态信息在`data`字段中：
 ```json
 {
   "success": true,
@@ -800,7 +809,7 @@ Payload：Base64字符串|repeatCount 或 [数组]|repeatCount 或 protocol,data
   - 可通过界面直接操作，或通过 MQTT 命令控制
 - **文本传感器**：日志信息（`orvibo_ct30w_log`）
   - 状态：最新日志条目（格式：`[类型] 内容`）
-  - 事件驱动更新：仅在 Discovery 发布时更新初始状态，之后通过日志记录事件更新
+  - 事件驱动更新：每次有新日志时自动推送最新一条到MQTT主题，Home Assistant会自动记录日志变更历史
   - 如果无日志，显示"无日志"
 
 #### 使用说明
@@ -846,7 +855,20 @@ data:
 
 响应会在 `homeassistant/orvibo-ct30w/state` 主题中发布。
 
-**2. 发送红外信号：**
+**2. 获取设备状态：**
+```yaml
+service: mqtt.publish
+data:
+  topic: homeassistant/orvibo-ct30w/command
+  payload: |
+    {
+      "action": "get_status"
+    }
+```
+
+响应会在 `homeassistant/orvibo-ct30w/state` 主题中发布，格式与设备状态发布一致。
+
+**3. 发送红外信号：**
 ```yaml
 service: mqtt.publish
 data:
@@ -864,7 +886,7 @@ data:
     }
 ```
 
-**3. 控制转发开关：**
+**4. 控制转发开关：**
 转发开关实体可以直接在 Home Assistant 界面中操作，也可以通过服务调用：
 
 方式一：直接发送 `true` 或 `false`（推荐，用于开关实体）：

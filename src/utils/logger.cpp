@@ -3,7 +3,8 @@
 #include <ArduinoJson.h>
 
 Logger::Logger() : log_index(0), log_count(0), needsSave(false),
-                   recentSignalIndex(0), recentSignalCount(0) {
+                   recentSignalIndex(0), recentSignalCount(0),
+                   logPublishCallback(nullptr) {
     for (int i = 0; i < MAX_LOG_ENTRIES; i++) {
         logs[i].valid = false;
         logs[i].type[0] = '\0';
@@ -58,6 +59,13 @@ void Logger::log(const String& type, const String& content) {
     Serial.printf("[%s] %s\n", logs[log_index == 0 ? MAX_LOG_ENTRIES - 1 : log_index - 1].type, 
                   logs[log_index == 0 ? MAX_LOG_ENTRIES - 1 : log_index - 1].content);
     
+    // 事件驱动：推送最新日志到MQTT（如果回调已设置）
+    if (logPublishCallback != nullptr) {
+        // 获取最新日志条目索引
+        int latestIndex = (log_index == 0) ? (MAX_LOG_ENTRIES - 1) : (log_index - 1);
+        logPublishCallback(logs[latestIndex].type, logs[latestIndex].content);
+    }
+    
     // 优化：只在达到阈值或内存压力大时才标记保存
     // 如果日志数量达到一定阈值（MAX_LOG_ENTRIES的2/3）或内存使用率较高，才标记保存
     // 这样可以减少Flash写入次数，延长Flash寿命
@@ -105,6 +113,13 @@ void Logger::log(const char* type, const char* content) {
     // 串口输出（统一格式：与MQTT日志传感器一致）
     Serial.printf("[%s] %s\n", logs[log_index == 0 ? MAX_LOG_ENTRIES - 1 : log_index - 1].type, 
                   logs[log_index == 0 ? MAX_LOG_ENTRIES - 1 : log_index - 1].content);
+    
+    // 事件驱动：推送最新日志到MQTT（如果回调已设置）
+    if (logPublishCallback != nullptr) {
+        // 获取最新日志条目索引
+        int latestIndex = (log_index == 0) ? (MAX_LOG_ENTRIES - 1) : (log_index - 1);
+        logPublishCallback(logs[latestIndex].type, logs[latestIndex].content);
+    }
     
     // 优化：只在达到阈值或内存压力大时才标记保存
     static int logSaveThreshold = (MAX_LOG_ENTRIES * 2) / 3;  // 日志数量阈值（约13条）
@@ -216,6 +231,10 @@ void Logger::clearLogs() {
     needsSave = true;
     saveToFlash();
     needsSave = false;
+}
+
+void Logger::setLogPublishCallback(LogPublishCallback callback) {
+    logPublishCallback = callback;
 }
 
 void Logger::publishToHA(const String& type, const String& content) {

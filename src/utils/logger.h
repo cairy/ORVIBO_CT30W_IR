@@ -24,6 +24,9 @@ struct RecentSignal {
 // 日志管理器
 class Logger {
 public:
+    // 日志推送回调函数类型（事件驱动推送）
+    typedef void (*LogPublishCallback)(const char* type, const char* content);
+    
     Logger();
     bool init();
     void log(const String& type, const String& content);
@@ -39,6 +42,9 @@ public:
     void clearLogs();
     void publishToHA(const String& type, const String& content);
     void flush();  // 强制保存到Flash
+    
+    // 设置日志推送回调函数（由HA接口模块设置）
+    void setLogPublishCallback(LogPublishCallback callback);
 
 private:
     LogEntry logs[MAX_LOG_ENTRIES];
@@ -50,6 +56,9 @@ private:
     RecentSignal recentSignals[MAX_RECENT_SIGNALS];
     int recentSignalIndex;
     int recentSignalCount;
+    
+    // 日志推送回调函数指针（事件驱动推送）
+    LogPublishCallback logPublishCallback;
     
     void saveToFlash();
     void loadFromFlash();

@@ -16,7 +16,7 @@ HAMQTTHandler::HAMQTTHandler(MQTTClient& mqtt, IRMapper& mapper,
       learner(nullptr), discoveryPublished(false), 
       lastDiscoveryAttempt(0), firstConnectedTime(0), discoveryRetryCount(0),
       lastStatePublishTime(0), lastPublishedForwardingEnabled(false),
-      lastPublishedRuleCount(0), lastStateCheckTime(0), stateCacheInitialized(false) {
+      lastPublishedRuleCount(0), stateCacheInitialized(false) {
     // 初始化状态缓存数组
     lastPublishedStatus[0] = '\0';
     lastPublishedLearnMode[0] = '\0';
@@ -25,6 +25,17 @@ HAMQTTHandler::HAMQTTHandler(MQTTClient& mqtt, IRMapper& mapper,
 
 bool HAMQTTHandler::init() {
     mqtt.setCallback(mqttCallback);
+    
+    // 设置日志推送回调（事件驱动模式）
+    logger.setLogPublishCallback([](const char* type, const char* content) {
+        if (instance != nullptr) {
+            // 格式化日志条目（与HA传感器格式一致）
+            char logStr[128];
+            snprintf(logStr, sizeof(logStr), "[%s] %s", type, content);
+            instance->publishLog(String(logStr));
+        }
+    });
+    
     // 订阅将在 MQTT 连接成功后进行
     return true;
 }
@@ -102,23 +113,9 @@ void HAMQTTHandler::update() {
         discoveryRetryCount = 0;
     }
     
-    // 事件驱动状态发布（转发时跳过，状态变化时发布，60秒检查一次）
-    if (isConnected && discoveryPublished) {
-        unsigned long now = millis();
-        // 如果正在转发，跳过状态发布，避免影响转发性能
-        if (!forwarder.isForwarding()) {
-            // 如果状态缓存未初始化，立即发布
-            if (!stateCacheInitialized) {
-                lastStateCheckTime = now;
-                publishEnhancedState();
-            }
-            // 如果超过60秒未检查，检查状态是否有变化（事件驱动）
-            else if (now - lastStateCheckTime >= STATE_CHECK_INTERVAL) {
-                lastStateCheckTime = now;
-                publishEnhancedState();  // 函数内部会检查状态是否有变化，无变化则跳过
-            }
-        }
-        // 如果正在转发，跳过本次状态发布，等待下次机会
+    // 首次连接时发布状态（事件驱动：只在未初始化时发布一次）
+    if (isConnected && discoveryPublished && !stateCacheInitialized) {
+        publishEnhancedState();
     }
 }
 
@@ -163,10 +160,18 @@ void HAMQTTHandler::publishState(const String& state, const String& message) {
 }
 
 void HAMQTTHandler::publishLog(const String& logEntry) {
-    if (mqtt.isConnected() && discoveryPublished) {
-        // 发布到日志主题，更新 Home Assistant 日志传感器状态
-        mqtt.publish(MQTT_TOPIC_LOG, logEntry);
+    // 优化：检查内存和连接状态
+    if (!mqtt.isConnected() || !discoveryPublished) {
+        return;
     }
+    
+    // 内存检查：日志推送需要较少内存（约512字节）
+    if (!MemoryMonitor::checkMemory(512)) {
+        return;  // 内存不足，跳过推送
+    }
+    
+    // 发布到日志主题，更新 Home Assistant 日志传感器状态
+    mqtt.publish(MQTT_TOPIC_LOG, logEntry);
 }
 
 void HAMQTTHandler::publishDiscoveryConfig() {
@@ -392,17 +397,15 @@ void HAMQTTHandler::publishDiscoveryConfig() {
         DEBUG_PRINTLN("[HA Discovery] ✓ 所有 Discovery 配置已成功发布");
         logger.log("mqtt", "Home Assistant Discovery 配置已发布");
         
-        // 发布初始状态（检查内存）
-        // 注意：不立即调用publishState()，避免在Discovery发布过程中触发栈溢出
-        // 状态将在下次update()时通过publishEnhancedState()发布
+        // 发布在线状态
         if (MemoryMonitor::checkMemory(1024)) {
             char statusTopic[128];
             snprintf(statusTopic, sizeof(statusTopic), "%s/status", MQTT_TOPIC_STATE);
             mqtt.publish(statusTopic, "online", true);
-            // 延迟状态发布，避免栈溢出
-            // 重置时间戳，让下次update()立即发布状态（这样转发开关能获取到初始状态）
-            lastStatePublishTime = 0;
         }
+        
+        // Discovery发布成功后，发布初始设备状态（事件驱动）
+        publishEnhancedState();
     } else {
         DEBUG_PRINTLN("[HA Discovery] ✗ 部分配置发布失败，将在下次重试");
     }
@@ -466,6 +469,8 @@ void HAMQTTHandler::processCommand(const String& payload) {
         handleSendSignal(payload);
     } else if (action == "set_forwarding_enabled") {
         handleSetForwardingEnabled(payload);
+    } else if (action == "get_status") {
+        handleGetStatus();
     } else {
         publishState("error", "Unknown action: " + action);
     }
@@ -499,6 +504,7 @@ void HAMQTTHandler::handleUpdateMap(const String& json) {
     
     if (success) {
         publishState("success", message);
+        publishEnhancedState();  // 规则数量可能变化，发布设备状态
     } else {
         publishState("error", message);
     }
@@ -537,6 +543,7 @@ void HAMQTTHandler::handleStartLearn(const String& json) {
     
     if (success) {
         publishState("success", message);
+        publishEnhancedState();  // 学习状态变化，发布设备状态
     } else {
         publishState("error", message);
     }
@@ -580,6 +587,7 @@ void HAMQTTHandler::handleStopLearn(const String& json) {
     
     if (success) {
         publishState("success", message);
+        publishEnhancedState();  // 学习状态变化，发布设备状态
     } else {
         publishState("error", message);
     }
@@ -725,6 +733,9 @@ void HAMQTTHandler::handleSetForwardingEnabled(const String& json) {
     String message = "Forwarding " + String(enabled ? "enabled" : "disabled");
     String output = UnifiedAPI::createSuccessResponse(message, "success");
     mqtt.publish(MQTT_TOPIC_STATE, output);
+    
+    // 转发状态变化，发布设备状态
+    publishEnhancedState();
 }
 
 void HAMQTTHandler::handleSmartIRSignal(const String& payload) {
@@ -747,6 +758,75 @@ void HAMQTTHandler::handleSmartIRSignal(const String& payload) {
     } else {
         DEBUG_PRINTLN("[SmartIR] 信号发送失败");
     }
+}
+
+void HAMQTTHandler::handleGetStatus() {
+    // 使用统一的内存检查
+    if (!MemoryMonitor::checkMemory(2048)) {
+        publishState("error", "Low Memory");
+        return;
+    }
+    
+    // 喂看门狗，避免发布过程中超时
+    ESP.wdtFeed();
+    
+    // 获取当前状态值（复用 publishEnhancedState() 的逻辑）
+    const char* currentStatus = "ready";
+    if (learner != nullptr && learner->isLearningDevice()) {
+        currentStatus = "learning";
+    }
+    
+    bool currentForwardingEnabled = forwarder.isEnabled();
+    
+    const char* currentLearnMode = "none";
+    if (learner != nullptr && learner->isLearningDevice()) {
+        currentLearnMode = "device";
+    }
+    
+    int currentRuleCount = mapper.getRuleCount();
+    
+    // 使用统一格式，但保留所有HA需要的字段
+    DynamicJsonDocument doc(512);
+    
+    // 统一格式：success和status在顶层
+    doc["success"] = true;
+    doc["status"] = currentStatus;
+    
+    // 数据放在data对象中（HA需要的字段）
+    JsonObject dataObj = doc.createNestedObject("data");
+    dataObj["forwarding_enabled"] = currentForwardingEnabled;
+    dataObj["learn_mode"] = currentLearnMode;
+    
+    // 学习状态（优化：避免在栈上创建大的LearnedDevice对象）
+    if (learner != nullptr && learner->isLearningDevice()) {
+        // 直接获取设备名称字符串，避免复制整个LearnedDevice结构体
+        String deviceName = learner->getDeviceName();
+        dataObj["learn_device"] = deviceName;
+        deviceName = "";  // 立即释放
+        
+        String progress = learner->getLearnProgress();
+        dataObj["learn_progress"] = progress;
+        progress = "";  // 立即释放
+    } else {
+        dataObj["learn_progress"] = "";
+        dataObj["learn_device"] = "";
+    }
+    
+    // 映射规则数量
+    dataObj["rule_count"] = currentRuleCount;
+    
+    UnifiedAPI::addTimestamp(doc);
+    
+    // 喂看门狗，避免序列化过程中超时
+    ESP.wdtFeed();
+    
+    String output;
+    serializeJson(doc, output);
+    mqtt.publish(MQTT_TOPIC_STATE, output);
+    
+    // 注意：查询接口不更新状态缓存，因为这不是状态变化事件
+    // 发布完成后再次喂看门狗
+    ESP.wdtFeed();
 }
 
 void HAMQTTHandler::publishEnhancedState() {

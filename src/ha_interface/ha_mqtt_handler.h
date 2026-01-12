@@ -40,9 +40,7 @@ private:
     bool lastPublishedForwardingEnabled;  // 上次发布的转发状态
     char lastPublishedLearnMode[16];  // 上次发布的学习模式（"none"/"device"）
     int lastPublishedRuleCount;  // 上次发布的规则数量
-    unsigned long lastStateCheckTime;  // 上次状态检查时间
     bool stateCacheInitialized;  // 状态缓存是否已初始化
-    static const unsigned long STATE_CHECK_INTERVAL = 60000;  // 60秒检查一次状态（事件驱动：只在状态变化时发布）
     
     void processCommand(const String& payload);
     void publishDiscoveryConfig();
@@ -56,6 +54,7 @@ private:
     void handleGetRecentSignals(const String& json);
     void handleSendSignal(const String& json);
     void handleSetForwardingEnabled(const String& json);
+    void handleGetStatus();  // 获取设备状态
     void handleSmartIRSignal(const String& payload);  // 处理 SmartIR 发送的信号（Base64/数组/协议格式）
     
     static void mqttCallback(char* topic, byte* payload, unsigned int length);
