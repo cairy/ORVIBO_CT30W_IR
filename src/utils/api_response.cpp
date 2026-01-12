@@ -1,59 +1,23 @@
 #include "api_response.h"
 
 String APIResponse::success(const String& data) {
-    DynamicJsonDocument doc(256 + data.length());
-    doc["success"] = true;
-    if (data.length() > 0) {
-        doc["data"] = data;
-    }
-    String output;
-    output.reserve(256 + data.length());
-    serializeJson(doc, output);
-    return output;
+    return UnifiedAPI::createSuccessResponse(data, "success");
 }
 
 String APIResponse::success(JsonObject& data) {
-    DynamicJsonDocument doc(512);
-    doc["success"] = true;
-    doc["data"] = data;
-    String output;
-    output.reserve(512);
-    serializeJson(doc, output);
-    return output;
+    return UnifiedAPI::createSuccessResponse(data, "success");
 }
 
 String APIResponse::success(JsonArray& data) {
-    DynamicJsonDocument doc(512);
-    doc["success"] = true;
-    doc["data"] = data;
-    String output;
-    output.reserve(512);
-    serializeJson(doc, output);
-    return output;
+    return UnifiedAPI::createSuccessResponse(data, "success");
 }
 
 String APIResponse::error(const String& message, int code) {
-    DynamicJsonDocument doc(256 + message.length());
-    doc["success"] = false;
-    doc["error"] = message;
-    if (code > 0) {
-        doc["code"] = code;
-    }
-    String output;
-    output.reserve(256 + message.length());
-    serializeJson(doc, output);
-    return output;
+    return UnifiedAPI::createErrorResponse(message, code);
 }
 
 String APIResponse::executing(const String& message) {
-    DynamicJsonDocument doc(256 + message.length());
-    doc["success"] = true;
-    doc["status"] = "executing";
-    doc["message"] = message;
-    String output;
-    output.reserve(256 + message.length());
-    serializeJson(doc, output);
-    return output;
+    return UnifiedAPI::createExecutingResponse(message);
 }
 
 String APIResponse::fromJsonDocument(DynamicJsonDocument& doc, bool isSuccess) {

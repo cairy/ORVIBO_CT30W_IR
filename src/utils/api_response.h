@@ -3,19 +3,20 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include "unified_api.h"
 
-// 统一的API响应工具类
+// 统一的API响应工具类（使用统一格式）
 class APIResponse {
 public:
-    // 创建成功响应
+    // 创建成功响应（统一格式）
     static String success(const String& data = "");
     static String success(JsonObject& data);
     static String success(JsonArray& data);
     
-    // 创建错误响应
+    // 创建错误响应（统一格式）
     static String error(const String& message, int code = 0);
     
-    // 创建执行中响应
+    // 创建执行中响应（统一格式）
     static String executing(const String& message);
     
     // 从JSON文档创建响应（用于复杂数据结构）

@@ -6,6 +6,7 @@
 #include "utils/memory_monitor.h"
 #include "utils/hex_utils.h"
 #include "utils/api_response.h"
+#include "utils/api_handlers.h"
 #include "config/constants.h"
 #include <ArduinoJson.h>
 
@@ -209,208 +210,89 @@ void WebServer::handleAPIStatus() {
         return;
     }
     
+    // 使用统一格式
     DynamicJsonDocument doc(256);
-    doc["success"] = true;
-    doc["status"] = "running";
-    doc["ruleCount"] = mapper->getRuleCount();
-    doc["forwarding"] = forwarder->isForwarding();
+    JsonObject dataObj = doc.createNestedObject("data");
+    dataObj["status"] = "running";
+    dataObj["ruleCount"] = mapper->getRuleCount();
+    dataObj["forwarding"] = forwarder->isForwarding();
     
-    String output;
-    output.reserve(256);
-    serializeJson(doc, output);
+    String output = APIResponse::success(dataObj);
     sendJSONResponse(200, output);
 }
 
 void WebServer::handleAPIMaps() {
-    // 内存检查：需要较大内存用于规则数组和JSON
-    if (!checkMemoryBeforeAPI(3000)) {
-        sendErrorResponse(503, "Insufficient memory");
-        return;
-    }
-    
     if (mapper == nullptr) {
         sendErrorResponse(500, "Service not initialized");
         return;
     }
     
-    int count = mapper->getRuleCount();
-    
-    // 限制最大数量到10个，避免栈溢出和内存不足
-    int maxRules = (count < 10) ? count : 10;
-    
-    // 使用堆分配而不是栈分配，避免栈溢出
-    IR_MapRule* rules = new (std::nothrow) IR_MapRule[maxRules];
-    if (rules == nullptr) {
-        sendErrorResponse(503, "Failed to allocate memory for rules");
+    // 使用公共函数
+    String dataJson = APIHandlers::handleQueryMaps(*mapper);
+    if (dataJson.length() == 0) {
+        sendErrorResponse(503, "Insufficient memory");
         return;
     }
     
-    bool success = mapper->getAllRules(rules, maxRules);
-    if (!success) {
-        delete[] rules;
-        sendErrorResponse(500, "Failed to get rules");
+    // 解析为JsonArray并包装为统一响应
+    DynamicJsonDocument dataDoc(2048);
+    DeserializationError err = deserializeJson(dataDoc, dataJson);
+    if (err) {
+        sendErrorResponse(500, "Failed to parse rules");
         return;
     }
     
-    // 使用统一的内存监控工具计算JSON大小
-    size_t jsonSize = MemoryMonitor::calculateRulesJsonSize(maxRules);
-    
-    DynamicJsonDocument doc(jsonSize);
-    JsonArray rulesArray = doc.to<JsonArray>();
-    
-    // 使用统一的转换方法
-    for (int i = 0; i < maxRules; i++) {
-        JsonObject ruleObj = rulesArray.createNestedObject();
-        IRMapper::ruleToJsonObject(rules[i], ruleObj, true);  // true表示使用hex格式
-    }
-    
-    // 立即释放规则数组内存
-    delete[] rules;
-    
-    String output;
-    output.reserve(jsonSize);
-    serializeJson(doc, output);
+    JsonArray rulesArray = dataDoc.as<JsonArray>();
+    String output = APIResponse::success(rulesArray);
     sendJSONResponse(200, output);
 }
 
 void WebServer::handleAPIUpdateMap() {
-    // 内存检查：需要解析JSON和更新规则
     String body = server.arg("plain");
     if (body.length() == 0) {
         sendErrorResponse(400, "Missing request body");
         return;
     }
     
-    // 根据body长度动态计算JSON大小，限制最大4KB
-    size_t jsonSize = body.length() + 512;
-    if (jsonSize > 4096) jsonSize = 4096;
-    if (jsonSize < 512) jsonSize = 512;
-    
-    // 检查内存是否足够
-    if (!checkMemoryBeforeAPI(jsonSize + 1024)) {
-        sendErrorResponse(503, "Insufficient memory");
-        return;
-    }
-    
     if (mapper == nullptr) {
         sendErrorResponse(500, "Service not initialized");
         return;
     }
     
-    DynamicJsonDocument doc(jsonSize);
-    DeserializationError error = deserializeJson(doc, body);
+    // 使用公共函数
+    bool success = false;
+    String message = APIHandlers::handleUpdateMap(*mapper, body, success);
     
-    if (error) {
-        // 优化：避免创建临时String对象
-        char errorMsg[64];
-        snprintf(errorMsg, sizeof(errorMsg), "Invalid JSON: %s", error.c_str());
-        sendErrorResponse(400, errorMsg);
-        return;
-    }
-    
-    // 检查是否是批量更新（包含rules数组）
-    if (doc.containsKey("rules")) {
-        // 批量更新：清空现有规则，添加新规则
-        JsonArray rulesArray = doc["rules"];
-        
-        // 清空所有现有规则（避免在栈上分配大数组导致栈溢出）
-        // 使用小数组存储规则ID，逐个删除
-        uint8_t ruleIds[10];  // 限制最多10个规则ID（每个ID 1字节，总共10字节）
-        int idCount = 0;
-        
-        // 获取所有规则ID（使用较小的临时数组，避免栈溢出）
-        int count = mapper->getRuleCount();
-        if (count > 10) count = 10;  // 限制最多10个规则
-        
-        IR_MapRule tempRule;
-        for (uint8_t id = 1; id <= 255 && idCount < count; id++) {
-            if (mapper->getRule(id, tempRule)) {
-                ruleIds[idCount++] = id;
-            }
-        }
-        
-        // 删除找到的所有规则
-        for (int i = 0; i < idCount; i++) {
-            mapper->deleteRule(ruleIds[i]);
-        }
-        
-        // 添加新规则（使用统一的转换方法）
-        int successCount = 0;
-        for (JsonObject ruleObj : rulesArray) {
-            IR_MapRule rule;
-            if (IRMapper::jsonObjectToRule(ruleObj, rule)) {
-                if (mapper->addRule(rule)) {
-                    successCount++;
-                }
-            }
-        }
-        
-        sendJSONResponse(200, APIResponse::success(String("Rules updated, count: ") + String(successCount)));
+    if (success) {
+        sendJSONResponse(200, APIResponse::success(message));
     } else {
-        // 单个更新（保持向后兼容）
-        uint8_t id = doc["id"] | 0;
-        if (id == 0) {
-            sendErrorResponse(400, "Invalid rule ID or missing 'rules' array");
-            return;
-        }
-        
-        JsonObject ruleObj = doc["rule"];
-        if (ruleObj.isNull()) {
-            sendErrorResponse(400, "Missing 'rule' field");
-            return;
-        }
-        
-        IR_MapRule rule;
-        if (IRMapper::jsonObjectToRule(ruleObj, rule)) {
-            if (mapper->updateRule(id, rule)) {
-                sendJSONResponse(200, APIResponse::success("Rule updated"));
-            } else {
-                sendErrorResponse(500, "Failed to update rule");
-            }
-        } else {
-            sendErrorResponse(400, "Invalid rule format");
-        }
+        sendErrorResponse(400, message);
     }
 }
 
 void WebServer::handleAPILogs() {
-    // 内存检查
-    if (!checkMemoryBeforeAPI(2048)) {
-        sendErrorResponse(503, "Insufficient memory");
-        return;
-    }
-    
     if (logger == nullptr) {
         sendErrorResponse(500, "Service not initialized");
         return;
     }
     
-    LogEntry entries[MAX_LOG_ENTRIES];
-    int count = logger->getLogCount();
-    logger->getLogs(entries, count);
-    
-    // 限制为最近3条（取最新的）
-    int returnCount = (count > 3) ? 3 : count;
-    int startIdx = (count > 3) ? count - 3 : 0;
-    
-    // 优化：根据返回的日志数量计算JSON大小（限制为3条）
-    size_t jsonSize = 256 + (returnCount * 100);
-    if (jsonSize > 1024) jsonSize = 1024;  // 最多1KB（3条日志）
-    if (jsonSize < 512) jsonSize = 512;
-    
-    DynamicJsonDocument doc(jsonSize);
-    JsonArray logArray = doc.to<JsonArray>();
-    
-    for (int i = 0; i < returnCount; i++) {
-        JsonObject entry = logArray.createNestedObject();
-        entry["timestamp"] = entries[startIdx + i].timestamp;
-        entry["type"] = entries[startIdx + i].type;
-        entry["content"] = entries[startIdx + i].content;
+    // 使用公共函数（返回所有日志，系统只保留3条）
+    String dataJson = APIHandlers::handleGetLogs(*logger);
+    if (dataJson.length() == 0) {
+        sendErrorResponse(503, "Insufficient memory");
+        return;
     }
     
-    String output;
-    output.reserve(jsonSize);
-    serializeJson(doc, output);
+    // 解析为JsonArray并包装为统一响应
+    DynamicJsonDocument dataDoc(1024);
+    DeserializationError err = deserializeJson(dataDoc, dataJson);
+    if (err) {
+        sendErrorResponse(500, "Failed to parse logs");
+        return;
+    }
+    
+    JsonArray logArray = dataDoc.as<JsonArray>();
+    String output = APIResponse::success(logArray);
     sendJSONResponse(200, output);
 }
 
@@ -421,148 +303,62 @@ void WebServer::handleAPILearnStart() {
         return;
     }
     
-    // 估算所需内存：JSON解析 + String对象 + 学习数据结构初始化
-    size_t jsonSize = body.length() + 256;
-    if (jsonSize > 1024) jsonSize = 1024;
-    if (jsonSize < 256) jsonSize = 256;
-    
-    // 内存检查：学习功能需要较多内存
-    if (!checkMemoryBeforeAPI(jsonSize + 2048)) {
-        sendErrorResponse(503, "Insufficient memory");
-        return;
-    }
-    
     if (learner == nullptr) {
         sendErrorResponse(500, "Service not initialized");
         return;
     }
     
-    DynamicJsonDocument doc(jsonSize);
-    DeserializationError error = deserializeJson(doc, body);
+    // 使用公共函数
+    bool success = false;
+    String message = APIHandlers::handleStartLearn(*learner, body, success);
     
-    if (error) {
-        char errorMsg[64];
-        snprintf(errorMsg, sizeof(errorMsg), "Invalid JSON: %s", error.c_str());
-        sendErrorResponse(400, errorMsg);
-        return;
-    }
-    
-    String deviceName = doc["deviceName"] | "";
-    String commandNames = doc["commandNames"] | "";
-    int timeoutSeconds = doc["timeoutSeconds"] | DEFAULT_LEARN_TIMEOUT_SEC;
-    
-    if (deviceName.length() == 0) {
-        sendErrorResponse(400, "Missing 'deviceName' field");
-        return;
-    }
-    
-    if (commandNames.length() == 0) {
-        sendErrorResponse(400, "Missing 'commandNames' field");
-        return;
-    }
-    
-    // 先检查命令数量是否超过限制
-    int commandCount = 0;
-    if (commandNames.length() > 0) {
-        int startPos = 0;
-        int commaPos = commandNames.indexOf(',');
-        while (commaPos >= 0) {
-            String cmdName = commandNames.substring(startPos, commaPos);
-            cmdName.trim();
-            if (cmdName.length() > 0) {
-                commandCount++;
-            }
-            startPos = commaPos + 1;
-            commaPos = commandNames.indexOf(',', startPos);
-        }
-        // 处理最后一个命令
-        if (startPos < commandNames.length()) {
-            String cmdName = commandNames.substring(startPos);
-            cmdName.trim();
-            if (cmdName.length() > 0) {
-                commandCount++;
-            }
-        }
-    }
-    
-    // 检查命令数量限制
-    if (commandCount > MAX_LEARN_COMMANDS) {
-        char errorMsg[128];
-        snprintf(errorMsg, sizeof(errorMsg), "命令数量超过限制，最多支持 %d 个命令，当前有 %d 个", MAX_LEARN_COMMANDS, commandCount);
-        sendErrorResponse(400, errorMsg);
-        return;
-    }
-    
-    // 启动学习
-    if (learner->startDeviceLearn(deviceName, commandNames, timeoutSeconds)) {
-        DynamicJsonDocument response(256);
-        response["success"] = true;
-        response["message"] = "学习已启动";
-        String output;
-        output.reserve(256);
-        serializeJson(response, output);
-        sendJSONResponse(200, output);
+    if (success) {
+        sendJSONResponse(200, APIResponse::success(message));
     } else {
-        sendErrorResponse(500, "Failed to start learning (可能已有学习任务进行中)");
+        sendErrorResponse(400, message);
     }
 }
 
 void WebServer::handleAPILearnStatus() {
-    // 简单API，使用较小的内存检查阈值
-    if (!checkMemoryBeforeAPI(256)) {
-        sendErrorResponse(503, "Insufficient memory");
-        return;
-    }
-    
     if (learner == nullptr) {
         sendErrorResponse(500, "Service not initialized");
         return;
     }
     
-    bool isLearning = learner->isLearningDevice();
-    
-    // 使用固定大小的JSON文档（512字节足够）
-    DynamicJsonDocument doc(512);
-    doc["isLearning"] = isLearning;
-    
-    if (isLearning) {
-        String progress = learner->getLearnProgress();
-        doc["progress"] = progress;
-        
-        String currentCommand = learner->getCurrentCommandName();
-        doc["currentCommand"] = currentCommand;
-    } else {
-        doc["progress"] = "";
-        doc["currentCommand"] = "";
+    // 使用公共函数（简化版）
+    String dataJson = APIHandlers::handleQueryLearnStatus(*learner);
+    if (dataJson.length() == 0) {
+        sendErrorResponse(503, "Insufficient memory");
+        return;
     }
     
-    String output;
-    serializeJson(doc, output);
+    // 解析为JsonObject并包装为统一响应
+    DynamicJsonDocument dataDoc(512);
+    DeserializationError err = deserializeJson(dataDoc, dataJson);
+    if (err) {
+        sendErrorResponse(500, "Failed to parse learn status");
+        return;
+    }
+    
+    JsonObject dataObj = dataDoc.as<JsonObject>();
+    String output = APIResponse::success(dataObj);
     sendJSONResponse(200, output);
 }
 
 void WebServer::handleAPILearnStop() {
-    // 简单API，使用较小的内存检查阈值
-    if (!checkMemoryBeforeAPI(256)) {
-        sendErrorResponse(503, "Insufficient memory");
-        return;
-    }
-    
     if (learner == nullptr) {
         sendErrorResponse(500, "Service not initialized");
         return;
     }
     
-    if (learner->stopDeviceLearn()) {
-        DynamicJsonDocument response(192);
-        response["success"] = true;
-        response["message"] = "Device learn stopped";
-        String output;
-        output.reserve(192);
-        serializeJson(response, output);
-        sendJSONResponse(200, output);
+    // 使用公共函数
+    bool success = false;
+    String message = APIHandlers::handleStopLearn(*learner, success);
+    
+    if (success) {
+        sendJSONResponse(200, APIResponse::success(message));
     } else {
-        sendErrorResponse(500, "Device learn is not active");
+        sendErrorResponse(500, message);
     }
 }
 
@@ -572,84 +368,68 @@ void WebServer::handleAPILearnResult() {
         return;
     }
     
-    int commandCount = learner->getLearnedCommandCount();
-    if (commandCount == 0) {
-        sendErrorResponse(404, "No learned device found");
-        return;
-    }
-    
-    // 内存检查：转换结果可能很大（最多3KB），需要更多内存
-    if (!checkMemoryBeforeAPI(4096)) {
-        sendErrorResponse(503, "Insufficient memory");
-        return;
-    }
-    
     // 获取格式参数（默认base64）
     String format = server.arg("format");
     if (format.length() == 0) {
         format = "base64";  // 默认格式
     }
-    format.toLowerCase();  // 转换为小写，使比较大小写不敏感
     
-    String resultJson;
-    if (format == "signalid") {
-        resultJson = learner->convertToSignalIDFormat();
-    } else if (format == "array") {
-        resultJson = learner->convertToArrayFormat();
-    } else {
-        // 默认使用base64格式
-        resultJson = learner->convertToBase64Format();
-    }
-    
-    if (resultJson.length() == 0 || resultJson == "{}") {
-        sendErrorResponse(503, "Failed to convert format");
+    // 使用公共函数
+    String dataJson = APIHandlers::handleQueryLearnResult(*learner, format);
+    if (dataJson.length() == 0) {
+        sendErrorResponse(404, "No learned device found");
         return;
     }
     
-    // 立即发送响应，然后释放String对象
-    sendJSONResponse(200, resultJson);
-    // String对象会在函数返回时自动释放
+    // 尝试解析为JSON对象或数组，如果失败则作为字符串返回
+    DynamicJsonDocument dataDoc(4096);
+    DeserializationError err = deserializeJson(dataDoc, dataJson);
+    
+    if (err) {
+        // 如果不是JSON，直接作为字符串返回
+        String output = APIResponse::success(dataJson);
+        sendJSONResponse(200, output);
+    } else {
+        // 如果是JSON，提取为JsonObject或JsonArray
+        if (dataDoc.is<JsonObject>()) {
+            JsonObject obj = dataDoc.as<JsonObject>();
+            String output = APIResponse::success(obj);
+            sendJSONResponse(200, output);
+        } else if (dataDoc.is<JsonArray>()) {
+            JsonArray arr = dataDoc.as<JsonArray>();
+            String output = APIResponse::success(arr);
+            sendJSONResponse(200, output);
+        } else {
+            // 其他情况，作为字符串返回
+            String output = APIResponse::success(dataJson);
+            sendJSONResponse(200, output);
+        }
+    }
 }
 
 void WebServer::handleAPIRecentSignals() {
-    // 内存检查
-    if (!checkMemoryBeforeAPI(1536)) {
-        sendErrorResponse(503, "Insufficient memory");
-        return;
-    }
-    
     if (logger == nullptr) {
         sendErrorResponse(500, "Service not initialized");
         return;
     }
     
-    // 获取最近接收的信号
-    RecentSignal signals[MAX_RECENT_SIGNALS];
-    int count = logger->getRecentSignals(signals, MAX_RECENT_SIGNALS);
-    
-    // 优化：根据信号数量计算JSON大小，限制最大1.5KB
-    size_t jsonSize = 256 + (count * 100);
-    if (jsonSize > 1536) jsonSize = 1536;
-    if (jsonSize < 512) jsonSize = 512;
-    
-    DynamicJsonDocument doc(jsonSize);
-    JsonArray signalsArray = doc.to<JsonArray>();
-    
-    for (int i = 0; i < count; i++) {
-        JsonObject signalObj = signalsArray.createNestedObject();
-        signalObj["timestamp"] = signals[i].timestamp;
-        signalObj["matched"] = signals[i].matched;
-        
-        JsonObject signal = signalObj.createNestedObject("signal");
-        signal["protocol"] = signals[i].signal.protocol;
-        signal["data"] = uint32ToHexString(signals[i].signal.data);
-        signal["hash"] = uint32ToHexString(signals[i].signal.hash);
-        signal["isProtocol"] = signals[i].signal.isProtocol;
+    // 使用公共函数
+    String dataJson = APIHandlers::handleGetRecentSignals(*logger);
+    if (dataJson.length() == 0) {
+        sendErrorResponse(503, "Insufficient memory");
+        return;
     }
     
-    String output;
-    output.reserve(jsonSize);
-    serializeJson(doc, output);
+    // 解析为JsonArray并包装为统一响应
+    DynamicJsonDocument dataDoc(1536);
+    DeserializationError err = deserializeJson(dataDoc, dataJson);
+    if (err) {
+        sendErrorResponse(500, "Failed to parse signals");
+        return;
+    }
+    
+    JsonArray signalsArray = dataDoc.as<JsonArray>();
+    String output = APIResponse::success(signalsArray);
     sendJSONResponse(200, output);
 }
 
@@ -660,90 +440,19 @@ void WebServer::handleAPISendSignal() {
         return;
     }
     
-    String trimmed = body;
-    trimmed.trim();
-    
-    if (trimmed.length() == 0) {
-        sendErrorResponse(400, "Empty request body");
+    if (forwarder == nullptr) {
+        sendErrorResponse(500, "Service not initialized");
         return;
     }
     
-    // 检测格式
-    IRLearner::SignalFormat format = IRLearner::detectSignalFormat(trimmed);
+    // 使用公共函数
+    bool success = false;
+    String message = APIHandlers::handleSendSignal(*forwarder, body, success);
     
-    // 如果检测到JSON格式（FORMAT_SIGNALID），按JSON格式解析
-    if (format == IRLearner::FORMAT_SIGNALID) {
-        // SignalID对象格式（JSON）
-        size_t jsonSize = trimmed.length() + 256;
-        if (jsonSize > 1024) jsonSize = 1024;
-        if (jsonSize < 256) jsonSize = 256;
-        
-        // 内存检查
-        if (!checkMemoryBeforeAPI(jsonSize + 512)) {
-            sendErrorResponse(503, "Insufficient memory");
-            return;
-        }
-        
-        if (forwarder == nullptr) {
-            sendErrorResponse(500, "Service not initialized");
-            return;
-        }
-        
-        DynamicJsonDocument doc(jsonSize);
-        DeserializationError error = deserializeJson(doc, trimmed);
-        
-        if (error) {
-            char errorMsg[64];
-            snprintf(errorMsg, sizeof(errorMsg), "Invalid JSON: %s", error.c_str());
-            sendErrorResponse(400, errorMsg);
-            return;
-        }
-        
-        JsonObject signalObj = doc["signal"];
-        if (signalObj.isNull()) {
-            sendErrorResponse(400, "Missing 'signal' field");
-            return;
-        }
-        
-        uint8_t repeatCount = doc["repeatCount"] | 1;
-        
-        SignalID signal;
-        signal.protocol = signalObj["protocol"] | 0;
-        if (signalObj["data"].is<const char*>()) {
-            signal.data = parseUint32FromHexString(signalObj["data"].as<const char*>());
-        } else {
-            signal.data = 0;
-        }
-        if (signalObj["hash"].is<const char*>()) {
-            signal.hash = parseUint32FromHexString(signalObj["hash"].as<const char*>());
-        } else {
-            signal.hash = 0;
-        }
-        signal.isProtocol = signalObj["isProtocol"] | false;
-        
-        if (forwarder->sendSignal(signal, repeatCount)) {
-            sendJSONResponse(200, APIResponse::executing("Signal sent"));
-        } else {
-            sendErrorResponse(500, "Failed to send signal");
-        }
+    if (success) {
+        sendJSONResponse(200, APIResponse::executing(message));
     } else {
-        // 内存检查：解析信号可能需要较多内存
-        if (!checkMemoryBeforeAPI(2048)) {
-            sendErrorResponse(503, "Insufficient memory");
-            return;
-        }
-        
-        if (forwarder == nullptr) {
-            sendErrorResponse(500, "Service not initialized");
-            return;
-        }
-        
-        // 使用统一的解析和发送方法
-        if (forwarder->parseAndSendSignal(trimmed)) {
-            sendJSONResponse(200, APIResponse::executing("Signal sent"));
-        } else {
-            sendErrorResponse(500, "Failed to send signal");
-        }
+        sendErrorResponse(500, message);
     }
 }
 

@@ -96,9 +96,129 @@
 
 ## 四、API 接口
 
-### HTTP REST API
+设备提供 **HTTP REST API** 和 **MQTT** 两种接口，功能完全一致，使用统一的数据结构格式。
 
-**注意**：HTTP API 仅在以下情况可用：
+### 4.1 统一数据结构格式
+
+所有接口（HTTP和MQTT）统一使用以下响应格式：
+
+```json
+{
+  "success": true/false,           // 操作是否成功
+  "status": "success|error|executing|ready|learning",  // 状态（HA依赖）
+  "data": {...},                  // 成功时的数据（对象/数组/字符串）
+  "error": "...",                 // 失败时的错误信息
+  "code": 0,                      // 错误代码（可选）
+  "timestamp": 1234567890         // 时间戳（毫秒）
+}
+```
+
+**字段说明**：
+- `success`: 布尔值，表示操作是否成功
+- `status`: 字符串，表示状态
+  - `"success"`: 操作成功
+  - `"error"`: 操作失败
+  - `"executing"`: 操作执行中（如发送信号）
+  - `"ready"`: 设备就绪状态
+  - `"learning"`: 设备正在学习
+- `data`: 成功时的数据，可以是：
+  - 对象（Object）：如状态信息、学习结果等
+  - 数组（Array）：如映射规则列表、日志列表等
+  - 字符串（String）：如简单的消息提示
+- `error`: 失败时的错误信息（仅在`success=false`时出现）
+- `code`: 错误代码（可选，仅在错误时出现）
+- `timestamp`: 时间戳（毫秒）
+
+**响应示例**：
+
+成功响应（数据为对象）：
+```json
+{
+  "success": true,
+  "status": "success",
+  "data": {
+    "isLearning": true,
+    "progress": "2/5",
+    "currentCommand": "温度+"
+  },
+  "timestamp": 1234567890
+}
+```
+
+成功响应（数据为数组）：
+```json
+{
+  "success": true,
+  "status": "success",
+  "data": [
+    {
+      "id": 1,
+      "aSignal": {...},
+      "bSignals": [...]
+    }
+  ],
+  "timestamp": 1234567890
+}
+```
+
+成功响应（数据为字符串）：
+```json
+{
+  "success": true,
+  "status": "success",
+  "data": "学习已启动",
+  "timestamp": 1234567890
+}
+```
+
+错误响应：
+```json
+{
+  "success": false,
+  "status": "error",
+  "error": "Invalid JSON",
+  "code": 400,
+  "timestamp": 1234567890
+}
+```
+
+状态响应（MQTT state主题，设备状态信息）：
+```json
+{
+  "success": true,
+  "status": "ready",
+  "data": {
+    "forwarding_enabled": true,
+    "learn_mode": "none",
+    "learn_device": "",
+    "learn_progress": "",
+    "rule_count": 5
+  },
+  "timestamp": 1234567890
+}
+```
+
+### 4.2 接口映射关系
+
+设备提供两种接口：**HTTP REST API** 和 **MQTT**，功能完全一致，使用统一的数据结构。
+
+| 功能 | HTTP REST API | MQTT Action | 说明 |
+|------|---------------|-------------|------|
+| 获取设备状态 | GET `/api/status` | - | Web 特有 |
+| 查询映射规则 | GET `/api/maps` | `query_maps` | 返回所有规则数组 |
+| 更新映射规则 | PUT `/api/maps` | `update_map` | 支持单个和批量更新 |
+| 获取日志 | GET `/api/logs` | `get_logs` | 返回所有日志数组（系统只保留最近3条） |
+| 启动学习 | POST `/api/learn/start` | `start_learn` | 启动设备学习模式 |
+| 查询学习状态 | GET `/api/learn/status` | `query_learn_status` | 返回学习进度（简化版：isLearning, progress, currentCommand） |
+| 停止学习 | POST `/api/learn/stop` | `stop_learn` | 停止设备学习 |
+| 查询学习结果 | GET `/api/learn/result` | `query_learn_result` | 返回SmartIR格式（支持format参数：base64/signalid/array） |
+| 获取最近信号 | GET `/api/signals/recent` | `get_recent_signals` | 返回信号数组 |
+| 发送信号 | POST `/api/signals/send` | `send_signal` | 发送红外信号（支持JSON和字符串格式） |
+| 设置转发状态 | - | `set_forwarding_enabled` | MQTT 特有 |
+
+### 4.3 HTTP REST API
+
+**可用条件**：HTTP API 仅在以下情况可用：
 - AP 模式（立即启动）
 - WiFi 已连接但 MQTT 未配置
 - WiFi 已连接但 MQTT 连接失败
@@ -141,7 +261,9 @@ Content-Type: application/json
 ```json
 {
   "success": true,
-  "message": "学习已启动"
+  "status": "success",
+  "data": "学习已启动",
+  "timestamp": 1234567890
 }
 ```
 
@@ -153,9 +275,14 @@ GET http://设备IP/api/learn/status
 **响应示例：**
 ```json
 {
-  "isLearning": true,
-  "progress": "2/5",
-  "currentCommand": "温度+"
+  "success": true,
+  "status": "success",
+  "data": {
+    "isLearning": true,
+    "progress": "2/5",
+    "currentCommand": "温度+"
+  },
+  "timestamp": 1234567890
 }
 ```
 
@@ -414,24 +541,6 @@ Content-Type: application/json
 
 SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被设备自动解析和处理，无需任何转换。
 
-#### 接口映射关系
-
-设备提供两种接口：HTTP REST API 和 MQTT，功能完全一致。以下是接口映射关系：
-
-| HTTP REST API | MQTT Action | 说明 |
-|---------------|-------------|------|
-| GET `/api/status` | - | Web 特有（设备状态） |
-| GET `/api/maps` | `query_maps` | 查询所有映射规则 |
-| PUT `/api/maps` | `update_map` | 更新映射规则（支持单个和批量） |
-| GET `/api/logs` | `get_logs` | 获取日志 |
-| POST `/api/learn/start` | `start_learn` | 启动设备学习 |
-| GET `/api/learn/status` | `query_learn_status` | 查询学习状态 |
-| POST `/api/learn/stop` | `stop_learn` | 停止设备学习 |
-| GET `/api/learn/result` | `query_learn_result` | 查询学习结果 |
-| GET `/api/signals/recent` | `get_recent_signals` | 获取最近接收的信号 |
-| POST `/api/signals/send` | `send_signal` | 发送红外信号 |
-| - | `set_forwarding_enabled` | MQTT 特有（设置转发启用状态） |
-
 **支持的指令（action）：**
 
 | action | 说明 | 必需参数 | 对应 HTTP API |
@@ -459,37 +568,14 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 **响应**（发布到 state 主题）：
 ```json
 {
+  "success": true,
   "status": "success",
-  "message": "[{\"id\":1,\"aSignal\":{...},\"bSignals\":[...],...}]",
+  "data": [{"id":1,"aSignal":{...},"bSignals":[...],...}],
   "timestamp": 1234567890
 }
 ```
 
-**2. 添加映射规则：**
-```json
-{
-  "action": "add_map",
-  "rule": {
-    "aSignal": {
-      "protocol": 1,
-      "data": "0x00003039",
-      "hash": "0x00000000",
-      "isProtocol": true
-    },
-    "bSignals": [{
-      "protocol": 1,
-      "data": "0x00010932",
-      "hash": "0x00000000",
-      "isProtocol": true
-    }],
-    "bSignalCount": 1,
-    "intervals": [],
-    "repeatCount": 1
-  }
-}
-```
-
-**3. 更新映射规则（单个更新）：**
+**2. 更新映射规则（单个更新）：**
 ```json
 {
   "action": "update_map",
@@ -514,7 +600,7 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 }
 ```
 
-**4. 批量更新映射规则（使用 `update_map`，包含 `rules` 数组）：**
+**3. 批量更新映射规则（使用 `update_map`，包含 `rules` 数组）：**
 ```json
 {
   "action": "update_map",
@@ -542,14 +628,14 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 
 **说明**：`update_map` 接口同时支持单个更新（使用 `id` 和 `rule`）和批量更新（使用 `rules` 数组），与 HTTP API 保持一致。
 
-**5. 获取日志：**
+**4. 获取日志：**
 ```json
 {
   "action": "get_logs"
 }
 ```
 
-**6. 启动设备学习：**
+**5. 启动设备学习：**
 ```json
 {
   "action": "start_learn",
@@ -568,7 +654,7 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 }
 ```
 
-**7. 查询学习状态：**
+**6. 查询学习状态：**
 ```json
 {
   "action": "query_learn_status"
@@ -578,98 +664,76 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 **响应**（发布到 state 主题）：
 ```json
 {
+  "success": true,
   "status": "success",
-  "message": "{\"isLearning\":true,\"deviceName\":\"空调遥控器\",\"progress\":\"2/5\",\"currentCommand\":\"温度+\",\"learnedCount\":2,\"totalCount\":5,\"learnedCommands\":[\"开机\",\"关机\"]}",
+  "data": {
+    "isLearning": true,
+    "progress": "2/5",
+    "currentCommand": "温度+"
+  },
   "timestamp": 1234567890
 }
 ```
 
-**说明：**
-- `isLearning`：是否正在学习中
-- `deviceName`：当前学习的设备名称
-- `progress`：学习进度，格式为"已学习数/总数"
-- `currentCommand`：当前正在学习的指令名称
-- `learnedCount`：已学习的指令数量
-- `totalCount`：总指令数量
-- `learnedCommands`：已学习的指令名称列表
+**说明**：响应格式与HTTP API一致，学习流程详见 [HTTP REST API - 学习流程](#学习流程)。
 
-**学习流程：**
-1. 发送`start_learn`指令启动学习
-2. 轮询`query_learn_status`查询状态
-3. 当`learnedCount`增加时，表示当前信号学习成功，可以继续下一个信号
-4. 当`learnedCount == totalCount`时，表示所有信号学习完成
-5. 发送`query_learn_result`获取学习结果
-
-**8. 停止设备学习：**
+**7. 停止设备学习：**
 ```json
 {
   "action": "stop_learn"
 }
 ```
 
-**9. 查询学习结果：**
+**8. 查询学习结果：**
 ```json
 {
-  "action": "query_learn_result"
+  "action": "query_learn_result",
+  "format": "base64"
 }
 ```
 
-**响应**（SmartIR兼容格式）：
+**format参数**（可选，默认base64）：
+- `base64`：Base64格式（默认）
+- `signalid`：SignalID格式
+- `array`：数组格式
+
+**响应**（SmartIR兼容格式，统一格式）：
 ```json
 {
+  "success": true,
   "status": "success",
-  "message": "{\"deviceName\":\"...\",\"commands\":{...}}",
+  "data": {
+    "manufacturer": "Learned",
+    "supportedModels": ["Learned Device"],
+    "commandsEncoding": "Raw",
+    "supportedController": "MQTT",
+    "commands": {
+      "开机": "Base64编码的时序数据",
+      "关机": "Base64编码的时序数据"
+    }
+  },
   "timestamp": 1234567890
 }
 ```
 
-**10. 获取最近接收的信号：**
+**9. 获取最近接收的信号：**
 ```json
 {
   "action": "get_recent_signals"
 }
 ```
 
-**11. 发送红外信号：**
+**10. 发送红外信号：**
 
-HTTP API和MQTT接口使用完全统一的格式，都直接接收字符串格式（不进行JSON包装）。
+MQTT接口支持两种方式：
 
-**格式1：Base64字符串**（纯字符串）
+**方式1：直接发送字符串**（推荐，与SmartIR兼容）
 ```
-发送到主题：homeassistant/orvibo-ct30w/command
-
-Payload（纯Base64字符串）：
-Base64字符串
+主题：homeassistant/orvibo-ct30w/command
+Payload：Base64字符串|repeatCount 或 [数组]|repeatCount 或 protocol,data,repeatCount
 ```
 
-**格式2：数组字符串**（纯字符串）
-```
-发送到主题：homeassistant/orvibo-ct30w/command
-
-Payload（数组字符串）：
-[8991,-4546,553,-578,...]
-```
-
-**格式3：协议格式字符串**（纯字符串）
-```
-发送到主题：homeassistant/orvibo-ct30w/command
-
-Payload（协议格式字符串）：
-1,0xFF00FF00,1
-```
-- **2参数格式**（向后兼容）：`protocol,data`（repeatCount默认为1，hash默认为0）
-- **3参数格式**（向后兼容）：`protocol,data,repeatCount`（hash默认为0）
-- **5参数格式**（完整格式）：`protocol,data,hash,isProtocol,repeatCount`
-  - protocol：协议编号（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung，0表示非标准协议）
-  - data：协议数据（十六进制格式，如0xFF00FF00）
-  - hash：时序特征哈希（十六进制格式，如0x12345678，非标准协议时使用）
-  - isProtocol：是否为标准协议（true/false）
-  - repeatCount：重复次数（默认1）
-- 示例：
-  - 标准协议：`"1,0xFF00FF00,0x00000000,true,2"`
-  - 非标准协议：`"0,0x00000000,0x12345678,false,1"`
-
-**格式4：SignalID对象格式**（保留现有格式，JSON格式）
+**方式2：JSON格式**
 ```json
 {
   "action": "send_signal",
@@ -683,14 +747,9 @@ Payload（协议格式字符串）：
 }
 ```
 
-**说明**：
-- HTTP API和MQTT接口完全统一格式
-- 如果payload是纯字符串，按字符串格式解析（Base64/数组/协议）
-- 如果payload是JSON格式，按JSON格式解析（SignalID对象格式）
-- 字符串格式可以直接使用学习结果或SmartIR JSON配置文件中的commands字段值
-- SignalID对象格式保留向后兼容
+**说明**：支持的格式与HTTP API完全一致，详见 [HTTP REST API - 发送红外信号](#发送红外信号)。
 
-**12. 设置转发启用状态：**
+**11. 设置转发启用状态：**
 ```json
 {
   "action": "set_forwarding_enabled",
@@ -698,12 +757,22 @@ Payload（协议格式字符串）：
 }
 ```
 
-**状态响应格式：**
-所有指令执行后，设备会在 `state` 主题发布响应：
+**响应格式：**
+所有MQTT接口使用统一的响应格式，详见 [4.1 统一数据结构格式](#41-统一数据结构格式)。
+
+**状态响应**（MQTT state主题）：
+所有指令执行后，设备会在 `state` 主题发布统一格式的响应。状态发布时，设备状态信息在`data`字段中：
 ```json
 {
-  "status": "success",  // 或 "error", "executing"
-  "message": "操作结果描述或数据",
+  "success": true,
+  "status": "ready",  // 或 "learning", "error"
+  "data": {
+    "forwarding_enabled": true,
+    "learn_mode": "none",
+    "learn_device": "",
+    "learn_progress": "",
+    "rule_count": 5
+  },
   "timestamp": 1234567890
 }
 ```
@@ -851,38 +920,7 @@ automation:
 
 #### 统一信号格式
 
-所有信号使用统一的 `SignalID` 结构：
-
-```json
-{
-  "protocol": 1,           // 协议类型：1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung
-  "data": "0x00003039",    // 协议数据（标准协议解析出的数据值，十六进制字符串格式）
-  "hash": "0x00000000",    // 时序特征哈希（无法匹配标准协议时使用，十六进制字符串格式）
-  "isProtocol": true       // 是否为标准协议：true=标准协议，false=使用hash匹配
-}
-```
-
-此格式在以下场景中统一使用：
-- 日志记录中的信号
-- 转发规则中的A信号和B信号
-- API接口中的信号参数
-- 最近接收信号记录
-- MQTT消息中的信号数据
-- Flash存储的映射规则数据
-
-**数据格式说明**：
-- `data` 和 `hash` 字段统一使用十六进制字符串格式（如 `"0x00003039"`）
-- 所有API和MQTT接口仅支持十六进制字符串格式，不支持数字格式
-- Flash存储的映射规则数据自动使用十六进制格式
-
-**数据迁移**：
-- 设备启动时自动检测并处理旧格式数据（数字格式）
-- 如果检测到旧格式数据，会自动清空并重新初始化默认映射规则
-- 首次启动或Flash文件不存在时，会自动创建空映射文件并初始化默认映射
-
-**信号序列化**：
-- `IRParser::signalToJSON()`：将信号转换为JSON字符串
-- `IRParser::signalFromJSON()`：从JSON字符串解析信号
+设备使用统一的 `SignalID` 结构表示红外信号，详见 [二、信号参数说明](#二信号参数说明)。此格式在所有场景中统一使用：日志记录、转发规则、API接口、MQTT消息、Flash存储等。
 
 ## 五、常见问题
 

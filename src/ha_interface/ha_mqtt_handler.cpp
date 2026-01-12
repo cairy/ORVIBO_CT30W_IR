@@ -3,6 +3,8 @@
 #include "utils/hex_utils.h"
 #include "utils/memory_monitor.h"
 #include "utils/api_response.h"
+#include "utils/unified_api.h"
+#include "utils/api_handlers.h"
 #include "config/constants.h"
 #include <ArduinoJson.h>
 
@@ -138,14 +140,23 @@ void HAMQTTHandler::publishState(const String& state, const String& message) {
     // 优化：避免在MQTT回调中直接调用publishEnhancedState()，可能导致栈溢出
     // 如果内存充足，直接发布简单状态；否则延迟到下次update()
     if (MemoryMonitor::checkMemory(2048) && mqtt.isConnected()) {
-        // 使用较小的JSON文档，只发布基本状态
-        DynamicJsonDocument doc(256);
-        doc["status"] = state;
-        doc["message"] = message;
-        doc["timestamp"] = millis();
-        
+        // 使用统一格式
         String output;
-        serializeJson(doc, output);
+        if (state == "success") {
+            output = UnifiedAPI::createSuccessResponse(message, "success");
+        } else if (state == "error") {
+            output = UnifiedAPI::createErrorResponse(message);
+        } else if (state == "executing") {
+            output = UnifiedAPI::createExecutingResponse(message);
+        } else {
+            // 兼容旧格式，但使用统一结构
+            DynamicJsonDocument doc(256);
+            doc["success"] = true;
+            doc["status"] = state;
+            doc["data"] = message;
+            UnifiedAPI::addTimestamp(doc);
+            serializeJson(doc, output);
+        }
         mqtt.publish(MQTT_TOPIC_STATE, output);
     }
     // 如果内存不足，跳过发布（状态将在下次update()时通过publishEnhancedState()发布）
@@ -353,7 +364,7 @@ void HAMQTTHandler::publishDiscoveryConfig() {
         snprintf(uniqueIdBuf, sizeof(uniqueIdBuf), "%s_forwarding_enabled", deviceId);
         forwardingSwitchConfig["unique_id"] = uniqueIdBuf;
         forwardingSwitchConfig["state_topic"] = MQTT_TOPIC_STATE;
-        forwardingSwitchConfig["value_template"] = "{{ 'true' if value_json.forwarding_enabled else 'false' }}";
+        forwardingSwitchConfig["value_template"] = "{{ 'true' if value_json.data.forwarding_enabled else 'false' }}";
         forwardingSwitchConfig["command_topic"] = MQTT_TOPIC_COMMAND;
         forwardingSwitchConfig["payload_on"] = "true";
         forwardingSwitchConfig["payload_off"] = "false";
@@ -461,131 +472,57 @@ void HAMQTTHandler::processCommand(const String& payload) {
 }
 
 void HAMQTTHandler::handleQueryMaps() {
-    // 使用统一的内存检查
-    int count = mapper.getRuleCount();
-    size_t jsonSize = MemoryMonitor::calculateRulesJsonSize(count);
-    
-    if (!MemoryMonitor::checkMemory(jsonSize + 1024)) {
+    // 使用公共函数
+    String dataJson = APIHandlers::handleQueryMaps(mapper);
+    if (dataJson.length() == 0) {
         publishState("error", "Low Memory");
         return;
     }
     
-    IR_MapRule rules[MAX_MAP_RULES];
-    mapper.getAllRules(rules, count);
-    
-    DynamicJsonDocument doc(jsonSize);
-    JsonArray rulesArray = doc.to<JsonArray>();
-    
-    // 使用统一的转换方法
-    for (int i = 0; i < count; i++) {
-        JsonObject ruleObj = rulesArray.createNestedObject();
-        IRMapper::ruleToJsonObject(rules[i], ruleObj, true);  // true表示使用hex格式
+    // 解析为JsonArray并包装为统一响应
+    DynamicJsonDocument dataDoc(2048);
+    DeserializationError err = deserializeJson(dataDoc, dataJson);
+    if (err) {
+        publishState("error", "Failed to parse rules");
+        return;
     }
     
-    String output;
-    serializeJson(doc, output);
-    publishState("success", output);
+    JsonArray rulesArray = dataDoc.as<JsonArray>();
+    String output = UnifiedAPI::createSuccessResponse(rulesArray, "success");
+    mqtt.publish(MQTT_TOPIC_STATE, output);
 }
 
 void HAMQTTHandler::handleUpdateMap(const String& json) {
-    // 使用统一的内存检查
-    size_t jsonSize = json.length() + 1024;
-    if (jsonSize > 6144) jsonSize = 6144;
-    if (jsonSize < 512) jsonSize = 512;
+    // 使用公共函数
+    bool success = false;
+    String message = APIHandlers::handleUpdateMap(mapper, json, success);
     
-    if (!MemoryMonitor::checkMemory(jsonSize + 2048)) {
-        publishState("error", "Low Memory");
-        return;
-    }
-    
-    DynamicJsonDocument doc(jsonSize);
-    DeserializationError error = deserializeJson(doc, json);
-    
-    if (error) {
-        publishState("error", "Invalid JSON");
-        return;
-    }
-    
-    // 检查是否是批量更新（包含rules数组）
-    if (doc.containsKey("rules")) {
-        // 批量更新：清空现有规则，添加新规则
-        JsonArray rulesArray = doc["rules"];
-        
-        // 清空所有现有规则
-        IR_MapRule rules[MAX_MAP_RULES];
-        int count = mapper.getRuleCount();
-        mapper.getAllRules(rules, count);
-        for (int i = 0; i < count; i++) {
-            mapper.deleteRule(rules[i].id);
-        }
-        
-        // 添加新规则（使用统一的转换方法）
-        int successCount = 0;
-        for (JsonObject ruleObj : rulesArray) {
-            IR_MapRule rule;
-            if (IRMapper::jsonObjectToRule(ruleObj, rule)) {
-                if (mapper.addRule(rule)) {
-                    successCount++;
-                }
-            }
-        }
-        
-        char responseMsg[64];
-        snprintf(responseMsg, sizeof(responseMsg), "Rules updated, count: %d", successCount);
-        publishState("success", responseMsg);
+    if (success) {
+        publishState("success", message);
     } else {
-        // 单个更新（保持向后兼容）
-        uint8_t id = doc["id"] | 0;
-        if (id == 0) {
-            publishState("error", "Invalid rule ID or missing 'rules' array");
-            return;
-        }
-        
-        JsonObject ruleObj = doc["rule"];
-        if (ruleObj.isNull()) {
-            publishState("error", "Missing 'rule' field");
-            return;
-        }
-        
-        IR_MapRule rule;
-        if (IRMapper::jsonObjectToRule(ruleObj, rule)) {
-            if (mapper.updateRule(id, rule)) {
-                publishState("success", "Rule updated");
-            } else {
-                publishState("error", "Failed to update rule");
-            }
-        } else {
-            publishState("error", "Invalid rule format");
-        }
+        publishState("error", message);
     }
 }
 
 void HAMQTTHandler::handleGetLogs() {
-    // 使用统一的内存检查和JSON大小计算
-    int count = logger.getLogCount();
-    size_t jsonSize = MemoryMonitor::calculateLogsJsonSize(count);
-    
-    if (!MemoryMonitor::checkMemory(jsonSize + 1024)) {
+    // 使用公共函数（返回所有日志，系统只保留3条）
+    String dataJson = APIHandlers::handleGetLogs(logger);
+    if (dataJson.length() == 0) {
         publishState("error", "Low Memory");
         return;
     }
     
-    LogEntry entries[MAX_LOG_ENTRIES];
-    logger.getLogs(entries, count);
-    
-    DynamicJsonDocument doc(jsonSize);
-    JsonArray logArray = doc.to<JsonArray>();
-    
-    for (int i = 0; i < count; i++) {
-        JsonObject entry = logArray.createNestedObject();
-        entry["timestamp"] = entries[i].timestamp;
-        entry["type"] = entries[i].type;
-        entry["content"] = entries[i].content;
+    // 解析为JsonArray并包装为统一响应
+    DynamicJsonDocument dataDoc(1024);
+    DeserializationError err = deserializeJson(dataDoc, dataJson);
+    if (err) {
+        publishState("error", "Failed to parse logs");
+        return;
     }
     
-    String output;
-    serializeJson(doc, output);
-    publishState("success", output);
+    JsonArray logArray = dataDoc.as<JsonArray>();
+    String output = UnifiedAPI::createSuccessResponse(logArray, "success");
+    mqtt.publish(MQTT_TOPIC_STATE, output);
 }
 
 void HAMQTTHandler::handleStartLearn(const String& json) {
@@ -594,76 +531,14 @@ void HAMQTTHandler::handleStartLearn(const String& json) {
         return;
     }
     
-    // 使用统一的内存检查
-    if (!MemoryMonitor::checkMemory(2048)) {
-        publishState("error", "Low Memory");
-        return;
-    }
+    // 使用公共函数
+    bool success = false;
+    String message = APIHandlers::handleStartLearn(*learner, json, success);
     
-    // 解析JSON
-    size_t jsonSize = json.length() + 256;
-    if (jsonSize > 1024) jsonSize = 1024;
-    if (jsonSize < 256) jsonSize = 256;
-    
-    DynamicJsonDocument doc(jsonSize);
-    DeserializationError error = deserializeJson(doc, json);
-    
-    if (error) {
-        publishState("error", "Invalid JSON");
-        return;
-    }
-    
-    String deviceName = doc["deviceName"] | "";
-    String commandNames = doc["commandNames"] | "";
-    int timeoutSeconds = doc["timeoutSeconds"] | DEFAULT_LEARN_TIMEOUT_SEC;
-    
-    if (deviceName.length() == 0) {
-        publishState("error", "Missing 'deviceName' field");
-        return;
-    }
-    
-    if (commandNames.length() == 0) {
-        publishState("error", "Missing 'commandNames' field");
-        return;
-    }
-    
-    // 先检查命令数量是否超过限制
-    int commandCount = 0;
-    if (commandNames.length() > 0) {
-        int startPos = 0;
-        int commaPos = commandNames.indexOf(',');
-        while (commaPos >= 0) {
-            String cmdName = commandNames.substring(startPos, commaPos);
-            cmdName.trim();
-            if (cmdName.length() > 0) {
-                commandCount++;
-            }
-            startPos = commaPos + 1;
-            commaPos = commandNames.indexOf(',', startPos);
-        }
-        // 处理最后一个命令
-        if (startPos < commandNames.length()) {
-            String cmdName = commandNames.substring(startPos);
-            cmdName.trim();
-            if (cmdName.length() > 0) {
-                commandCount++;
-            }
-        }
-    }
-    
-    // 检查命令数量限制
-    if (commandCount > MAX_LEARN_COMMANDS) {
-        char errorMsg[128];
-        snprintf(errorMsg, sizeof(errorMsg), "命令数量超过限制，最多支持 %d 个命令，当前有 %d 个", MAX_LEARN_COMMANDS, commandCount);
-        publishState("error", errorMsg);
-        return;
-    }
-    
-    // 启动学习
-    if (learner->startDeviceLearn(deviceName, commandNames, timeoutSeconds)) {
-        publishState("success", "学习已启动");
+    if (success) {
+        publishState("success", message);
     } else {
-        publishState("error", "Failed to start learning (可能已有学习任务进行中)");
+        publishState("error", message);
     }
 }
 
@@ -673,66 +548,24 @@ void HAMQTTHandler::handleQueryLearnStatus(const String& json) {
         return;
     }
     
-    // 使用统一的内存检查
-    if (!MemoryMonitor::checkMemory(3072)) {
+    // 使用公共函数（简化版）
+    String dataJson = APIHandlers::handleQueryLearnStatus(*learner);
+    if (dataJson.length() == 0) {
         publishState("error", "Low Memory");
         return;
     }
     
-    bool isLearning = learner->isLearningDevice();
-    
-    // 根据是否在学习中动态调整JSON大小（增加大小以避免溢出）
-    size_t jsonSize = isLearning ? 1024 : 256;
-    
-    // 再次检查内存，确保有足够空间
-    if (ESP.getFreeHeap() < jsonSize + 1024) {
-        publishState("error", "Low Memory");
+    // 解析为JsonObject并包装为统一响应
+    DynamicJsonDocument dataDoc(512);
+    DeserializationError err = deserializeJson(dataDoc, dataJson);
+    if (err) {
+        publishState("error", "Failed to parse learn status");
         return;
     }
     
-    DynamicJsonDocument doc(jsonSize);
-    doc["isLearning"] = isLearning;
-    
-    if (isLearning) {
-        // 直接使用String对象，但立即添加到JSON中，避免同时持有多个String对象
-        String deviceName = learner->getDeviceName();
-        doc["deviceName"] = deviceName;
-        deviceName = "";  // 立即释放
-        
-        String progress = learner->getLearnProgress();
-        doc["progress"] = progress;
-        progress = "";  // 立即释放
-        
-        String currentCommand = learner->getCurrentCommandName();
-        doc["currentCommand"] = currentCommand;
-        currentCommand = "";  // 立即释放
-        
-        doc["learnedCount"] = learner->getLearnedCommandCount();
-        doc["totalCount"] = learner->getTotalCommandCount();
-        
-        // 使用const char*指针数组，避免创建String对象，节省内存
-        const char* learnedNames[MAX_LEARN_COMMANDS];
-        learner->getLearnedCommandNames(learnedNames, MAX_LEARN_COMMANDS);
-        JsonArray learnedCommandsArray = doc.createNestedArray("learnedCommands");
-        int learnedCount = learner->getLearnedCommandCount();
-        for (int i = 0; i < learnedCount && i < MAX_LEARN_COMMANDS; i++) {
-            if (learnedNames[i] != nullptr && strlen(learnedNames[i]) > 0) {
-                learnedCommandsArray.add(learnedNames[i]);
-            }
-        }
-    } else {
-        doc["deviceName"] = "";
-        doc["progress"] = "";
-        doc["currentCommand"] = "";
-        doc["learnedCount"] = 0;
-        doc["totalCount"] = 0;
-        doc.createNestedArray("learnedCommands");  // 创建空数组以保持JSON结构一致
-    }
-    
-    String output;
-    output.reserve(jsonSize);
-    serializeJson(doc, output);
-    publishState("success", output);
+    JsonObject dataObj = dataDoc.as<JsonObject>();
+    String output = UnifiedAPI::createSuccessResponse(dataObj, "success");
+    mqtt.publish(MQTT_TOPIC_STATE, output);
 }
 
 void HAMQTTHandler::handleStopLearn(const String& json) {
@@ -741,10 +574,14 @@ void HAMQTTHandler::handleStopLearn(const String& json) {
         return;
     }
     
-    if (learner->stopDeviceLearn()) {
-        publishState("success", "Device learn stopped");
+    // 使用公共函数
+    bool success = false;
+    String message = APIHandlers::handleStopLearn(*learner, success);
+    
+    if (success) {
+        publishState("success", message);
     } else {
-        publishState("error", "Device learn is not active");
+        publishState("error", message);
     }
 }
 
@@ -754,74 +591,121 @@ void HAMQTTHandler::handleQueryLearnResult(const String& json) {
         return;
     }
     
-    // 使用统一的内存检查
-    if (!MemoryMonitor::checkMemory(6144)) {
-        publishState("error", "Low Memory");
-        return;
+    // 解析format参数（从JSON中读取）
+    String format = "base64";  // 默认格式
+    if (json.length() > 0) {
+        size_t jsonSize = json.length() + 256;
+        if (jsonSize > 512) jsonSize = 512;
+        DynamicJsonDocument doc(jsonSize);
+        DeserializationError err = deserializeJson(doc, json);
+        if (!err && doc.containsKey("format")) {
+            format = doc["format"] | "base64";
+        }
     }
     
-    // 不要复制整个LearnedDevice结构体到栈上（约5KB，会导致栈溢出）
-    int commandCount = learner->getLearnedCommandCount();
-    
-    if (commandCount == 0) {
+    // 使用公共函数
+    String dataJson = APIHandlers::handleQueryLearnResult(*learner, format);
+    if (dataJson.length() == 0) {
         publishState("error", "No learned device found");
         return;
     }
     
-    // 默认使用base64格式
-    String resultJson = learner->convertToBase64Format();
+    // 尝试解析为JSON对象或数组，如果失败则作为字符串返回
+    DynamicJsonDocument dataDoc(4096);
+    DeserializationError err = deserializeJson(dataDoc, dataJson);
     
-    if (resultJson.length() == 0 || resultJson == "{}") {
-        publishState("error", "Failed to convert format");
-        return;
+    if (err) {
+        // 如果不是JSON，直接作为字符串返回
+        String output = UnifiedAPI::createSuccessResponse(dataJson, "success");
+        mqtt.publish(MQTT_TOPIC_STATE, output);
+    } else {
+        // 如果是JSON，提取为JsonObject或JsonArray
+        if (dataDoc.is<JsonObject>()) {
+            JsonObject obj = dataDoc.as<JsonObject>();
+            String output = UnifiedAPI::createSuccessResponse(obj, "success");
+            mqtt.publish(MQTT_TOPIC_STATE, output);
+        } else if (dataDoc.is<JsonArray>()) {
+            JsonArray arr = dataDoc.as<JsonArray>();
+            String output = UnifiedAPI::createSuccessResponse(arr, "success");
+            mqtt.publish(MQTT_TOPIC_STATE, output);
+        } else {
+            // 其他情况，作为字符串返回
+            String output = UnifiedAPI::createSuccessResponse(dataJson, "success");
+            mqtt.publish(MQTT_TOPIC_STATE, output);
+        }
     }
-    
-    publishState("success", resultJson);
 }
 
 void HAMQTTHandler::handleGetRecentSignals(const String& json) {
-    RecentSignal signals[MAX_RECENT_SIGNALS];
-    int count = logger.getRecentSignals(signals, MAX_RECENT_SIGNALS);
-    
-    DynamicJsonDocument doc(2048);
-    JsonArray signalsArray = doc.to<JsonArray>();
-    
-    for (int i = 0; i < count; i++) {
-        JsonObject signalObj = signalsArray.createNestedObject();
-        signalObj["timestamp"] = signals[i].timestamp;
-        signalObj["matched"] = signals[i].matched;
-        
-        JsonObject signal = signalObj.createNestedObject("signal");
-        signal["protocol"] = signals[i].signal.protocol;
-        signal["data"] = uint32ToHexString(signals[i].signal.data);
-        signal["hash"] = uint32ToHexString(signals[i].signal.hash);
-        signal["isProtocol"] = signals[i].signal.isProtocol;
-    }
-    
-    String output;
-    serializeJson(doc, output);
-    publishState("success", output);
-}
-
-void HAMQTTHandler::handleSendSignal(const String& payload) {
-    if (!MemoryMonitor::checkMemory(2048)) {
+    // 使用公共函数
+    String dataJson = APIHandlers::handleGetRecentSignals(logger);
+    if (dataJson.length() == 0) {
         publishState("error", "Low Memory");
         return;
     }
     
-    String trimmed = payload;
-    trimmed.trim();
-    
-    if (trimmed.length() == 0) {
-        publishState("error", "Empty payload");
+    // 解析为JsonArray并包装为统一响应
+    DynamicJsonDocument dataDoc(1536);
+    DeserializationError err = deserializeJson(dataDoc, dataJson);
+    if (err) {
+        publishState("error", "Failed to parse signals");
         return;
     }
     
-    // 使用统一的解析和发送方法
-    if (forwarder.parseAndSendSignal(trimmed)) {
-        publishState("executing", "Signal sent");
+    JsonArray signalsArray = dataDoc.as<JsonArray>();
+    String output = UnifiedAPI::createSuccessResponse(signalsArray, "success");
+    mqtt.publish(MQTT_TOPIC_STATE, output);
+}
+
+void HAMQTTHandler::handleSendSignal(const String& payload) {
+    String trimmed = payload;
+    trimmed.trim();
+    
+    // 如果payload是JSON格式（包含action字段），提取实际的信号数据
+    if (trimmed.startsWith("{") && trimmed.indexOf("\"action\"") >= 0) {
+        size_t jsonSize = trimmed.length() + 256;
+        if (jsonSize > 1024) jsonSize = 1024;
+        DynamicJsonDocument doc(jsonSize);
+        DeserializationError err = deserializeJson(doc, trimmed);
+        if (!err && doc.containsKey("signal")) {
+            // 提取signal字段，构建完整的SignalID格式JSON
+            JsonObject signalObj = doc["signal"];
+            uint8_t repeatCount = doc["repeatCount"] | 1;
+            
+            // 构建完整的SignalID格式JSON（包含signal和repeatCount）
+            DynamicJsonDocument signalDoc(512);
+            signalDoc["signal"] = signalObj;
+            signalDoc["repeatCount"] = repeatCount;
+            
+            String signalJson;
+            serializeJson(signalDoc, signalJson);
+            trimmed = signalJson;
+        } else if (!err && doc.containsKey("action") && doc["action"] == "send_signal") {
+            // 如果payload本身就是完整的send_signal命令，提取signal字段
+            JsonObject signalObj = doc["signal"];
+            if (!signalObj.isNull()) {
+                uint8_t repeatCount = doc["repeatCount"] | 1;
+                
+                // 构建完整的SignalID格式JSON
+                DynamicJsonDocument signalDoc(512);
+                signalDoc["signal"] = signalObj;
+                signalDoc["repeatCount"] = repeatCount;
+                
+                String signalJson;
+                serializeJson(signalDoc, signalJson);
+                trimmed = signalJson;
+            }
+        }
+    }
+    
+    // 使用公共函数（支持JSON和字符串格式）
+    bool success = false;
+    String message = APIHandlers::handleSendSignal(forwarder, trimmed, success);
+    
+    if (success) {
+        publishState("executing", message);
     } else {
-        publishState("error", "Failed to send signal");
+        publishState("error", message);
     }
 }
 
@@ -837,12 +721,10 @@ void HAMQTTHandler::handleSetForwardingEnabled(const String& json) {
     bool enabled = doc["enabled"] | true;
     forwarder.setEnabled(enabled);
     
-    DynamicJsonDocument response(128);
-    response["success"] = true;
-    response["message"] = "Forwarding " + String(enabled ? "enabled" : "disabled");
-    String output;
-    serializeJson(response, output);
-    publishState("success", output);
+    // 使用统一格式
+    String message = "Forwarding " + String(enabled ? "enabled" : "disabled");
+    String output = UnifiedAPI::createSuccessResponse(message, "success");
+    mqtt.publish(MQTT_TOPIC_STATE, output);
 }
 
 void HAMQTTHandler::handleSmartIRSignal(const String& payload) {
@@ -911,38 +793,40 @@ void HAMQTTHandler::publishEnhancedState() {
         return;
     }
     
-    // 使用较小的缓冲区（移除最近信号后可以减少）
+    // 使用统一格式，但保留所有HA需要的字段
     DynamicJsonDocument doc(512);
     
-    // 主状态
+    // 统一格式：success和status在顶层
+    doc["success"] = true;
     doc["status"] = currentStatus;
     
-    // 转发状态
-    doc["forwarding_enabled"] = currentForwardingEnabled;
+    // 数据放在data对象中（HA需要的字段）
+    JsonObject dataObj = doc.createNestedObject("data");
+    dataObj["forwarding_enabled"] = currentForwardingEnabled;
+    dataObj["learn_mode"] = currentLearnMode;
     
     // 学习状态（优化：避免在栈上创建大的LearnedDevice对象）
-    doc["learn_mode"] = currentLearnMode;
     if (learner != nullptr && learner->isLearningDevice()) {
         // 直接获取设备名称字符串，避免复制整个LearnedDevice结构体
         String deviceName = learner->getDeviceName();
-        doc["learn_device"] = deviceName;
+        dataObj["learn_device"] = deviceName;
         deviceName = "";  // 立即释放
         
         String progress = learner->getLearnProgress();
-        doc["learn_progress"] = progress;
+        dataObj["learn_progress"] = progress;
         progress = "";  // 立即释放
     } else {
-        doc["learn_progress"] = "";
-        doc["learn_device"] = "";
+        dataObj["learn_progress"] = "";
+        dataObj["learn_device"] = "";
     }
     
     // 映射规则数量
-    doc["rule_count"] = currentRuleCount;
+    dataObj["rule_count"] = currentRuleCount;
     
     // 注意：最近信号信息已移除，用户可通过 get_recent_signals API接口查询
     // 移除自动获取以减少内存分配和JSON构建开销，提升转发性能
     
-    doc["timestamp"] = millis();
+    UnifiedAPI::addTimestamp(doc);
     
     // 喂看门狗，避免序列化过程中超时
     ESP.wdtFeed();
