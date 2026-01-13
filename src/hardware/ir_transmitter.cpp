@@ -47,7 +47,7 @@ bool IRTransmitter::sendNECRepeat() {
     
     transmitting = true;
     // NEC重复码波形：9000μs高 + 2250μs低 + 560μs低
-    uint16_t necRepeat[3] = {9000, 2250, 600};
+    uint16_t necRepeat[3] = {9000, 2250, 560};
     irsend->sendRaw(necRepeat, 3, 38);  // 38kHz载波
     transmitting = false;
     return true;

@@ -88,12 +88,34 @@ bool IRMapper::initDefaultMappings() {
         
         // 构建B信号序列
         rule.bSequence.clear();
-        UnifiedSignal bSignal;
-        bSignal.protocol = NEC_PROTOCOL;
-        bSignal.useTiming = false;  // 协议信号
-        bSignal.data = defaultRules[i].targetData;
-        bSignal.repeatCount = 1;
-        rule.bSequence.addSignal(bSignal, 0);
+        
+        // 特殊处理电源规则：包含两个B信号
+        if (defaultRules[i].sourceData == SOURCE_POWER) {
+            // 第一个B信号：0xFDB04F
+            UnifiedSignal bSignal1;
+            bSignal1.protocol = NEC_PROTOCOL;
+            bSignal1.useTiming = false;
+            bSignal1.data = TARGET_POWER;  // 0xFDB04F
+            bSignal1.repeatCount = 1;
+            rule.bSequence.addSignal(bSignal1, 0);
+            
+            // 第二个B信号：0xFFFFFFFF，间隔47ms
+            UnifiedSignal bSignal2;
+            bSignal2.protocol = NEC_PROTOCOL;
+            bSignal2.useTiming = false;
+            bSignal2.data = 0xFFFFFFFF;
+            bSignal2.repeatCount = 1;
+            rule.bSequence.addSignal(bSignal2, 47);
+        } else {
+            // 其他规则：单个B信号
+            UnifiedSignal bSignal;
+            bSignal.protocol = NEC_PROTOCOL;
+            bSignal.useTiming = false;  // 协议信号
+            bSignal.data = defaultRules[i].targetData;
+            bSignal.repeatCount = 1;
+            rule.bSequence.addSignal(bSignal, 0);
+        }
+        
         rule.bSequence.repeatCount = defaultRules[i].repeatCount;
         
         if (addRule(rule, false)) {

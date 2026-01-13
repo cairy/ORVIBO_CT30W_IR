@@ -176,6 +176,7 @@ bool IRForwarder::sendSequence(const SignalSequence& sequence) {
         }
     } else if (isNEC && sequence.signalCount == 1) {
         // NEC协议单个信号：发送1次完整信号 + (repeatCount-1)次重复码
+        // 按照NEC协议标准：完整信号后110ms发送重复码，重复码之间间隔110ms
         const UnifiedSignal& signal = sequence.signals[0];
         
         // 发送第一个完整信号
@@ -184,12 +185,8 @@ bool IRForwarder::sendSequence(const SignalSequence& sequence) {
         // 发送重复码（如果repeatCount > 1）
         if (sequence.repeatCount > 1) {
             for (uint8_t r = 1; r < sequence.repeatCount; r++) {
-                delay(10);  // 最小延迟，确保信号完整发送
+                delay(110);  // NEC协议标准间隔：110ms
                 transmitter.sendNECRepeat();
-                
-                if (r < sequence.repeatCount - 1) {
-                    delay(40);  // 重复码间隔（标准NEC协议间隔）
-                }
             }
         }
     } else {
@@ -223,68 +220,20 @@ bool IRForwarder::sendSequence(const SignalSequence& sequence) {
 
 bool IRForwarder::sendSignal(const UnifiedSignal& signal, uint8_t repeatCount) {
     // 兼容层：将单个信号转换为序列，然后调用 sendSequence
+    // 对于单个NEC信号，直接使用快速路径，避免序列创建和判断的开销
+    if (signal.isProtocol() && signal.protocol == 1 && !signal.useTiming && repeatCount == 1) {
+        // 单个NEC信号快速路径：直接发送，避免序列转换开销
+        transmitter.sendNEC(signal.data, 32);
+        logger.resetSignalInterval();
+        return true;
+    }
+    
+    // 其他情况：转换为序列发送
     SignalSequence sequence;
     sequence.clear();
     sequence.addSignal(signal, 0);
     sequence.repeatCount = repeatCount;
     return sendSequence(sequence);
-    if (repeatCount == 0) repeatCount = 1;
-    
-    // 如果使用时序码，直接发送时序码
-    if (signal.useTiming) {
-        // 创建非const副本用于加载时序码
-        UnifiedSignal signalCopy = signal;
-        if (!signalCopy.loadTiming()) {
-            return false;
-        }
-        
-        for (uint8_t i = 0; i < repeatCount; i++) {
-            if (!transmitter.transmit(signalCopy.timing, signalCopy.timingCount)) {
-                signalCopy.freeTiming();
-                return false;
-            }
-            if (i < repeatCount - 1) {
-                delay(100);  // 重复发送之间的延迟
-            }
-        }
-        
-        signalCopy.freeTiming();
-        logger.resetSignalInterval();  // 发送完成后重置信号间隔
-        return true;
-    }
-    
-    // 使用协议发送
-    if (signal.isProtocol() && signal.protocol == 1) {
-        // NEC协议
-        for (uint8_t i = 0; i < repeatCount; i++) {
-            if (i == 0) {
-                transmitter.sendNEC(signal.data, 32);
-            } else {
-                delay(10);  // 最小延迟，确保信号完整发送
-                transmitter.sendNECRepeat();
-            }
-            if (i < repeatCount - 1) {
-                delay(40);  // 重复码间隔，减少到40ms（从50ms减少）
-            }
-        }
-        logger.resetSignalInterval();  // 发送完成后重置信号间隔
-        return true;
-    } else if (signal.isProtocol()) {
-        // 其他协议：使用时序生成器
-        int count = 0;
-        if (generator.generateTiming(signal.protocol, signal.data, timingBuffer, count, 300)) {
-            for (uint8_t i = 0; i < repeatCount; i++) {
-                transmitter.transmit(timingBuffer, count);
-                if (i < repeatCount - 1) {
-                    delay(100);
-                }
-            }
-            logger.resetSignalInterval();  // 发送完成后重置信号间隔
-            return true;
-        }
-    }
-    
-    return false;
 }
 
 bool IRForwarder::isForwarding() const {
@@ -373,8 +322,8 @@ bool IRForwarder::executeForward(const IR_MapRule& rule) {
         }
     } else if (isNEC) {
         // NEC协议：发送1次完整信号 + (repeatCount-1)次重复码
-        // 注意：开关机应该使用时序码，这里只处理其他按键（如音量、静音等）
-        // 这些按键不需要额外的延迟，直接按NEC协议标准发送即可
+        // 按照NEC协议标准：完整信号后110ms发送重复码，重复码之间间隔110ms
+        // 注意：如果需要非标准间隔，应使用时序码序列结构
         const UnifiedSignal& signal = rule.bSequence.signals[0];
         
         // 发送第一个完整信号
@@ -383,12 +332,8 @@ bool IRForwarder::executeForward(const IR_MapRule& rule) {
         // 发送重复码（如果repeatCount > 1）
         if (rule.bSequence.repeatCount > 1) {
             for (uint8_t r = 1; r < rule.bSequence.repeatCount; r++) {
-                delay(10);  // 最小延迟，确保信号完整发送
+                delay(110);  // NEC协议标准间隔：110ms
                 transmitter.sendNECRepeat();
-                
-                if (r < rule.bSequence.repeatCount - 1) {
-                    delay(40);  // 重复码间隔（标准NEC协议间隔）
-                }
             }
         }
     } else {
