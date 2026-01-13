@@ -21,7 +21,7 @@
 
 首次启动会自动初始化默认映射关系（音量+、音量-、静音、电源、AV/TV 等）。
 
-**注意**：所有信号数据（`data` 和 `hash` 字段）统一使用十六进制字符串格式。如果设备检测到旧格式数据（数字格式），会自动清空并重新初始化默认映射规则。
+**注意**：所有信号数据（`data` 字段）统一使用十六进制字符串格式。如果设备检测到旧格式数据（数字格式），会自动清空并重新初始化默认映射规则。
 
 ## 二、信号参数说明
 
@@ -29,16 +29,20 @@
 
 ```json
 {
-  "protocol": 1,           // 协议类型：1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung
+  "protocol": 1,           // 协议类型：1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung, 0=未知
   "data": "0x00003039",    // 协议数据（标准协议解析出的数据值，十六进制字符串格式）
-  "hash": "0x00000000",    // 时序特征哈希（无法匹配标准协议时使用，十六进制字符串格式）
-  "isProtocol": true       // 是否为标准协议：true=标准协议，false=使用hash匹配
+  "isProtocol": true,      // 是否为标准协议：true=标准协议，false=时序码
+  "useTiming": false,      // 是否使用时序码：true=时序码，false=协议
+  "timingBase64": "",      // 时序码Base64字符串（使用时序码时有效）
+  "timingCount": 0,        // 时序码数量（使用时序码时有效）
+  "repeatCount": 1         // 重复次数（默认1）
 }
 ```
 
 **说明**：
-- `isProtocol=true` 时，使用 `protocol` 和 `data` 进行匹配
-- `isProtocol=false` 时，使用 `hash` 进行匹配（用于非标准协议）
+- `useTiming=false` 且 `isProtocol=true` 时，使用 `protocol` 和 `data` 进行匹配和发送（标准协议）
+- `useTiming=true` 时，使用 `timingBase64` 进行匹配和发送（时序码，用于非标准协议或需要精确时序的信号）
+- 录制的信号、最近接收的信号和规则中的信号可以直接相互拷贝使用
 
 ### 支持的协议
 
@@ -356,8 +360,7 @@ GET http://设备IP/api/learn/result?format=array     # 数组格式
 **格式说明：**
 - **Base64格式**（默认）：输出SmartIR JSON配置文件格式，可直接复制到SmartIR JSON配置文件使用
 - **协议格式**（`format=signalid`）：如果信号解析成功，输出协议格式字符串
-  - 有hash时输出5参数格式：`protocol,data,hash,isProtocol,repeatCount`
-  - 无hash时输出3参数格式：`protocol,data,repeatCount`（向后兼容）
+  - 格式：`protocol,data,repeatCount`（3参数格式）
   - protocol是数字常量（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung，0表示非标准协议）
   - 如果解析失败，会回退到Base64格式
 - **数组格式**（`format=array`）：输出数组格式字符串，兼容SmartIR JSON配置文件格式
@@ -379,8 +382,11 @@ GET http://设备IP/api/signals/recent
     "signal": {
       "protocol": 1,
       "data": "0x00003039",
-      "hash": "0x00000000",
-      "isProtocol": true
+      "isProtocol": true,
+      "useTiming": false,
+      "timingBase64": "",
+      "timingCount": 0,
+      "repeatCount": 1
     },
     "timestamp": 1234567890,
     "matched": true
@@ -389,12 +395,15 @@ GET http://设备IP/api/signals/recent
 ```
 
 **说明**：
-- `protocol`：协议类型（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung）
+- `protocol`：协议类型（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung, 0=未知）
 - `data`：协议数据（十六进制字符串格式，如"0x00003039"）
-- `hash`：时序特征哈希（非标准协议时使用，十六进制字符串格式，如"0x00000000"）
 - `isProtocol`：是否为标准协议
+- `useTiming`：是否使用时序码（true=时序码，false=协议）
+- `timingBase64`：时序码Base64字符串（使用时序码时有效）
+- `timingCount`：时序码数量（使用时序码时有效）
+- `repeatCount`：重复次数
 - `matched`：是否在映射库中匹配
-- 最多保留最近10条记录
+- 最多保留最近3条记录
 
 **发送红外信号：**
 
@@ -427,19 +436,15 @@ Content-Type: text/plain
 
 1,0xFF00FF00,1
 ```
-- **2参数格式**（向后兼容）：`protocol,data`（repeatCount默认为1，hash默认为0）
-- **3参数格式**（向后兼容）：`protocol,data,repeatCount`（hash默认为0）
-- **5参数格式**（完整格式）：`protocol,data,hash,isProtocol,repeatCount`
-  - protocol：协议编号（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung，0表示非标准协议）
+- **2参数格式**（向后兼容）：`protocol,data`（repeatCount默认为1）
+- **3参数格式**（向后兼容）：`protocol,data,repeatCount`
+  - protocol：协议编号（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung）
   - data：协议数据（十六进制格式，如0xFF00FF00）
-  - hash：时序特征哈希（十六进制格式，如0x12345678，非标准协议时使用）
-  - isProtocol：是否为标准协议（true/false）
   - repeatCount：重复次数（默认1）
 - 示例：
-  - 标准协议：`"1,0xFF00FF00,0x00000000,true,2"`
-  - 非标准协议：`"0,0x00000000,0x12345678,false,1"`
+  - 标准协议：`"1,0xFF00FF00,2"`（NEC协议，重复2次）
 
-**格式4：SignalID对象格式**（保留现有格式，Content-Type: application/json）
+**格式4：UnifiedSignal对象格式**（统一信号格式，Content-Type: application/json）
 ```bash
 POST http://设备IP/api/signals/send
 Content-Type: application/json
@@ -448,8 +453,11 @@ Content-Type: application/json
   "signal": {
     "protocol": 1,
     "data": "0x00003039",
-    "hash": "0x00000000",
-    "isProtocol": true
+    "isProtocol": true,
+    "useTiming": false,
+    "timingBase64": "",
+    "timingCount": 0,
+    "repeatCount": 1
   },
   "repeatCount": 1
 }
@@ -458,9 +466,10 @@ Content-Type: application/json
 **说明**：
 - HTTP API和MQTT接口完全统一格式
 - 如果Content-Type是text/plain，按字符串格式解析（Base64/数组/协议）
-- 如果Content-Type是application/json，按JSON格式解析（SignalID对象格式）
+- 如果Content-Type是application/json，按JSON格式解析（UnifiedSignal对象格式）
 - 字符串格式可以直接使用学习结果或SmartIR JSON配置文件中的commands字段值
-- SignalID对象格式保留向后兼容
+- UnifiedSignal对象格式支持协议信号和时序码信号两种格式
+- 使用时序码时，`useTiming=true`，`timingBase64`包含Base64编码的时序数据
 
 **更新映射规则：**
 
@@ -477,14 +486,20 @@ Content-Type: application/json
     "aSignal": {
       "protocol": 1,
       "data": "0x00003039",
-      "hash": "0x00000000",
-      "isProtocol": true
+      "isProtocol": true,
+      "useTiming": false,
+      "timingBase64": "",
+      "timingCount": 0,
+      "repeatCount": 1
     },
     "bSignals": [{
       "protocol": 1,
       "data": "0x00010932",
-      "hash": "0x00000000",
-      "isProtocol": true
+      "isProtocol": true,
+      "useTiming": false,
+      "timingBase64": "",
+      "timingCount": 0,
+      "repeatCount": 1
     }],
     "bSignalCount": 1,
     "intervals": [],
@@ -537,7 +552,7 @@ Content-Type: application/json
 - 协议格式字符串：
   - 2参数：`protocol,data`（向后兼容）
   - 3参数：`protocol,data,repeatCount`（向后兼容）
-  - 5参数：`protocol,data,hash,isProtocol,repeatCount`（完整格式，支持hash）
+  - 3参数：`protocol,data,repeatCount`（协议格式）
 
 SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被设备自动解析和处理，无需任何转换。
 
@@ -585,14 +600,20 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
     "aSignal": {
       "protocol": 1,
       "data": "0x00003039",
-      "hash": "0x00000000",
-      "isProtocol": true
+      "isProtocol": true,
+      "useTiming": false,
+      "timingBase64": "",
+      "timingCount": 0,
+      "repeatCount": 1
     },
     "bSignals": [{
       "protocol": 1,
       "data": "0x00010932",
-      "hash": "0x00000000",
-      "isProtocol": true
+      "isProtocol": true,
+      "useTiming": false,
+      "timingBase64": "",
+      "timingCount": 0,
+      "repeatCount": 1
     }],
     "bSignalCount": 1,
     "intervals": [],
@@ -610,13 +631,18 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
       "aSignal": {
         "protocol": 1,
         "data": "0x00003039",
-        "hash": "0x00000000",
-        "isProtocol": true
+        "isProtocol": true,
+        "useTiming": false,
+        "timingBase64": "",
+        "timingCount": 0,
+        "repeatCount": 1
       },
       "bSignals": [{
         "protocol": 1,
         "data": "0x00010932",
-        "hash": "0x00000000",
+        "isProtocol": true,
+        "useTiming": false,
+        "timingBase64": "",
         "isProtocol": true
       }],
       "bSignalCount": 1,
@@ -695,7 +721,7 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 
 **format参数**（可选，默认base64）：
 - `base64`：Base64格式（默认）
-- `signalid`：SignalID格式
+- `signalid`：UnifiedSignal格式（协议格式字符串）
 - `array`：数组格式
 
 **响应**（SmartIR兼容格式，统一格式）：
@@ -741,8 +767,11 @@ Payload：Base64字符串|repeatCount 或 [数组]|repeatCount 或 protocol,data
   "signal": {
     "protocol": 1,
     "data": "0x00003039",
-    "hash": "0x00000000",
-    "isProtocol": true
+    "isProtocol": true,
+    "useTiming": false,
+    "timingBase64": "",
+    "timingCount": 0,
+    "repeatCount": 1
   },
   "repeatCount": 1
 }
@@ -942,7 +971,7 @@ automation:
 
 #### 统一信号格式
 
-设备使用统一的 `SignalID` 结构表示红外信号，详见 [二、信号参数说明](#二信号参数说明)。此格式在所有场景中统一使用：日志记录、转发规则、API接口、MQTT消息、Flash存储等。
+设备使用统一的 `UnifiedSignal` 结构表示红外信号，详见 [二、信号参数说明](#二信号参数说明)。此格式在所有场景中统一使用：日志记录、转发规则、API接口、MQTT消息、Flash存储等。支持协议信号和时序码信号两种格式，录制的信号、最近接收的信号和规则中的信号可以直接相互拷贝使用。
 
 ## 五、常见问题
 
@@ -983,10 +1012,10 @@ Serial.printf("Total: %d, Used: %d\n", fs_info.totalBytes, fs_info.usedBytes);
 
 ## 六、性能指标
 
-- **转发延迟**：≤ 20ms（单次信号，A信号接收后B信号发射的最大延迟）
-- **转发延迟（重复信号）**：≤ 100ms（电源键等需要重复码的信号）
+- **转发延迟**：≤ 10ms（单次信号，A信号接收后B信号发射的最大延迟）
+- **转发延迟（重复信号）**：≤ 50ms（电源键等需要重复码的信号）
 - **间隔误差**：≤ 20ms（连续信号间隔的最大误差）
-- **信号缓存**：最多 5 个（支持并发接收的短时间多信号）
+- **信号缓存**：最多 3 个（支持并发接收的短时间多信号）
 - **内存使用**：≤ 90%（运行时内存占用控制，超过90%时自动清理）
 - **协议解析准确率**：> 99%（使用IRremoteESP8266库，解析稳定可靠）
 - **时序精度**：微秒级（红外信号时序控制精度）
@@ -995,27 +1024,35 @@ Serial.printf("Total: %d, Used: %d\n", fs_info.totalBytes, fs_info.usedBytes);
 
 #### 内存优化
 - **静态内存分配**：红外接收缓冲区使用静态数组，避免动态分配带来的内存碎片
+- **栈溢出风险修复**：时序缓冲区从静态数组改为类成员变量，避免栈溢出（ESP8266栈空间约4KB）
 - **缓冲区大小优化**：时序数组从500减小到300，节省约1.6KB内存
 - **内存监控工具**：提供`MemoryMonitor`类实时监控内存使用情况
+- **内存检查加强**：在JSON解析和动态分配前更严格地检查可用内存，添加安全缓冲
 - **移除OTA功能**：完全移除OTA功能，释放约5-10KB内存（包括ESP8266HTTPUpdate库的静态内存占用）
 - **JSON文档大小优化**：减少API响应中的JSON文档大小，降低动态内存分配峰值
 - **Web服务器延迟启动**：启动后8秒延迟判断，MQTT成功则不启动Web服务器，节省5-10KB内存
-- **智能内存清理**：每60秒检查一次，超过90%且连续两次检查都超过阈值时才清理，避免频繁清理
-- **日志保存优化**：只在日志数量达到阈值（20条）或错误日志时才保存，减少Flash写入
+- **智能内存清理**：每30秒检查一次，超过85%且连续两次检查都超过阈值时才清理，避免频繁清理
+- **日志保存优化**：只在日志数量达到阈值（约13条）或错误日志时才保存，减少Flash写入
 
 #### 转发延迟优化
 - **异步消息队列**：使用消息队列解耦接收和转发流程，避免阻塞
 - **快速返回机制**：转发过程中快速检查并返回，减少不必要的等待
 - **队列处理优化**：队列处理间隔从10ms优化到5ms，提升响应速度
+- **主循环优化**：移除主循环中的`delay(1)`阻塞，改用非阻塞`yield()`，提升实时性
 - **延迟时间优化**：
-  - 单次信号（音量、静音）：从40ms优化到20ms（提升50%）
-  - 重复信号（电源）：从150ms优化到100ms（提升33%）
-  - 重复码间隔：从70ms优化到50ms
+  - 单次信号（音量、静音）：从20ms进一步优化到10ms（移除不必要的延迟，提升50%）
+  - 重复信号（电源）：移除初始延迟，直接发送信号
+  - 重复码间隔：从50ms优化到40ms（提升20%）
 - **IRsend库集成**：NEC协议使用IRremoteESP8266库的IRsend直接发送，时序更准确，性能更好
+- **日志记录优化**：仅在调试模式或匹配失败时记录日志，减少转发路径上的开销（非调试模式下减少约80%日志开销）
 - **减少调试输出**：移除不必要的Serial输出，减少阻塞时间
 
 #### 间隔误差优化
 - **硬件定时器**：使用ESP8266 Ticker库实现毫秒级精准延时（误差≤20ms）
 - **微秒级精度**：使用优化的`delayMicroseconds`实现微秒级时序控制
-- **中断管理**：优化中断关闭时间，确保不超过10ms限制
+- **中断管理优化**：
+  - 优化中断关闭时间，确保不超过10ms限制
+  - 中断关闭检查频率优化：每1ms检查一次（每100个时序点），而不是每个时序点检查，减少开销
+  - 接收器中断处理优化：减少对volatile变量的访问次数，提升性能
+- **MQTT回调优化**：完全避免String对象创建，使用纯C字符串操作，减少内存分配和栈溢出风险
 

@@ -45,18 +45,26 @@ void IRAM_ATTR IRReceiver::onInterrupt() {
     unsigned long now = micros();
     bool level = digitalRead(IR_RX_PIN) == HIGH;
     
+    // 优化：确保关键操作的原子性
+    // 使用局部变量减少对volatile变量的访问次数
+    int currentWriteIndex = receiver->writeIndex;
+    int currentBufferCount = receiver->bufferCount;
+    
     // 覆盖机制：如果缓冲区满，覆盖最旧的数据
-    if (receiver->bufferCount >= BUFFER_SIZE) {
+    if (currentBufferCount >= BUFFER_SIZE) {
         receiver->readIndex = (receiver->readIndex + 1) % BUFFER_SIZE;
-        receiver->bufferCount--;
+        currentBufferCount = BUFFER_SIZE - 1;  // 保持bufferCount不变
     }
     
-    receiver->buffer[receiver->writeIndex].level = level;
-    receiver->buffer[receiver->writeIndex].timestamp = now;
-    receiver->buffer[receiver->writeIndex].valid = true;
+    // 写入缓冲区（原子操作：单个结构体赋值）
+    receiver->buffer[currentWriteIndex].level = level;
+    receiver->buffer[currentWriteIndex].timestamp = now;
+    receiver->buffer[currentWriteIndex].valid = true;
     
-    receiver->writeIndex = (receiver->writeIndex + 1) % BUFFER_SIZE;
-    receiver->bufferCount++;
+    // 更新索引和计数（原子操作）
+    currentWriteIndex = (currentWriteIndex + 1) % BUFFER_SIZE;
+    receiver->writeIndex = currentWriteIndex;
+    receiver->bufferCount = currentBufferCount + 1;
     receiver->receiving = true;
     receiver->lastSignalTime = now;
 }

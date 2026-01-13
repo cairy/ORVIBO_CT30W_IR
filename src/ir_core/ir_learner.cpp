@@ -1,5 +1,6 @@
 #include "ir_learner.h"
 #include "utils/hex_utils.h"
+#include "unified_signal.h"
 #include <ArduinoJson.h>
 
 // Base64编码表
@@ -9,7 +10,9 @@ IRLearner::IRLearner(IRReceiver& receiver, IRParser& parser, Logger& logger)
     : receiver(receiver), parser(parser), logger(logger),
       mode(LEARN_NONE),
       learnedDevice(nullptr),
-      currentCommandIndex(0), commandNamesCount(0), lastSignalTime(0), learnTimeoutMs(0) {
+      currentCommandIndex(0), commandNamesCount(0), lastSignalTime(0), learnTimeoutMs(0),
+      hasLastSignal(false), lastLearnedSignalTime(0) {
+    lastLearnedSignal.clear();
 }
 
 void IRLearner::init() {
@@ -126,6 +129,11 @@ bool IRLearner::startDeviceLearn(const String& deviceName, const String& command
     learnTimeoutMs = timeoutSeconds > 0 ? timeoutSeconds * 1000UL : DEFAULT_LEARN_TIMEOUT_SEC * 1000UL;
     lastSignalTime = millis();
     
+    // 重置重复信号检测
+    hasLastSignal = false;
+    lastLearnedSignal.clear();
+    lastLearnedSignalTime = 0;
+    
     // 清空接收缓冲区
     receiver.clearBuffer();
     
@@ -169,6 +177,11 @@ bool IRLearner::stopDeviceLearn() {
     
     logger.logLearn(result);
     Serial.println("=== " + result + " ===");
+    
+    // 清空重复信号检测
+    hasLastSignal = false;
+    lastLearnedSignal.clear();
+    lastLearnedSignalTime = 0;
     
     // 注意：不立即释放内存，保留数据用于转换函数，在下次开始学习或手动释放时清理
     
@@ -324,25 +337,57 @@ void IRLearner::processDeviceLearnSignal(const IRTiming* timing, int count) {
     memcpy(cmd.timing, timing, sizeof(IRTiming) * cmd.timingCount);
     
     // 尝试解析协议（可选，不影响学习结果）
-    SignalID signalId;
-    if (parser.parseSignal(timing, actualTimingCount, signalId)) {
-        // 解析成功，保存SignalID
-        cmd.signalId = signalId;
-        cmd.hasProtocol = signalId.isProtocol;
+    UnifiedSignal signal;
+    if (parser.parseSignal(timing, actualTimingCount, signal)) {
+        // 解析成功，保存UnifiedSignal
+        cmd.signal = signal;
+        cmd.hasProtocol = signal.isProtocol;
+        
+        // 如果解析成功但使用时序码，保存时序码Base64
+        if (signal.useTiming) {
+            cmd.signal.timingBase64 = SignalUtils::timingToBase64(timing, actualTimingCount);
+        }
+        
+        // 重复信号检测（使用cmd.signal，因为可能已更新timingBase64）
+        if (hasLastSignal && SignalUtils::signalsEqual(cmd.signal, lastLearnedSignal)) {
+            unsigned long currentTime = millis();
+            unsigned long interval = currentTime - lastLearnedSignalTime;
+            String signalDesc = parser.signalToString(cmd.signal);
+            String logMsg = "检测到重复信号: " + signalDesc + "，间隔: " + String(interval) + "ms";
+            logger.logLearn(logMsg);
+            Serial.println("[学习] " + logMsg);
+        }
+        
         Serial.println("=== 指令学习完成 ===");
         Serial.println("指令名称: " + String(cmd.name));
-        Serial.println("信号: " + parser.signalToString(signalId));
+        Serial.println("信号: " + parser.signalToString(signal));
     } else {
-        // 解析失败，只保存时序数据
+        // 解析失败，使用时序码
+        cmd.signal.clear();
+        cmd.signal.useTiming = true;
+        cmd.signal.isProtocol = false;
+        cmd.signal.timingBase64 = SignalUtils::timingToBase64(timing, actualTimingCount);
+        cmd.signal.timingCount = actualTimingCount;
         cmd.hasProtocol = false;
-        cmd.signalId.protocol = 0;
-        cmd.signalId.data = 0;
-        cmd.signalId.hash = 0;
-        cmd.signalId.isProtocol = false;
+        
+        // 重复信号检测（针对时序码）
+        if (hasLastSignal && SignalUtils::signalsEqual(cmd.signal, lastLearnedSignal)) {
+            unsigned long currentTime = millis();
+            unsigned long interval = currentTime - lastLearnedSignalTime;
+            String logMsg = "检测到重复信号: 原始时序数据（未解析协议），间隔: " + String(interval) + "ms";
+            logger.logLearn(logMsg);
+            Serial.println("[学习] " + logMsg);
+        }
+        
         Serial.println("=== 指令学习完成 ===");
         Serial.println("指令名称: " + String(cmd.name));
         Serial.println("信号: 原始时序数据（未解析协议）");
     }
+    
+    // 更新上一个学习的信号（无论是否重复都保存）
+    lastLearnedSignal = cmd.signal;
+    hasLastSignal = true;
+    lastLearnedSignalTime = millis();
     
     cmd.valid = true;
     learnedDevice->commandCount = currentCommandIndex + 1;
@@ -564,38 +609,18 @@ String IRLearner::convertToSignalIDFormat() {
             break;
         }
         
-        if (cmd.hasProtocol) {
-            // 如果解析成功，输出协议格式字符串
-            // 有hash时输出5参数格式：protocol,data,hash,isProtocol,repeatCount
-            // 无hash时输出3参数格式：protocol,data,repeatCount（向后兼容）
+        if (cmd.hasProtocol && !cmd.signal.useTiming) {
+            // 如果解析成功且使用协议，输出协议格式字符串
+            // 格式：protocol,data,repeatCount
             char protocolStr[128];
-            if (cmd.signalId.hash != 0) {
-                // 5参数格式：protocol,data,hash,isProtocol,repeatCount
-                snprintf(protocolStr, sizeof(protocolStr), "%u,0x%08X,0x%08X,%s,1", 
-                         cmd.signalId.protocol, cmd.signalId.data, cmd.signalId.hash,
-                         cmd.signalId.isProtocol ? "true" : "false");
-            } else {
-                // 3参数格式：protocol,data,repeatCount（向后兼容）
-                snprintf(protocolStr, sizeof(protocolStr), "%u,0x%08X,1", 
-                         cmd.signalId.protocol, cmd.signalId.data);
-            }
+            snprintf(protocolStr, sizeof(protocolStr), "%u,0x%08X,%u", 
+                     cmd.signal.protocol, cmd.signal.data, cmd.signal.repeatCount);
             commands[cmdName] = protocolStr;
             protocolCount++;
-        } else if (cmd.signalId.hash != 0) {
-            // 如果没有协议但有SignalID（hash），输出SignalID JSON对象格式
-            // 复用signalDoc避免重复分配内存
-            signalDoc.clear();
-            JsonObject signalObj = signalDoc.to<JsonObject>();
-            signalObj["protocol"] = cmd.signalId.protocol;
-            signalObj["data"] = uint32ToHexString(cmd.signalId.data);
-            signalObj["hash"] = uint32ToHexString(cmd.signalId.hash);
-            signalObj["isProtocol"] = cmd.signalId.isProtocol;
-            
-            // 使用固定大小的缓冲区序列化
-            char signalJsonBuffer[256];
-            serializeJson(signalObj, signalJsonBuffer, sizeof(signalJsonBuffer));
-            commands[cmdName] = signalJsonBuffer;
-            protocolCount++;
+        } else if (cmd.signal.useTiming) {
+            // 如果使用时序码，输出时序码Base64格式
+            commands[cmdName] = cmd.signal.timingBase64;
+            base64Count++;
         } else {
             // 如果parseSignal()返回false，回退到Base64格式
             String base64 = encodeTimingToBase64(cmd.timing, cmd.timingCount);
@@ -906,7 +931,7 @@ IRLearner::SignalFormat IRLearner::detectSignalFormat(const String& payload) {
     String trimmed = payload;
     trimmed.trim();
     
-    // 检测是否为JSON格式（SignalID对象格式）
+    // 检测是否为JSON格式（UnifiedSignal对象格式）
     if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
         return FORMAT_SIGNALID;
     }
@@ -982,7 +1007,7 @@ bool IRLearner::parseArrayString(const String& arrayStr, IRTiming* timing, int& 
     return (count > 0);
 }
 
-bool IRLearner::parseProtocolString(const String& protocolStr, SignalID& signalId, uint8_t& repeatCount) {
+bool IRLearner::parseProtocolString(const String& protocolStr, UnifiedSignal& signal, uint8_t& repeatCount) {
     if (protocolStr.length() == 0) {
         return false;
     }
@@ -1029,10 +1054,12 @@ bool IRLearner::parseProtocolString(const String& protocolStr, SignalID& signalI
             }
         }
         
-        signalId.protocol = protocol;
-        signalId.data = data;
-        signalId.hash = 0;
-        signalId.isProtocol = (protocol >= 1 && protocol <= 5);
+        signal.clear();
+        signal.protocol = protocol;
+        signal.data = data;
+        signal.isProtocol = (protocol >= 1 && protocol <= 5);
+        signal.useTiming = false;
+        signal.repeatCount = 1;
         repeatCount = 1;
         
         return true;
@@ -1065,10 +1092,12 @@ bool IRLearner::parseProtocolString(const String& protocolStr, SignalID& signalI
         uint8_t repeat = repeatStr.toInt();
         if (repeat == 0) repeat = 1;
         
-        signalId.protocol = protocol;
-        signalId.data = data;
-        signalId.hash = 0;
-        signalId.isProtocol = (protocol >= 1 && protocol <= 5);
+        signal.clear();
+        signal.protocol = protocol;
+        signal.data = data;
+        signal.isProtocol = (protocol >= 1 && protocol <= 5);
+        signal.useTiming = false;
+        signal.repeatCount = repeat;
         repeatCount = repeat;
         
         return true;
@@ -1095,7 +1124,6 @@ bool IRLearner::parseProtocolString(const String& protocolStr, SignalID& signalI
         
         uint32_t protocol = protocolStr_part.toInt();
         uint32_t data = 0;
-        uint32_t hash = 0;
         
         // 解析data（十六进制）
         if (dataStr.startsWith("0x") || dataStr.startsWith("0X")) {
@@ -1108,8 +1136,7 @@ bool IRLearner::parseProtocolString(const String& protocolStr, SignalID& signalI
             }
         }
         
-        // 解析hash（十六进制字符串，使用hex_utils函数）
-        hash = parseUint32FromHexString(hashStr.c_str());
+        // hash字段已移除，不再解析（保留hashStr解析以兼容旧格式，但不使用）
         
         // 解析isProtocol（true/false或1/0）
         bool isProtocol = false;
@@ -1121,10 +1148,12 @@ bool IRLearner::parseProtocolString(const String& protocolStr, SignalID& signalI
         uint8_t repeat = repeatStr.toInt();
         if (repeat == 0) repeat = 1;
         
-        signalId.protocol = protocol;
-        signalId.data = data;
-        signalId.hash = hash;
-        signalId.isProtocol = isProtocol;
+        signal.clear();
+        signal.protocol = protocol;
+        signal.data = data;
+        signal.isProtocol = isProtocol;
+        signal.useTiming = false;
+        signal.repeatCount = repeat;
         repeatCount = repeat;
         
         return true;
@@ -1134,7 +1163,7 @@ bool IRLearner::parseProtocolString(const String& protocolStr, SignalID& signalI
     }
 }
 
-bool IRLearner::parseSignalPayload(const String& payload, SignalID& signalId, IRTiming* timing, int& timingCount, int maxTimingCount, uint8_t& repeatCount, SignalFormat& format) {
+bool IRLearner::parseSignalPayload(const String& payload, UnifiedSignal& signal, IRTiming* timing, int& timingCount, int maxTimingCount, uint8_t& repeatCount, SignalFormat& format) {
     format = detectSignalFormat(payload);
     
     switch (format) {
@@ -1163,7 +1192,7 @@ bool IRLearner::parseSignalPayload(const String& payload, SignalID& signalId, IR
         
         case FORMAT_PROTOCOL: {
             // 协议格式
-            if (!parseProtocolString(payload, signalId, repeatCount)) {
+            if (!parseProtocolString(payload, signal, repeatCount)) {
                 return false;
             }
             timingCount = 0;
@@ -1194,7 +1223,7 @@ bool IRLearner::parseSignalPayload(const String& payload, SignalID& signalId, IR
         }
         
         case FORMAT_SIGNALID: {
-            // SignalID对象格式（JSON），需要调用者解析JSON
+            // UnifiedSignal对象格式（JSON），需要调用者解析JSON
             return false;  // 返回false，让调用者处理JSON解析
         }
         

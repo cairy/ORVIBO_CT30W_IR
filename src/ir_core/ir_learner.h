@@ -19,7 +19,7 @@ struct LearnedCommand {
     char name[MAX_COMMAND_NAME_LEN];  // 指令名称
     IRTiming timing[MAX_LEARN_TIMING_COUNT];  // 时序数据（总是保存）
     int timingCount;                  // 时序数量
-    SignalID signalId;                // 信号ID（如果解析成功）
+    UnifiedSignal signal;             // 统一信号（如果解析成功，包含协议信息；否则使用时序码）
     bool hasProtocol;                 // 是否成功解析了协议
     bool valid;                       // 是否有效
 };
@@ -60,13 +60,13 @@ public:
         FORMAT_BASE64,      // Base64字符串
         FORMAT_ARRAY,       // 数组字符串
         FORMAT_PROTOCOL,    // 协议格式字符串 protocol,data,repeatCount
-        FORMAT_SIGNALID     // SignalID对象格式（JSON）
+        FORMAT_SIGNALID     // UnifiedSignal对象格式（JSON）
     };
     
     static SignalFormat detectSignalFormat(const String& payload);
     static bool parseArrayString(const String& arrayStr, IRTiming* timing, int& count, int maxCount);
-    static bool parseProtocolString(const String& protocolStr, SignalID& signalId, uint8_t& repeatCount);
-    static bool parseSignalPayload(const String& payload, SignalID& signalId, IRTiming* timing, int& timingCount, int maxTimingCount, uint8_t& repeatCount, SignalFormat& format);
+    static bool parseProtocolString(const String& protocolStr, UnifiedSignal& signal, uint8_t& repeatCount);
+    static bool parseSignalPayload(const String& payload, UnifiedSignal& signal, IRTiming* timing, int& timingCount, int maxTimingCount, uint8_t& repeatCount, SignalFormat& format);
     
     // 学习状态查询方法
     String getCurrentCommandName() const;  // 获取当前正在学习的指令名称
@@ -90,6 +90,11 @@ private:
     int commandNamesCount;             // 指令名称数量
     unsigned long lastSignalTime;      // 最后接收信号时间
     unsigned long learnTimeoutMs;      // 学习超时时间（毫秒）
+    
+    // 重复信号检测相关
+    UnifiedSignal lastLearnedSignal;   // 上一个学习的信号（用于重复检测）
+    bool hasLastSignal;                 // 是否有上一个信号用于比较
+    unsigned long lastLearnedSignalTime; // 上一个信号的时间戳（用于计算间隔）
     
     void processDeviceLearnSignal(const IRTiming* timing, int count);
     void checkLearnTimeout();

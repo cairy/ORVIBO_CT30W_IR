@@ -3,7 +3,7 @@
 
 #include <Arduino.h>
 #include "config/constants.h"
-#include "ir_core/ir_parser.h"
+#include "ir_core/unified_signal.h"
 
 // 日志条目结构（优化：使用char数组替代String以减少内存占用）
 struct LogEntry {
@@ -15,7 +15,7 @@ struct LogEntry {
 
 // 最近接收的信号结构
 struct RecentSignal {
-    SignalID signal;                  // 信号ID
+    UnifiedSignal signal;             // 统一信号
     unsigned long timestamp;           // 时间戳
     bool matched;                      // 是否在映射库中匹配
     bool valid;                        // 条目是否有效
@@ -32,7 +32,7 @@ public:
     void log(const String& type, const String& content);
     void log(const char* type, const char* content);  // 优化：const char*版本，避免String对象创建
     void logReceive(const String& signal_info);
-    void logReceiveSignal(const SignalID& signalId, bool matched);  // 记录接收的信号
+    void logReceiveSignal(const UnifiedSignal& signal, bool matched);  // 记录接收的信号
     void logTransmit(const String& signal_info);
     void logError(const String& error_msg);
     void logLearn(const String& signal_info);
@@ -56,6 +56,9 @@ private:
     RecentSignal recentSignals[MAX_RECENT_SIGNALS];
     int recentSignalIndex;
     int recentSignalCount;
+    
+    // 上一个信号的时间戳（用于计算时间间隔）
+    unsigned long lastSignalTime;
     
     // 日志推送回调函数指针（事件驱动推送）
     LogPublishCallback logPublishCallback;

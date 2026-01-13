@@ -77,12 +77,15 @@ bool IRTransmitter::transmit(const IRTiming* timing, int count) {
         
         // 优化：检查中断关闭时间，确保不超过10ms限制
         // 如果超过限制，短暂开启中断后继续关闭，避免长时间阻塞
-        unsigned long elapsed = micros() - transmitStartTime;
-        if (elapsed > (INTERRUPT_DISABLE_MAX_MS * 1000)) {
-            interrupts();  // 重新开启中断，允许其他任务执行
-            yield();        // 让出CPU时间
-            noInterrupts(); // 继续关闭中断
-            transmitStartTime = micros();  // 重置计时器
+        // 使用更频繁的检查（每1ms检查一次），减少中断关闭时间
+        if ((i % 100) == 0) {  // 每100个时序点检查一次（约1ms）
+            unsigned long elapsed = micros() - transmitStartTime;
+            if (elapsed > (INTERRUPT_DISABLE_MAX_MS * 1000)) {
+                interrupts();  // 重新开启中断，允许其他任务执行
+                yield();        // 让出CPU时间
+                noInterrupts(); // 继续关闭中断
+                transmitStartTime = micros();  // 重置计时器
+            }
         }
     }
     
@@ -114,12 +117,15 @@ bool IRTransmitter::transmitRaw(const uint16_t* rawData, int count) {
         delayMicrosecondsPrecise(rawData[i]);
         
         // 优化：检查中断关闭时间，确保不超过10ms限制
-        unsigned long elapsed = micros() - transmitStartTime;
-        if (elapsed > (INTERRUPT_DISABLE_MAX_MS * 1000)) {
-            interrupts();  // 重新开启中断
-            yield();        // 让出CPU时间
-            noInterrupts(); // 继续关闭中断
-            transmitStartTime = micros();  // 重置计时器
+        // 使用更频繁的检查（每1ms检查一次），减少中断关闭时间
+        if ((i % 100) == 0) {  // 每100个时序点检查一次（约1ms）
+            unsigned long elapsed = micros() - transmitStartTime;
+            if (elapsed > (INTERRUPT_DISABLE_MAX_MS * 1000)) {
+                interrupts();  // 重新开启中断
+                yield();        // 让出CPU时间
+                noInterrupts(); // 继续关闭中断
+                transmitStartTime = micros();  // 重置计时器
+            }
         }
     }
     

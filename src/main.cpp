@@ -226,24 +226,23 @@ void loop() {
         // 学习模式下，跳过库解码，只使用自定义接收器
         if (!irLearner.isLearningDevice()) {
             // 使用IRremoteESP8266库解码（方案A：直接使用库）
-            SignalID signalId;
-            if (irParser.decodeWithLibrary(signalId)) {
+            UnifiedSignal signal;
+            if (irParser.decodeWithLibrary(signal)) {
                 // 查找映射规则（用于转发）
-                IR_MapRule* rule = irMapper.findRule(signalId);
+                IR_MapRule* rule = irMapper.findRule(signal);
                 // 检查信号是否在映射表中
-                // 如果已经匹配到A信号，直接设为matched；否则检查B信号
-                bool matched = (rule != nullptr) || irMapper.isSignalInMappings(signalId);
+                bool matched = (rule != nullptr) || irMapper.isSignalInMappings(signal);
                 
-                // 记录信号（包含匹配信息）
-                logger.logReceiveSignal(signalId, matched);
+                // 记录所有信号（串口输出 + recentSignals缓冲区）
+                logger.logReceiveSignal(signal, matched);
                 
                 // LED闪烁
                 ledControl.blink(1);
                 
-                // 查找映射并转发（优化：减少调试输出提升性能）
+                // 查找映射并转发
                 // 只有作为A信号时才转发（避免循环转发）
                 if (rule != nullptr) {
-                    irForwarder.forwardSignal(signalId);
+                    irForwarder.forwardSignal(signal);
                 }
             }
         }
@@ -419,7 +418,8 @@ void loop() {
     // 喂看门狗，避免看门狗复位（ESP8266默认看门狗超时约8秒）
     ESP.wdtFeed();
     
-    // 短暂延迟，避免CPU占用过高
-    delay(1);
+    // 非阻塞方式让出CPU，避免CPU占用过高
+    // 使用yield()替代delay(1)，提升实时性
+    yield();
 }
 

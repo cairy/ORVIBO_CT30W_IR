@@ -4,6 +4,7 @@
 
 Logger::Logger() : log_index(0), log_count(0), needsSave(false),
                    recentSignalIndex(0), recentSignalCount(0),
+                   lastSignalTime(0),
                    logPublishCallback(nullptr) {
     for (int i = 0; i < MAX_LOG_ENTRIES; i++) {
         logs[i].valid = false;
@@ -148,11 +149,22 @@ void Logger::logLearn(const String& signal_info) {
     log("learn", signal_info);
 }
 
-void Logger::logReceiveSignal(const SignalID& signalId, bool matched) {
+void Logger::logReceiveSignal(const UnifiedSignal& signal, bool matched) {
     unsigned long now = millis();
     
+    // 计算与前一个信号的时间间隔
+    unsigned long interval = 0;
+    if (lastSignalTime > 0) {
+        // 处理 millis() 溢出（约49天后）
+        if (now >= lastSignalTime) {
+            interval = now - lastSignalTime;
+        } else {
+            interval = (0xFFFFFFFFUL - lastSignalTime) + now;
+        }
+    }
+    
     // 记录到最近信号缓冲区（环形缓冲区）
-    recentSignals[recentSignalIndex].signal = signalId;
+    SignalUtils::copySignal(signal, recentSignals[recentSignalIndex].signal);
     recentSignals[recentSignalIndex].timestamp = now;
     recentSignals[recentSignalIndex].matched = matched;
     recentSignals[recentSignalIndex].valid = true;
@@ -162,22 +174,55 @@ void Logger::logReceiveSignal(const SignalID& signalId, bool matched) {
         recentSignalCount++;
     }
     
-    // 优化：使用char数组和snprintf替代String拼接，减少内存分配
-    // 检查内存压力，内存不足时跳过非关键日志
-    if (ESP.getFreeHeap() < 4096) {
-        // 内存压力大时，只记录到最近信号缓冲区，不记录到日志
-        return;
+    // 更新上一个信号的时间戳
+    lastSignalTime = now;
+    
+    // 直接串口输出（轻量操作，不写入日志缓冲区）
+    if (signal.useTiming) {
+        // 显示Base64字符串的前16个字符用于识别，以及总长度
+        const char* base64Str = signal.timingBase64.c_str();
+        int base64Len = signal.timingBase64.length();
+        int previewLen = (base64Len > 16) ? 16 : base64Len;
+        
+        if (interval > 0) {
+            if (previewLen > 0) {
+                Serial.printf("[receive] Timing:%d points, Base64:%.*s... (%d chars), Matched:%s, Interval:%lums\n",
+                             signal.timingCount,
+                             previewLen, base64Str,
+                             base64Len,
+                             matched ? "Yes" : "No",
+                             interval);
+            } else {
+                Serial.printf("[receive] Timing:%d points, Matched:%s, Interval:%lums\n",
+                             signal.timingCount,
+                             matched ? "Yes" : "No",
+                             interval);
+            }
+        } else {
+            if (previewLen > 0) {
+                Serial.printf("[receive] Timing:%d points, Base64:%.*s... (%d chars), Matched:%s\n",
+                             signal.timingCount,
+                             previewLen, base64Str,
+                             base64Len,
+                             matched ? "Yes" : "No");
+            } else {
+                Serial.printf("[receive] Timing:%d points, Matched:%s\n",
+                             signal.timingCount,
+                             matched ? "Yes" : "No");
+            }
+        }
+    } else {
+        if (interval > 0) {
+            Serial.printf("[receive] Protocol:%u, Data:%08X, Matched:%s, Interval:%lums\n",
+                         signal.protocol, signal.data,
+                         matched ? "Yes" : "No",
+                         interval);
+        } else {
+            Serial.printf("[receive] Protocol:%u, Data:%08X, Matched:%s\n",
+                         signal.protocol, signal.data,
+                         matched ? "Yes" : "No");
+        }
     }
-    
-    // 使用固定大小的缓冲区，避免动态内存分配
-    char signalStr[MAX_LOG_CONTENT_LEN];
-    snprintf(signalStr, sizeof(signalStr), 
-             "Protocol:%u, Data:%08X, Hash:%08X, Matched:%s",
-             signalId.protocol, signalId.data, signalId.hash,
-             matched ? "Yes" : "No");
-    
-    // 使用const char*版本避免String对象创建
-    log("receive", signalStr);
 }
 
 int Logger::getRecentSignals(RecentSignal* signals, int max_count) {

@@ -17,6 +17,7 @@ public:
     bool init();
     void update();
     void handleCommand(const String& topic, const String& payload);
+    void handleCommand(const char* topic, const char* payload, size_t payloadLen);  // 优化：避免String对象
     void publishState(const String& state, const String& message);
     void publishLog(const String& logEntry);
     void setIRLearner(IRLearner* learner) { this->learner = learner; }

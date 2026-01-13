@@ -2,28 +2,20 @@
 #define IR_MAPPER_H
 
 #include <Arduino.h>
-#include "ir_parser.h"
+#include "unified_signal.h"
 #include "config/constants.h"
 #include "utils/storage.h"
 
 // 前向声明
 #include <ArduinoJson.h>
 
-// B信号定义
-struct BSignal {
-    uint32_t protocol;
-    uint32_t data;
-    uint32_t hash;
-    bool isProtocol;
-};
-
 // 映射规则
 struct IR_MapRule {
-    // A信号标识
-    SignalID aSignal;
+    // A信号标识（使用统一信号结构）
+    UnifiedSignal aSignal;
     
-    // B信号序列（最多5个）
-    BSignal bSignals[MAX_B_SIGNALS_PER_RULE];
+    // B信号序列（最多5个，使用统一信号结构）
+    UnifiedSignal bSignals[MAX_B_SIGNALS_PER_RULE];
     uint8_t bSignalCount;
     
     // 配置参数
@@ -43,8 +35,8 @@ public:
     bool addRule(const IR_MapRule& rule, bool saveImmediately = true);
     bool updateRule(uint8_t id, const IR_MapRule& rule);
     bool deleteRule(uint8_t id);
-    IR_MapRule* findRule(const SignalID& aSignal);
-    bool isSignalInMappings(const SignalID& signal);  // 检查信号是否在映射表中（作为A信号或B信号）
+    IR_MapRule* findRule(const UnifiedSignal& aSignal);
+    bool isSignalInMappings(const UnifiedSignal& signal);  // 检查信号是否在映射表中（作为A信号或B信号）
     bool getRule(uint8_t id, IR_MapRule& rule);
     int getRuleCount() const;
     bool getAllRules(IR_MapRule* rules, int maxCount);
@@ -64,9 +56,8 @@ private:
     int ruleCount;
     uint8_t nextId;
     
-    bool findRuleIndex(const SignalID& aSignal, int& index);
+    bool findRuleIndex(const UnifiedSignal& aSignal, int& index);
     bool findRuleIndexById(uint8_t id, int& index);
-    uint32_t signalIdToKey(const SignalID& signalId) const;
 };
 
 #endif // IR_MAPPER_H

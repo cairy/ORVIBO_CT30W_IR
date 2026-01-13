@@ -1,5 +1,5 @@
 #include "api_handlers.h"
-#include "ir_core/ir_parser.h"
+#include "ir_core/unified_signal.h"
 
 String APIHandlers::handleQueryMaps(IRMapper& mapper) {
     int count = mapper.getRuleCount();
@@ -316,10 +316,7 @@ String APIHandlers::handleGetRecentSignals(Logger& logger) {
         signalObj["matched"] = signals[i].matched;
         
         JsonObject signal = signalObj.createNestedObject("signal");
-        signal["protocol"] = signals[i].signal.protocol;
-        signal["data"] = uint32ToHexString(signals[i].signal.data);
-        signal["hash"] = uint32ToHexString(signals[i].signal.hash);
-        signal["isProtocol"] = signals[i].signal.isProtocol;
+        SignalUtils::signalToJSON(signals[i].signal, signal, true);
     }
     
     String output;
@@ -346,7 +343,7 @@ String APIHandlers::handleSendSignal(IRForwarder& forwarder, const String& paylo
     
     // 如果检测到JSON格式（FORMAT_SIGNALID），按JSON格式解析
     if (format == IRLearner::FORMAT_SIGNALID) {
-        // SignalID对象格式（JSON）
+        // UnifiedSignal对象格式（JSON）
         size_t jsonSize = trimmed.length() + 256;
         if (jsonSize > 1024) jsonSize = 1024;
         if (jsonSize < 256) jsonSize = 256;
@@ -369,19 +366,11 @@ String APIHandlers::handleSendSignal(IRForwarder& forwarder, const String& paylo
         
         uint8_t repeatCount = doc["repeatCount"] | 1;
         
-        SignalID signal;
-        signal.protocol = signalObj["protocol"] | 0;
-        if (signalObj["data"].is<const char*>()) {
-            signal.data = parseUint32FromHexString(signalObj["data"].as<const char*>());
-        } else {
-            signal.data = 0;
+        UnifiedSignal signal;
+        if (!SignalUtils::signalFromJSON(signalObj, signal)) {
+            return "Invalid signal format";
         }
-        if (signalObj["hash"].is<const char*>()) {
-            signal.hash = parseUint32FromHexString(signalObj["hash"].as<const char*>());
-        } else {
-            signal.hash = 0;
-        }
-        signal.isProtocol = signalObj["isProtocol"] | false;
+        signal.repeatCount = repeatCount;
         
         if (forwarder.sendSignal(signal, repeatCount)) {
             success = true;

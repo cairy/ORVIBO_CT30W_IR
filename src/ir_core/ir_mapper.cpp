@@ -1,6 +1,7 @@
 #include "ir_mapper.h"
 #include <ArduinoJson.h>
 #include "utils/hex_utils.h"
+#include "unified_signal.h"
 
 IRMapper::IRMapper() : ruleCount(0), nextId(1) {
     for (int i = 0; i < MAX_MAP_RULES; i++) {
@@ -53,14 +54,16 @@ bool IRMapper::initDefaultMappings() {
     // 1. 音量+
     rule.aSignal.protocol = NEC_PROTOCOL;
     rule.aSignal.data = SOURCE_VOLUP;
-    rule.aSignal.hash = 0;
     rule.aSignal.isProtocol = true;
+    rule.aSignal.useTiming = false;
+    rule.aSignal.repeatCount = 1;
     
     rule.bSignalCount = 1;
     rule.bSignals[0].protocol = NEC_PROTOCOL;
     rule.bSignals[0].data = TARGET_VOLUP;
-    rule.bSignals[0].hash = 0;
     rule.bSignals[0].isProtocol = true;
+    rule.bSignals[0].useTiming = false;
+    rule.bSignals[0].repeatCount = 1;
     
     rule.repeatCount = 1;
     rule.valid = true;
@@ -158,7 +161,7 @@ bool IRMapper::deleteRule(uint8_t id) {
     return true;
 }
 
-IR_MapRule* IRMapper::findRule(const SignalID& aSignal) {
+IR_MapRule* IRMapper::findRule(const UnifiedSignal& aSignal) {
     int index;
     if (findRuleIndex(aSignal, index)) {
         return &rules[index];
@@ -166,27 +169,15 @@ IR_MapRule* IRMapper::findRule(const SignalID& aSignal) {
     return nullptr;
 }
 
-bool IRMapper::isSignalInMappings(const SignalID& signal) {
+bool IRMapper::isSignalInMappings(const UnifiedSignal& signal) {
     // 只检查B信号（A信号应该已经通过findRule检查过了）
     for (int i = 0; i < ruleCount; i++) {
         if (!rules[i].valid) continue;
         
         // 检查B信号
         for (int j = 0; j < rules[i].bSignalCount; j++) {
-            const BSignal& bSignal = rules[i].bSignals[j];
-            if (signal.isProtocol == bSignal.isProtocol) {
-                if (signal.isProtocol) {
-                    // 协议信号：比较protocol和data
-                    if (signal.protocol == bSignal.protocol && 
-                        signal.data == bSignal.data) {
-                        return true;
-                    }
-                } else {
-                    // 哈希信号：比较hash
-                    if (signal.hash == bSignal.hash) {
-                        return true;
-                    }
-                }
+            if (SignalUtils::signalsEqual(signal, rules[i].bSignals[j])) {
+                return true;
             }
         }
     }
@@ -382,28 +373,13 @@ bool IRMapper::importFromJSON(const String& json) {
     return saveToFlash();
 }
 
-bool IRMapper::findRuleIndex(const SignalID& aSignal, int& index) {
+bool IRMapper::findRuleIndex(const UnifiedSignal& aSignal, int& index) {
     for (int i = 0; i < ruleCount; i++) {
         if (!rules[i].valid) continue;
         
-        const SignalID& ruleSignal = rules[i].aSignal;
-        
-        // 直接比较protocol和data，避免24位截断问题
-        if (aSignal.isProtocol == ruleSignal.isProtocol) {
-            if (aSignal.isProtocol) {
-                // 协议信号：比较protocol和data
-                if (aSignal.protocol == ruleSignal.protocol && 
-                    aSignal.data == ruleSignal.data) {
-                    index = i;
-                    return true;
-                }
-            } else {
-                // 哈希信号：比较hash
-                if (aSignal.hash == ruleSignal.hash) {
-                    index = i;
-                    return true;
-                }
-            }
+        if (SignalUtils::signalsEqual(aSignal, rules[i].aSignal)) {
+            index = i;
+            return true;
         }
     }
     
@@ -420,43 +396,19 @@ bool IRMapper::findRuleIndexById(uint8_t id, int& index) {
     return false;
 }
 
-uint32_t IRMapper::signalIdToKey(const SignalID& signalId) const {
-    if (signalId.isProtocol) {
-        return (signalId.protocol << 24) | (signalId.data & 0xFFFFFF);
-    } else {
-        return signalId.hash;
-    }
-}
-
 // 统一的规则转JSON方法
 void IRMapper::ruleToJsonObject(const IR_MapRule& rule, JsonObject& obj, bool hexFormat) {
     obj["id"] = rule.id;
     
-    // A信号
+    // A信号（使用统一序列化方法）
     JsonObject aSignal = obj.createNestedObject("aSignal");
-    aSignal["protocol"] = rule.aSignal.protocol;
-    if (hexFormat) {
-        aSignal["data"] = uint32ToHexString(rule.aSignal.data);
-        aSignal["hash"] = uint32ToHexString(rule.aSignal.hash);
-    } else {
-        aSignal["data"] = rule.aSignal.data;
-        aSignal["hash"] = rule.aSignal.hash;
-    }
-    aSignal["isProtocol"] = rule.aSignal.isProtocol;
+    SignalUtils::signalToJSON(rule.aSignal, aSignal, hexFormat);
     
-    // B信号序列
+    // B信号序列（使用统一序列化方法）
     JsonArray bSignals = obj.createNestedArray("bSignals");
     for (int j = 0; j < rule.bSignalCount; j++) {
         JsonObject bSignal = bSignals.createNestedObject();
-        bSignal["protocol"] = rule.bSignals[j].protocol;
-        if (hexFormat) {
-            bSignal["data"] = uint32ToHexString(rule.bSignals[j].data);
-            bSignal["hash"] = uint32ToHexString(rule.bSignals[j].hash);
-        } else {
-            bSignal["data"] = rule.bSignals[j].data;
-            bSignal["hash"] = rule.bSignals[j].hash;
-        }
-        bSignal["isProtocol"] = rule.bSignals[j].isProtocol;
+        SignalUtils::signalToJSON(rule.bSignals[j], bSignal, hexFormat);
     }
     
     obj["bSignalCount"] = rule.bSignalCount;
@@ -474,44 +426,24 @@ void IRMapper::ruleToJsonObject(const IR_MapRule& rule, JsonObject& obj, bool he
 bool IRMapper::jsonObjectToRule(JsonObject& obj, IR_MapRule& rule) {
     rule.id = obj["id"] | 0;
     
-    // A信号
+    // A信号（使用统一反序列化方法）
     JsonObject aSignal = obj["aSignal"];
     if (aSignal.isNull()) {
         return false;
     }
-    rule.aSignal.protocol = aSignal["protocol"] | 0;
-    // 仅支持十六进制字符串格式
-    if (aSignal["data"].is<const char*>()) {
-        rule.aSignal.data = parseUint32FromHexString(aSignal["data"].as<const char*>());
-    } else {
-        return false;  // 不支持数字格式
+    if (!SignalUtils::signalFromJSON(aSignal, rule.aSignal)) {
+        return false;
     }
-    if (aSignal["hash"].is<const char*>()) {
-        rule.aSignal.hash = parseUint32FromHexString(aSignal["hash"].as<const char*>());
-    } else {
-        return false;  // 不支持数字格式
-    }
-    rule.aSignal.isProtocol = aSignal["isProtocol"] | false;
     
-    // B信号序列
+    // B信号序列（使用统一反序列化方法）
     JsonArray bSignals = obj["bSignals"];
     rule.bSignalCount = 0;
     for (JsonObject bSignal : bSignals) {
         if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
         
-        rule.bSignals[rule.bSignalCount].protocol = bSignal["protocol"] | 0;
-        // 仅支持十六进制字符串格式
-        if (bSignal["data"].is<const char*>()) {
-            rule.bSignals[rule.bSignalCount].data = parseUint32FromHexString(bSignal["data"].as<const char*>());
-        } else {
-            return false;  // 不支持数字格式
+        if (!SignalUtils::signalFromJSON(bSignal, rule.bSignals[rule.bSignalCount])) {
+            return false;
         }
-        if (bSignal["hash"].is<const char*>()) {
-            rule.bSignals[rule.bSignalCount].hash = parseUint32FromHexString(bSignal["hash"].as<const char*>());
-        } else {
-            return false;  // 不支持数字格式
-        }
-        rule.bSignals[rule.bSignalCount].isProtocol = bSignal["isProtocol"] | false;
         rule.bSignalCount++;
     }
     

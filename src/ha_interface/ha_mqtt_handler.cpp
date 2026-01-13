@@ -133,6 +133,23 @@ void HAMQTTHandler::handleCommand(const String& topic, const String& payload) {
     }
 }
 
+void HAMQTTHandler::handleCommand(const char* topic, const char* payload, size_t payloadLen) {
+    // 优化：使用C字符串操作，避免String对象
+    // 检查是否是 SmartIR 主题（直接发送 Base64 字符串）
+    if (strncmp(topic, "smartir/", 8) == 0 && strstr(topic, "/send") != nullptr) {
+        // SmartIR 直接发送 Base64 字符串，不需要 JSON 包装
+        String payloadStr = String(payload);  // 仅在需要时创建String
+        handleSmartIRSignal(payloadStr);
+        return;
+    }
+    
+    // 处理设备命令主题
+    if (strcmp(topic, MQTT_TOPIC_COMMAND) == 0) {
+        String payloadStr = String(payload);  // 仅在需要时创建String
+        processCommand(payloadStr);
+    }
+}
+
 void HAMQTTHandler::publishState(const String& state, const String& message) {
     // 优化：避免在MQTT回调中直接调用publishEnhancedState()，可能导致栈溢出
     // 如果内存充足，直接发布简单状态；否则延迟到下次update()
@@ -431,10 +448,16 @@ void HAMQTTHandler::processCommand(const String& payload) {
         return;
     }
     
-    // 优化：根据payload长度动态计算JSON大小
+    // 优化：根据payload长度动态计算JSON大小，加强内存检查
     size_t jsonSize = payload.length() + 512;
     if (jsonSize > 3072) jsonSize = 3072; // 限制最大3KB
     if (jsonSize < 512) jsonSize = 512;
+    
+    // 加强内存检查：确保有足够的内存（JSON大小 + 安全缓冲）
+    if (!MemoryMonitor::checkMemory(jsonSize + 1024)) {
+        DEBUG_PRINTLN("[HA MQTT] 内存不足，跳过命令处理");
+        return;
+    }
     
     DynamicJsonDocument doc(jsonSize);
     DeserializationError error = deserializeJson(doc, payload);
@@ -673,14 +696,27 @@ void HAMQTTHandler::handleSendSignal(const String& payload) {
     if (trimmed.startsWith("{") && trimmed.indexOf("\"action\"") >= 0) {
         size_t jsonSize = trimmed.length() + 256;
         if (jsonSize > 1024) jsonSize = 1024;
+        
+        // 加强内存检查：确保有足够的内存
+        if (!MemoryMonitor::checkMemory(jsonSize + 512)) {
+            DEBUG_PRINTLN("[HA MQTT] 内存不足，跳过信号处理");
+            return;
+        }
+        
         DynamicJsonDocument doc(jsonSize);
         DeserializationError err = deserializeJson(doc, trimmed);
         if (!err && doc.containsKey("signal")) {
-            // 提取signal字段，构建完整的SignalID格式JSON
+            // 提取signal字段，构建完整的UnifiedSignal格式JSON
             JsonObject signalObj = doc["signal"];
             uint8_t repeatCount = doc["repeatCount"] | 1;
             
-            // 构建完整的SignalID格式JSON（包含signal和repeatCount）
+            // 构建完整的UnifiedSignal格式JSON（包含signal和repeatCount）
+            // 加强内存检查
+            if (!MemoryMonitor::checkMemory(1024)) {
+                DEBUG_PRINTLN("[HA MQTT] 内存不足，跳过信号处理");
+                return;
+            }
+            
             DynamicJsonDocument signalDoc(512);
             signalDoc["signal"] = signalObj;
             signalDoc["repeatCount"] = repeatCount;
@@ -694,7 +730,13 @@ void HAMQTTHandler::handleSendSignal(const String& payload) {
             if (!signalObj.isNull()) {
                 uint8_t repeatCount = doc["repeatCount"] | 1;
                 
-                // 构建完整的SignalID格式JSON
+                // 加强内存检查
+                if (!MemoryMonitor::checkMemory(1024)) {
+                    DEBUG_PRINTLN("[HA MQTT] 内存不足，跳过信号处理");
+                    return;
+                }
+                
+                // 构建完整的UnifiedSignal格式JSON
                 DynamicJsonDocument signalDoc(512);
                 signalDoc["signal"] = signalObj;
                 signalDoc["repeatCount"] = repeatCount;
@@ -932,7 +974,7 @@ void HAMQTTHandler::publishEnhancedState() {
 void HAMQTTHandler::mqttCallback(char* topic, byte* payload, unsigned int length) {
     if (instance == nullptr) return;
     
-    // 优化：避免在中断上下文中创建String对象，使用静态缓冲区
+    // 优化：完全避免String对象，使用纯C字符串操作
     // 限制topic和payload的最大长度，避免栈溢出
     const size_t MAX_TOPIC_LEN = 128;
     const size_t MAX_PAYLOAD_LEN = 512;
@@ -951,10 +993,7 @@ void HAMQTTHandler::mqttCallback(char* topic, byte* payload, unsigned int length
     memcpy(payloadBuf, payload, payloadLen);
     payloadBuf[payloadLen] = '\0';
     
-    // 创建String对象（在中断上下文外，但使用静态缓冲区）
-    String topicStr = String(topicBuf);
-    String payloadStr = String(payloadBuf);
-    
-    instance->handleCommand(topicStr, payloadStr);
+    // 直接使用C字符串，避免String对象创建
+    instance->handleCommand(topicBuf, payloadBuf, payloadLen);
 }
 

@@ -1,5 +1,7 @@
 #include "ir_parser.h"
 #include "config/pins.h"
+#include "unified_signal.h"
+#include "config/constants.h"
 #include <ArduinoJson.h>
 
 IRParser::IRParser() : irrecv(nullptr) {
@@ -27,7 +29,7 @@ bool IRParser::init() {
     return true;
 }
 
-bool IRParser::decodeWithLibrary(SignalID& signalId) {
+bool IRParser::decodeWithLibrary(UnifiedSignal& signal) {
     if (irrecv == nullptr) {
         return false;
     }
@@ -39,8 +41,8 @@ bool IRParser::decodeWithLibrary(SignalID& signalId) {
         return false;
     }
     
-    // 转换为SignalID
-    bool success = convertDecodeResult(results, signalId);
+    // 转换为UnifiedSignal
+    bool success = convertDecodeResult(results, signal);
     
     // 调试输出（可选，通过宏控制）
     #ifdef DEBUG_IR_DECODE
@@ -49,7 +51,7 @@ bool IRParser::decodeWithLibrary(SignalID& signalId) {
     Serial.print(", 值: 0x");
     Serial.print(results.value, HEX);
     Serial.print(", 转换后: ");
-    Serial.println(signalToString(signalId));
+    Serial.println(signalToString(signal));
     #endif
     
     // 准备接收下一个信号
@@ -72,25 +74,25 @@ void IRParser::enableLibraryReceiver() {
     }
 }
 
-bool IRParser::convertDecodeResult(decode_results& results, SignalID& signalId) {
-    // 初始化SignalID
-    signalId.protocol = 0;
-    signalId.data = 0;
-    signalId.hash = 0;
-    signalId.isProtocol = false;
+bool IRParser::convertDecodeResult(decode_results& results, UnifiedSignal& signal) {
+    // 初始化UnifiedSignal
+    signal.clear();
     
     // 检查是否有有效数据
     // IRremoteESP8266库中，UNKNOWN通常值为-1
     if (results.decode_type == UNKNOWN) {
-        // 未知协议，使用原始数据计算哈希
-        signalId.isProtocol = false;
-        signalId.hash = (uint32_t)results.value;
-        return true;
+        // 未知协议，使用时序码（但这里没有时序数据，所以返回false）
+        // 实际使用时序码的情况应该在parseSignal中处理
+        signal.isProtocol = false;
+        signal.useTiming = false;
+        return false;
     }
     
     // 已知协议，转换为我们的协议编号
-    signalId.isProtocol = true;
-    signalId.data = (uint32_t)results.value;
+    signal.isProtocol = true;
+    signal.useTiming = false;
+    signal.data = (uint32_t)results.value;
+    signal.repeatCount = 1;
     
     // 协议类型映射（使用库的枚举值）
     // IRremoteESP8266库使用decode_type_t枚举，直接比较枚举值
@@ -99,31 +101,31 @@ bool IRParser::convertDecodeResult(decode_results& results, SignalID& signalId) 
     // 根据协议类型映射到我们的协议编号
     // 只使用库中确实存在的枚举值
     if (decodeType == NEC || decodeType == NEC_LIKE) {
-        signalId.protocol = 1;  // NEC
+        signal.protocol = 1;  // NEC
     }
     else if (decodeType == RC5 || decodeType == RC5X) {
-        signalId.protocol = 2;  // RC5
+        signal.protocol = 2;  // RC5
     }
     else if (decodeType == RC6) {
-        signalId.protocol = 3;  // RC6
+        signal.protocol = 3;  // RC6
     }
     else if (decodeType == SONY) {
-        signalId.protocol = 4;  // Sony
+        signal.protocol = 4;  // Sony
     }
     else if (decodeType == SAMSUNG || decodeType == SAMSUNG36) {
-        signalId.protocol = 5;  // Samsung
+        signal.protocol = 5;  // Samsung
     }
-    // 其他协议，使用哈希
+    // 其他协议，不支持
     else {
-        signalId.isProtocol = false;
-        signalId.protocol = 0;
-        signalId.hash = (uint32_t)results.value;
+        signal.isProtocol = false;
+        signal.protocol = 0;
+        return false;
     }
     
     return true;
 }
 
-bool IRParser::parseSignal(const IRTiming* timing, int count, SignalID& signalId) {
+bool IRParser::parseSignal(const IRTiming* timing, int count, UnifiedSignal& signal) {
     if (timing == nullptr || count <= 0) {
         return false;
     }
@@ -140,34 +142,58 @@ bool IRParser::parseSignal(const IRTiming* timing, int count, SignalID& signalId
         return false;  // 信号太短，可能是噪声
     }
     
+    // 限制时序码数量
+    int maxCount = (count > MAX_LEARN_TIMING_COUNT) ? MAX_LEARN_TIMING_COUNT : count;
+    
     // 尝试解析各种协议
-    if (parseNEC(timing, count, signalId)) {
-        signalId.isProtocol = true;
+    UnifiedSignal tempSignal;
+    if (parseNEC(timing, maxCount, tempSignal)) {
+        signal = tempSignal;
+        signal.isProtocol = true;
+        signal.useTiming = false;
+        signal.repeatCount = 1;
         return true;
     }
-    if (parseRC5(timing, count, signalId)) {
-        signalId.isProtocol = true;
+    if (parseRC5(timing, maxCount, tempSignal)) {
+        signal = tempSignal;
+        signal.isProtocol = true;
+        signal.useTiming = false;
+        signal.repeatCount = 1;
         return true;
     }
-    if (parseRC6(timing, count, signalId)) {
-        signalId.isProtocol = true;
+    if (parseRC6(timing, maxCount, tempSignal)) {
+        signal = tempSignal;
+        signal.isProtocol = true;
+        signal.useTiming = false;
+        signal.repeatCount = 1;
         return true;
     }
-    if (parseSony(timing, count, signalId)) {
-        signalId.isProtocol = true;
+    if (parseSony(timing, maxCount, tempSignal)) {
+        signal = tempSignal;
+        signal.isProtocol = true;
+        signal.useTiming = false;
+        signal.repeatCount = 1;
         return true;
     }
-    if (parseSamsung(timing, count, signalId)) {
-        signalId.isProtocol = true;
+    if (parseSamsung(timing, maxCount, tempSignal)) {
+        signal = tempSignal;
+        signal.isProtocol = true;
+        signal.useTiming = false;
+        signal.repeatCount = 1;
         return true;
     }
     
-    // 未匹配协议，使用时序特征哈希
-    signalId.isProtocol = false;
-    signalId.hash = calculateHash(timing, count);
-    signalId.protocol = 0;
-    signalId.data = 0;
-    return true;
+    // 未匹配协议，使用时序码
+    signal.clear();
+    signal.isProtocol = false;
+    signal.useTiming = true;
+    signal.protocol = 0;
+    signal.data = 0;
+    signal.timingCount = maxCount;
+    signal.timingBase64 = SignalUtils::timingToBase64(timing, maxCount);
+    signal.repeatCount = 1;
+    
+    return signal.timingBase64.length() > 0;
 }
 
 String IRParser::getProtocolName(uint32_t protocol) const {
@@ -182,25 +208,17 @@ String IRParser::getProtocolName(uint32_t protocol) const {
     }
 }
 
-String IRParser::signalToString(const SignalID& signalId) const {
-    if (signalId.isProtocol) {
-        return getProtocolName(signalId.protocol) + ":" + String(signalId.data, HEX);
+String IRParser::signalToString(const UnifiedSignal& signal) const {
+    if (signal.useTiming) {
+        return "Timing:" + String(signal.timingCount) + " points";
+    } else if (signal.isProtocol) {
+        return getProtocolName(signal.protocol) + ":" + String(signal.data, HEX);
     } else {
-        return "Hash:" + String(signalId.hash, HEX);
+        return "Unknown";
     }
 }
 
-uint32_t IRParser::calculateHash(const IRTiming* timing, int count) const {
-    // 简单的哈希算法：基于时序特征
-    uint32_t hash = 0;
-    for (int i = 0; i < count && i < 50; i++) {  // 只使用前50个点
-        hash = hash * 31 + (timing[i].duration / 10);  // 量化到10μs
-        hash = hash * 31 + (timing[i].level ? 1 : 0);
-    }
-    return hash;
-}
-
-bool IRParser::parseNEC(const IRTiming* timing, int count, SignalID& signalId) {
+bool IRParser::parseNEC(const IRTiming* timing, int count, UnifiedSignal& signal) {
     // NEC协议解析
     // NEC协议格式：引导码(9ms高+4.5ms低) + 32位数据
     // 标准格式：地址(8位) + 地址反码(8位) + 命令(8位) + 命令反码(8位)
@@ -350,12 +368,14 @@ bool IRParser::parseNEC(const IRTiming* timing, int count, SignalID& signalId) {
     // NEC协议使用32位数据：地址(8位) + 地址反码(8位) + 命令(8位) + 命令反码(8位)
     // 或者扩展格式：地址(16位) + 命令(16位)
     // 这里我们使用完整的32位数据作为信号标识
-    signalId.protocol = 1;  // NEC
-    signalId.data = data;  // 使用完整的32位数据
+    signal.protocol = 1;  // NEC
+    signal.data = data;  // 使用完整的32位数据
+    signal.isProtocol = true;
+    signal.useTiming = false;
     return true;
 }
 
-bool IRParser::parseRC5(const IRTiming* timing, int count, SignalID& signalId) {
+bool IRParser::parseRC5(const IRTiming* timing, int count, UnifiedSignal& signal) {
     // RC5协议解析
     // 载波频率：36kHz
     // 位时间：1.778ms（64个载波周期）
@@ -436,12 +456,14 @@ bool IRParser::parseRC5(const IRTiming* timing, int count, SignalID& signalId) {
         }
     }
     
-    signalId.protocol = 2;  // RC5
-    signalId.data = data;
+    signal.protocol = 2;  // RC5
+    signal.data = data;
+    signal.isProtocol = true;
+    signal.useTiming = false;
     return true;
 }
 
-bool IRParser::parseRC6(const IRTiming* timing, int count, SignalID& signalId) {
+bool IRParser::parseRC6(const IRTiming* timing, int count, UnifiedSignal& signal) {
     // RC6协议解析
     // 载波频率：36kHz
     // 前导码：6ms高 + 2ms低 + 266μs高 + 266μs低
@@ -532,12 +554,14 @@ bool IRParser::parseRC6(const IRTiming* timing, int count, SignalID& signalId) {
         }
     }
     
-    signalId.protocol = 3;  // RC6
-    signalId.data = data;
+    signal.protocol = 3;  // RC6
+    signal.data = data;
+    signal.isProtocol = true;
+    signal.useTiming = false;
     return true;
 }
 
-bool IRParser::parseSony(const IRTiming* timing, int count, SignalID& signalId) {
+bool IRParser::parseSony(const IRTiming* timing, int count, UnifiedSignal& signal) {
     // Sony协议解析
     // 载波频率：40kHz
     // 引导码：2400μs高 + 600μs低（12位）或4800μs高 + 600μs低（15/20位）
@@ -621,12 +645,14 @@ bool IRParser::parseSony(const IRTiming* timing, int count, SignalID& signalId) 
         }
     }
     
-    signalId.protocol = 4;  // Sony
-    signalId.data = data;
+    signal.protocol = 4;  // Sony
+    signal.data = data;
+    signal.isProtocol = true;
+    signal.useTiming = false;
     return true;
 }
 
-bool IRParser::parseSamsung(const IRTiming* timing, int count, SignalID& signalId) {
+bool IRParser::parseSamsung(const IRTiming* timing, int count, UnifiedSignal& signal) {
     // Samsung协议解析
     // 载波频率：38kHz
     // 引导码：4500μs高 + 4500μs低
@@ -695,38 +721,14 @@ bool IRParser::parseSamsung(const IRTiming* timing, int count, SignalID& signalI
     }
     
     // Samsung协议使用32位数据：地址(16位) + 命令(16位)
-    signalId.protocol = 5;  // Samsung
-    signalId.data = data;  // 使用完整的32位数据
+    signal.protocol = 5;  // Samsung
+    signal.data = data;  // 使用完整的32位数据
+    signal.isProtocol = true;
+    signal.useTiming = false;
     return true;
 }
 
 bool IRParser::isNoise(unsigned long duration) const {
     return duration < 50;  // 小于50μs认为是噪声
-}
-
-String IRParser::signalToJSON(const SignalID& signalId) const {
-    String json = "{";
-    json += "\"protocol\":" + String(signalId.protocol) + ",";
-    json += "\"data\":" + String(signalId.data) + ",";
-    json += "\"hash\":" + String(signalId.hash) + ",";
-    json += "\"isProtocol\":" + String(signalId.isProtocol ? "true" : "false");
-    json += "}";
-    return json;
-}
-
-bool IRParser::signalFromJSON(const String& json, SignalID& signalId) {
-    DynamicJsonDocument doc(256);
-    DeserializationError error = deserializeJson(doc, json);
-    
-    if (error) {
-        return false;
-    }
-    
-    signalId.protocol = doc["protocol"] | 0;
-    signalId.data = doc["data"] | 0;
-    signalId.hash = doc["hash"] | 0;
-    signalId.isProtocol = doc["isProtocol"] | false;
-    
-    return true;
 }
 

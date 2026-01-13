@@ -2,7 +2,7 @@
 #define IR_FORWARDER_H
 
 #include <Arduino.h>
-#include "ir_parser.h"
+#include "unified_signal.h"
 #include "ir_mapper.h"
 #include "ir_generator.h"
 #include "hardware/ir_transmitter.h"
@@ -16,11 +16,11 @@ public:
     IRForwarder(IRMapper& mapper, IRTransmitter& transmitter, MessageQueue& queue);
     bool init();
     void update();
-    bool forwardSignal(const SignalID& aSignal);
+    bool forwardSignal(const UnifiedSignal& aSignal);
     bool isForwarding() const;
     void setEnabled(bool enabled);  // 启用/禁用转发功能
     bool isEnabled() const;          // 获取转发功能状态
-    bool sendSignal(const SignalID& signal, uint8_t repeatCount = 1);  // 直接发送信号
+    bool sendSignal(const UnifiedSignal& signal, uint8_t repeatCount = 1);  // 直接发送信号
     bool sendRawTiming(const IRTiming* timing, int count, uint8_t repeatCount = 1);  // 发送原始时序数据
     bool parseAndSendSignal(const String& payload);  // 统一解析和发送信号（供API使用）
 
@@ -41,7 +41,11 @@ private:
     
     CompiledSignal compiledSignals[MAX_MAP_RULES][MAX_B_SIGNALS_PER_RULE];
     
-    bool compileSignal(const BSignal& signal, IRTiming* timing, int& count);
+    // 时序缓冲区（改为成员变量，避免栈溢出）
+    IRTiming timingBuffer[300];  // 用于executeForward和sendSignal
+    IRTiming learnTimingBuffer[MAX_LEARN_TIMING_COUNT];  // 用于parseAndSendSignal
+    
+    bool compileSignal(const UnifiedSignal& signal, IRTiming* timing, int& count);
     bool executeForward(const IR_MapRule& rule);
     void delayPrecise(unsigned long ms);
 };

@@ -5,9 +5,10 @@
 
 // 转发任务消息结构
 struct ForwardTask {
-    uint32_t signal_id;              // 信号标识
+    uint32_t signal_id;              // 信号标识（已废弃，保留用于兼容）
     uint8_t signal_count;             // B信号数量
-    uint32_t signal_data[5];          // B信号数据（最多5个）
+    uint32_t signal_data[5];          // signal_data[0]=A协议, signal_data[1]=A数据, signal_data[2+]=B数据
+    uint8_t b_protocols[3];           // B信号协议（最多3个B信号）
     uint16_t intervals[4];            // 信号间隔（4个间隔对应5个信号）
     uint8_t repeat_count;             // 重复次数
     bool valid;                        // 消息是否有效
