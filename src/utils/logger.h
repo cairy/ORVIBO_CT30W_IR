@@ -45,6 +45,9 @@ public:
     
     // 设置日志推送回调函数（由HA接口模块设置）
     void setLogPublishCallback(LogPublishCallback callback);
+    
+    // 重置信号间隔计时（供自动重置使用）
+    void resetSignalInterval();
 
 private:
     LogEntry logs[MAX_LOG_ENTRIES];

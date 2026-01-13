@@ -49,9 +49,9 @@ ButtonHandler buttonHandler;
 IRParser irParser;
 IRMapper irMapper;
 MessageQueue forwardQueue;
-IRForwarder irForwarder(irMapper, irTransmitter, forwardQueue);
 
 Logger logger;
+IRForwarder irForwarder(irMapper, irTransmitter, forwardQueue, logger);
 IRLearner irLearner(irReceiver, irParser, logger);
 HAMQTTHandler haHandler(mqttClient, irMapper, irForwarder, logger);
 

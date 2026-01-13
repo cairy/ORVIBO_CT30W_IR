@@ -161,6 +161,12 @@ void Logger::logReceiveSignal(const UnifiedSignal& signal, bool matched) {
         } else {
             interval = (0xFFFFFFFFUL - lastSignalTime) + now;
         }
+        
+        // 如果间隔超过阈值（5秒），重置为新的会话
+        if (interval > SIGNAL_INTERVAL_RESET_THRESHOLD_MS) {
+            lastSignalTime = 0;  // 重置，下一个信号将显示间隔为0
+            interval = 0;
+        }
     }
     
     // 记录到最近信号缓冲区（环形缓冲区）
@@ -280,6 +286,10 @@ void Logger::clearLogs() {
 
 void Logger::setLogPublishCallback(LogPublishCallback callback) {
     logPublishCallback = callback;
+}
+
+void Logger::resetSignalInterval() {
+    lastSignalTime = 0;
 }
 
 void Logger::publishToHA(const String& type, const String& content) {

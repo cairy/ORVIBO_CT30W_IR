@@ -28,6 +28,7 @@
 #define SIGNAL_TIMEOUT_MS 500         // 连续信号识别超时（500ms）
 #define SIGNAL_INTERVAL_MIN_MS 0      // 信号间隔最小值（0ms）
 #define SIGNAL_INTERVAL_MAX_MS 1000   // 信号间隔最大值（1000ms）
+#define SIGNAL_INTERVAL_RESET_THRESHOLD_MS 5000  // 信号间隔重置阈值（5秒）
 #define SIGNAL_REPEAT_MIN 1           // 重复次数最小值
 #define SIGNAL_REPEAT_MAX 10          // 重复次数最大值
 

@@ -3,11 +3,12 @@
 #include "ir_core/ir_learner.h"
 #include "utils/hex_utils.h"
 #include "utils/memory_monitor.h"
+#include "utils/logger.h"
 #include "unified_signal.h"
 #include <ArduinoJson.h>
 
-IRForwarder::IRForwarder(IRMapper& mapper, IRTransmitter& transmitter, MessageQueue& queue)
-    : mapper(mapper), transmitter(transmitter), queue(queue), forwarding(false), enabled(true) {
+IRForwarder::IRForwarder(IRMapper& mapper, IRTransmitter& transmitter, MessageQueue& queue, Logger& logger)
+    : mapper(mapper), transmitter(transmitter), queue(queue), logger(logger), forwarding(false), enabled(true) {
     // 初始化预编译缓存
     for (int i = 0; i < MAX_MAP_RULES; i++) {
         for (int j = 0; j < MAX_B_SIGNALS_PER_RULE; j++) {
@@ -153,6 +154,7 @@ bool IRForwarder::sendSignal(const UnifiedSignal& signal, uint8_t repeatCount) {
         }
         
         signalCopy.freeTiming();
+        logger.resetSignalInterval();  // 发送完成后重置信号间隔
         return true;
     }
     
@@ -170,6 +172,7 @@ bool IRForwarder::sendSignal(const UnifiedSignal& signal, uint8_t repeatCount) {
                 delay(40);  // 重复码间隔，减少到40ms（从50ms减少）
             }
         }
+        logger.resetSignalInterval();  // 发送完成后重置信号间隔
         return true;
     } else if (signal.isProtocol) {
         // 其他协议：使用时序生成器
@@ -181,6 +184,7 @@ bool IRForwarder::sendSignal(const UnifiedSignal& signal, uint8_t repeatCount) {
                     delay(100);
                 }
             }
+            logger.resetSignalInterval();  // 发送完成后重置信号间隔
             return true;
         }
     }
@@ -206,6 +210,7 @@ bool IRForwarder::sendRawTiming(const IRTiming* timing, int count, uint8_t repea
         }
     }
     
+    logger.resetSignalInterval();  // 发送完成后重置信号间隔
     return true;
 }
 
@@ -326,6 +331,7 @@ bool IRForwarder::executeForward(const IR_MapRule& rule) {
     }
     
     forwarding = false;
+    logger.resetSignalInterval();  // 发送完成后重置信号间隔
     return true;
 }
 

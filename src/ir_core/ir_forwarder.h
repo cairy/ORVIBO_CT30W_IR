@@ -10,10 +10,13 @@
 #include "config/constants.h"
 #include "config/pins.h"
 
+// 前向声明
+class Logger;
+
 // 转发器
 class IRForwarder {
 public:
-    IRForwarder(IRMapper& mapper, IRTransmitter& transmitter, MessageQueue& queue);
+    IRForwarder(IRMapper& mapper, IRTransmitter& transmitter, MessageQueue& queue, Logger& logger);
     bool init();
     void update();
     bool forwardSignal(const UnifiedSignal& aSignal);
@@ -28,6 +31,7 @@ private:
     IRMapper& mapper;
     IRTransmitter& transmitter;
     MessageQueue& queue;
+    Logger& logger;  // 日志管理器引用（用于重置信号间隔）
     bool forwarding;
     bool enabled;  // 转发功能是否启用
     IRGenerator generator;  // 时序生成器
