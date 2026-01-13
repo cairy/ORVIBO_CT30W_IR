@@ -5,13 +5,18 @@
 #include <ArduinoJson.h>
 #include "unified_api.h"
 
+// 前向声明
+class Logger;
+
 // 统一的API响应工具类（使用统一格式）
 class APIResponse {
 public:
     // 创建成功响应（统一格式）
-    static String success(const String& data = "");
-    static String success(JsonObject& data);
-    static String success(JsonArray& data);
+    // logger: 可选的日志记录器，用于记录错误
+    // context: 可选的上下文信息（如接口名称），用于溢出日志
+    static String success(const String& data = "", Logger* logger = nullptr, const char* context = nullptr);
+    static String success(JsonObject& data, Logger* logger = nullptr, const char* context = nullptr);
+    static String success(JsonArray& data, Logger* logger = nullptr, const char* context = nullptr);
     
     // 创建错误响应（统一格式）
     static String error(const String& message, int code = 0);

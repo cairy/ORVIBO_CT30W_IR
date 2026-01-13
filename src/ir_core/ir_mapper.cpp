@@ -1,9 +1,11 @@
 #include "ir_mapper.h"
 #include <ArduinoJson.h>
+#include <LittleFS.h>
 #include "utils/hex_utils.h"
+#include "utils/logger.h"
 #include "unified_signal.h"
 
-IRMapper::IRMapper() : ruleCount(0), nextId(1) {
+IRMapper::IRMapper() : ruleCount(0), nextId(1), logger(nullptr) {
     for (int i = 0; i < MAX_MAP_RULES; i++) {
         rules[i].valid = false;
     }
@@ -14,15 +16,21 @@ bool IRMapper::init() {
 }
 
 bool IRMapper::initDefaultMappings() {
-    // 如果映射表不为空，直接返回
-    if (ruleCount > 0) {
+    // 如果映射表不为空，直接返回（使用getRuleCount确保准确性）
+    if (getRuleCount() > 0) {
         return true;
     }
     
     // 检查可用内存，如果内存不足则跳过初始化
     size_t freeHeap = ESP.getFreeHeap();
     if (freeHeap < 4096) {  // 至少需要4KB空闲内存来保存
-        Serial.printf("[IRMapper] 内存不足，跳过默认映射初始化 (空闲: %d bytes)\n", freeHeap);
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "内存不足，跳过默认映射初始化 (空闲: %d bytes)", freeHeap);
+        if (logger) {
+            logger->log("error", buffer);
+        } else {
+            Serial.printf("[IRMapper] %s\n", buffer);
+        }
         return false;
     }
     
@@ -51,77 +59,134 @@ bool IRMapper::initDefaultMappings() {
         rule.intervals[i] = 0;
     }
     
-    // 1. 音量+
+    // 定义所有默认规则
+    struct DefaultRule {
+        uint32_t sourceData;
+        uint32_t targetData;
+        uint8_t repeatCount;
+        const char* name;
+    };
+    
+    DefaultRule defaultRules[] = {
+        {SOURCE_VOLUP, TARGET_VOLUP, 1, "音量+"},
+        {SOURCE_VOLDOWN, TARGET_VOLDOWN, 1, "音量-"},
+        {SOURCE_MUTE, TARGET_MUTE, 1, "静音"},
+        {SOURCE_POWER, TARGET_POWER, 3, "电源"},
+        {SOURCE_AVTV, TARGET_AVTV, 1, "AV/TV"}
+    };
+    
+    // 初始化基础规则结构
     rule.aSignal.protocol = NEC_PROTOCOL;
-    rule.aSignal.data = SOURCE_VOLUP;
     rule.aSignal.isProtocol = true;
     rule.aSignal.useTiming = false;
     rule.aSignal.repeatCount = 1;
     
     rule.bSignalCount = 1;
     rule.bSignals[0].protocol = NEC_PROTOCOL;
-    rule.bSignals[0].data = TARGET_VOLUP;
     rule.bSignals[0].isProtocol = true;
     rule.bSignals[0].useTiming = false;
     rule.bSignals[0].repeatCount = 1;
     
-    rule.repeatCount = 1;
     rule.valid = true;
     
     // 批量添加规则，不立即保存（节省内存）
-    if (!addRule(rule, false)) {
-        return false;
+    int successCount = 0;
+    int totalRules = sizeof(defaultRules) / sizeof(defaultRules[0]);
+    
+    for (int i = 0; i < totalRules; i++) {
+        rule.aSignal.data = defaultRules[i].sourceData;
+        rule.bSignals[0].data = defaultRules[i].targetData;
+        rule.repeatCount = defaultRules[i].repeatCount;
+        
+        if (addRule(rule, false)) {
+            successCount++;
+            if (logger) {
+                char buffer[64];
+                snprintf(buffer, sizeof(buffer), "添加默认规则: %s", defaultRules[i].name);
+                logger->log("system", buffer);
+            }
+        } else {
+            char buffer[128];
+            snprintf(buffer, sizeof(buffer), "添加默认规则失败: %s (可能已存在或数组已满)", defaultRules[i].name);
+            if (logger) {
+                logger->log("error", buffer);
+            } else {
+                Serial.printf("[IRMapper] %s\n", buffer);
+            }
+        }
     }
     
-    // 2. 音量-
-    rule.aSignal.data = SOURCE_VOLDOWN;
-    rule.bSignals[0].data = TARGET_VOLDOWN;
-    if (!addRule(rule, false)) {
-        return false;
-    }
-    
-    // 3. 静音
-    rule.aSignal.data = SOURCE_MUTE;
-    rule.bSignals[0].data = TARGET_MUTE;
-    if (!addRule(rule, false)) {
-        return false;
-    }
-    
-    // 4. 电源（需要重复3次）
-    rule.aSignal.data = SOURCE_POWER;
-    rule.bSignals[0].data = TARGET_POWER;
-    rule.repeatCount = 3;
-    if (!addRule(rule, false)) {
-        return false;
-    }
-    
-    // 5. AV/TV
-    rule.aSignal.data = SOURCE_AVTV;
-    rule.bSignals[0].data = TARGET_AVTV;
-    rule.repeatCount = 1;
-    if (!addRule(rule, false)) {
-        return false;
+    // 检查实际添加的规则数量
+    int actualCount = getRuleCount();
+    if (actualCount != successCount) {
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "规则数量不一致 (添加成功: %d, 实际统计: %d)", successCount, actualCount);
+        if (logger) {
+            logger->log("warning", buffer);
+        } else {
+            Serial.printf("[IRMapper] %s\n", buffer);
+        }
     }
     
     // 所有规则添加完成后，一次性保存
-    return saveToFlash();
-}
-
-bool IRMapper::addRule(const IR_MapRule& rule, bool saveImmediately) {
-    if (ruleCount >= MAX_MAP_RULES) {
+    if (successCount == 0) {
+        if (logger) {
+            logger->log("error", "没有成功添加任何默认规则");
+        } else {
+            Serial.println("[IRMapper] 没有成功添加任何默认规则");
+        }
         return false;
     }
     
-    // 检查是否已存在相同的A信号
+    bool saveSuccess = saveToFlash();
+    if (saveSuccess) {
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "默认映射初始化完成，成功添加并保存 %d/%d 条规则", successCount, totalRules);
+        if (logger) {
+            logger->log("system", buffer);
+        } else {
+            Serial.printf("[IRMapper] %s\n", buffer);
+        }
+    } else {
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "默认映射添加成功 (%d 条)，但保存失败", successCount);
+        if (logger) {
+            logger->log("error", buffer);
+        } else {
+            Serial.printf("[IRMapper] %s\n", buffer);
+        }
+    }
+    
+    return saveSuccess;
+}
+
+int IRMapper::findEmptySlot() const {
+    // 统一数据源：遍历整个数组，找到第一个无效槽位
+    for (int i = 0; i < MAX_MAP_RULES; i++) {
+        if (!rules[i].valid) {
+            return i;
+        }
+    }
+    return -1;  // 数组已满
+}
+
+bool IRMapper::addRule(const IR_MapRule& rule, bool saveImmediately) {
+    // 检查是否已存在相同的A信号（遍历整个数组）
     int existingIndex;
     if (findRuleIndex(rule.aSignal, existingIndex)) {
         return false;  // 已存在
     }
     
-    rules[ruleCount] = rule;
-    rules[ruleCount].id = nextId++;
-    rules[ruleCount].valid = true;
-    ruleCount++;
+    // 找到第一个无效的槽位（统一数据源）
+    int emptyIndex = findEmptySlot();
+    if (emptyIndex == -1) {
+        return false;  // 数组已满
+    }
+    
+    // 在找到的空槽位插入规则
+    rules[emptyIndex] = rule;
+    rules[emptyIndex].id = nextId++;
+    rules[emptyIndex].valid = true;
     
     if (saveImmediately) {
         saveToFlash();
@@ -149,13 +214,8 @@ bool IRMapper::deleteRule(uint8_t id) {
         return false;
     }
     
-    // 移动后续规则
-    for (int i = index; i < ruleCount - 1; i++) {
-        rules[i] = rules[i + 1];
-    }
-    
-    ruleCount--;
-    rules[ruleCount].valid = false;
+    // 只标记为无效，不移动数组元素（避免数组碎片化，统一数据源）
+    rules[index].valid = false;
     
     saveToFlash();
     return true;
@@ -171,7 +231,8 @@ IR_MapRule* IRMapper::findRule(const UnifiedSignal& aSignal) {
 
 bool IRMapper::isSignalInMappings(const UnifiedSignal& signal) {
     // 只检查B信号（A信号应该已经通过findRule检查过了）
-    for (int i = 0; i < ruleCount; i++) {
+    // 统一数据源：遍历整个数组
+    for (int i = 0; i < MAX_MAP_RULES; i++) {
         if (!rules[i].valid) continue;
         
         // 检查B信号
@@ -196,39 +257,63 @@ bool IRMapper::getRule(uint8_t id, IR_MapRule& rule) {
 }
 
 int IRMapper::getRuleCount() const {
-    return ruleCount;
+    // 统计有效规则数量（确保准确性）
+    // 遍历整个数组，与getAllRules保持一致
+    int validCount = 0;
+    for (int i = 0; i < MAX_MAP_RULES; i++) {
+        if (rules[i].valid) {
+            validCount++;
+        }
+    }
+    return validCount;
 }
 
-bool IRMapper::getAllRules(IR_MapRule* outputRules, int maxCount) {
+int IRMapper::getAllRules(IR_MapRule* outputRules, int maxCount) {
     if (outputRules == nullptr || maxCount <= 0) {
-        return false;
+        return 0;
     }
     
-    int count = (maxCount < ruleCount) ? maxCount : ruleCount;
-    for (int i = 0; i < count; i++) {
-        outputRules[i] = rules[i];
+    // 只返回有效的规则（与saveToFlash保持一致）
+    // 遍历整个数组，找到所有有效规则
+    int outputCount = 0;
+    for (int i = 0; i < MAX_MAP_RULES && outputCount < maxCount; i++) {
+        if (rules[i].valid) {
+            outputRules[outputCount++] = rules[i];
+        }
     }
     
-    return true;
+    return outputCount;  // 返回实际填充的规则数量
 }
 
 bool IRMapper::saveToFlash() {
     // 检查可用内存
     size_t freeHeap = ESP.getFreeHeap();
     if (freeHeap < 4096) {  // 至少需要4KB空闲内存
-        Serial.printf("[IRMapper] 内存不足，跳过保存 (空闲: %d bytes)\n", freeHeap);
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "内存不足，跳过保存 (空闲: %d bytes)", freeHeap);
+        if (logger) {
+            logger->log("error", buffer);
+        } else {
+            Serial.printf("[IRMapper] %s\n", buffer);
+        }
         return false;
     }
     
     // 动态计算JSON大小：每条规则约200字节，加上JSON开销
-    size_t jsonSize = (ruleCount * 200) + 2048;
+    // 使用getRuleCount()统一数据源
+    int validCount = getRuleCount();
+    size_t jsonSize = (validCount * 200) + 2048;
     if (jsonSize < 4096) jsonSize = 4096;  // 最小4KB
     
     // 确保不超过可用内存
     if (jsonSize > freeHeap - 1024) {  // 保留1KB缓冲
         jsonSize = freeHeap - 1024;
         if (jsonSize < 1024) {
-            Serial.printf("[IRMapper] 内存不足，无法保存 (需要至少1KB)\n");
+            if (logger) {
+                logger->log("error", "内存不足，无法保存 (需要至少1KB)");
+            } else {
+                Serial.println("[IRMapper] 内存不足，无法保存 (需要至少1KB)");
+            }
             return false;
         }
     }
@@ -236,64 +321,222 @@ bool IRMapper::saveToFlash() {
     DynamicJsonDocument doc(jsonSize);
     JsonArray rulesArray = doc.to<JsonArray>();
     
-    for (int i = 0; i < ruleCount; i++) {
+    // 遍历整个数组，与getAllRules保持一致
+    int savedCount = 0;
+    for (int i = 0; i < MAX_MAP_RULES; i++) {
         if (!rules[i].valid) continue;
         
         JsonObject ruleObj = rulesArray.createNestedObject();
         // 使用统一方法，设置hexFormat=true，统一使用十六进制格式
         ruleToJsonObject(rules[i], ruleObj, true);
+        savedCount++;
+    }
+    
+    // 检查文档容量是否足够（ArduinoJson可能会在容量不足时截断）
+    if (doc.overflowed()) {
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "JSON文档容量不足 (需要保存 %d 条规则，文档大小: %d bytes)", validCount, jsonSize);
+        if (logger) {
+            logger->log("error", buffer);
+        } else {
+            Serial.printf("[IRMapper] %s\n", buffer);
+        }
+        // 尝试使用更大的文档重新保存
+        size_t largerSize = (validCount * 300) + 4096;  // 增加估算大小
+        if (largerSize <= freeHeap - 1024 && largerSize <= 16384) {  // 限制最大16KB
+            DynamicJsonDocument largerDoc(largerSize);
+            JsonArray largerArray = largerDoc.to<JsonArray>();
+            for (int i = 0; i < MAX_MAP_RULES; i++) {
+                if (!rules[i].valid) continue;
+                JsonObject ruleObj = largerArray.createNestedObject();
+                ruleToJsonObject(rules[i], ruleObj, true);
+            }
+            String output;
+            serializeJson(largerDoc, output);
+            if (!largerDoc.overflowed() && Storage::saveFile(CONFIG_FILE_MAPS, output)) {
+                if (logger) {
+                    logger->log("system", "使用更大的文档成功保存所有规则");
+                }
+                return true;
+            }
+        }
+        return false;
     }
     
     String output;
     serializeJson(doc, output);
-    return Storage::saveFile(CONFIG_FILE_MAPS, output);
+    
+    // 验证保存的规则数量
+    if (savedCount != validCount) {
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "保存规则数量不匹配 (期望: %d, 实际: %d)", validCount, savedCount);
+        if (logger) {
+            logger->log("error", buffer);
+        } else {
+            Serial.printf("[IRMapper] %s\n", buffer);
+        }
+    }
+    
+    bool success = Storage::saveFile(CONFIG_FILE_MAPS, output);
+    if (success && logger) {
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "成功保存 %d 条规则到Flash", savedCount);
+        logger->log("system", buffer);
+    }
+    return success;
 }
 
 bool IRMapper::loadFromFlash() {
-    String content = Storage::readFile(CONFIG_FILE_MAPS);
-    
-    // 情况1：文件不存在，创建空数组文件
-    if (content.length() == 0) {
-        Serial.println("[IRMapper] Maps文件不存在，创建空文件");
+    // 使用文件流直接读取，避免String截断问题（参考Logger的实现）
+    if (!LittleFS.exists(CONFIG_FILE_MAPS)) {
+        if (logger) {
+            logger->log("system", "Maps文件不存在，创建空文件");
+        } else {
+            Serial.println("[IRMapper] Maps文件不存在，创建空文件");
+        }
         if (Storage::saveFile(CONFIG_FILE_MAPS, "[]")) {
-            ruleCount = 0;
+            // 清空所有规则（统一数据源）
+            for (int i = 0; i < MAX_MAP_RULES; i++) {
+                rules[i].valid = false;
+            }
             nextId = 1;
             return true;
+        }
+        return false;
+    }
+    
+    File file = LittleFS.open(CONFIG_FILE_MAPS, "r");
+    if (!file) {
+        if (logger) {
+            logger->log("error", "无法打开Maps文件");
+        } else {
+            Serial.println("[IRMapper] 无法打开Maps文件");
         }
         return false;
     }
     
     // 动态计算JSON大小：文件大小加上解析开销
-    size_t jsonSize = content.length() + 1024;
+    size_t fileSize = file.size();
+    size_t jsonSize = fileSize + 1024;
     if (jsonSize < 4096) jsonSize = 4096;
+    
+    // 记录文件大小用于调试
+    if (logger) {
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "读取Maps文件，大小: %d bytes", fileSize);
+        logger->log("system", buffer);
+    } else {
+        Serial.printf("[IRMapper] 读取Maps文件，大小: %d bytes\n", fileSize);
+    }
+    
     DynamicJsonDocument doc(jsonSize);
-    DeserializationError error = deserializeJson(doc, content);
+    DeserializationError error = deserializeJson(doc, file);
+    file.close();
     
     // 情况2：JSON解析失败（可能是旧格式或损坏）
     if (error) {
-        Serial.println("[IRMapper] Maps文件格式错误，重置为空文件");
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "Maps文件JSON解析失败: %s (文件大小: %d bytes)", error.c_str(), fileSize);
+        if (logger) {
+            logger->log("error", buffer);
+        } else {
+            Serial.printf("[IRMapper] %s\n", buffer);
+        }
         if (Storage::saveFile(CONFIG_FILE_MAPS, "[]")) {
-            ruleCount = 0;
+            // 清空所有规则（统一数据源）
+            for (int i = 0; i < MAX_MAP_RULES; i++) {
+                rules[i].valid = false;
+            }
             nextId = 1;
             return true;
         }
         return false;
     }
     
+    // 检查文档是否溢出
+    if (doc.overflowed()) {
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "JSON文档容量不足 (文件大小: %d bytes, 文档大小: %d bytes)", fileSize, jsonSize);
+        if (logger) {
+            logger->log("error", buffer);
+        } else {
+            Serial.printf("[IRMapper] %s\n", buffer);
+        }
+        // 尝试使用更大的文档重新读取
+        file = LittleFS.open(CONFIG_FILE_MAPS, "r");
+        if (file) {
+            size_t largerSize = fileSize * 2 + 2048;
+            if (largerSize <= 16384) {  // 限制最大16KB
+                DynamicJsonDocument largerDoc(largerSize);
+                DeserializationError largerError = deserializeJson(largerDoc, file);
+                file.close();
+                if (!largerError && !largerDoc.overflowed()) {
+                    doc = largerDoc;
+                    if (logger) {
+                        logger->log("system", "使用更大的文档成功读取");
+                    }
+                } else {
+                    if (logger) {
+                        logger->log("error", "使用更大的文档仍然失败");
+                    }
+                    return false;
+                }
+            } else {
+                file.close();
+                return false;
+            }
+        }
+    }
+    
     JsonArray rulesArray = doc.as<JsonArray>();
-    ruleCount = 0;
+    // 清空所有规则（统一数据源：遍历整个数组）
+    for (int i = 0; i < MAX_MAP_RULES; i++) {
+        rules[i].valid = false;
+    }
     nextId = 1;
     bool hasValidRules = false;
     int originalRuleCount = rulesArray.size();
+    int failedCount = 0;
+    int loadedCount = 0;
     
-    // 尝试加载规则
+    // 尝试加载规则（找到第一个无效槽位插入）
     for (JsonObject ruleObj : rulesArray) {
-        if (ruleCount >= MAX_MAP_RULES) break;
+        if (loadedCount >= MAX_MAP_RULES) {
+            if (logger) {
+                char buffer[128];
+                snprintf(buffer, sizeof(buffer), "达到最大规则数限制 (%d)，停止加载", MAX_MAP_RULES);
+                logger->log("warning", buffer);
+            }
+            break;
+        }
         
-        IR_MapRule& rule = rules[ruleCount];
+        // 找到第一个无效槽位（统一数据源）
+        int emptyIndex = findEmptySlot();
+        if (emptyIndex == -1) {
+            // 数组已满，记录当前有效规则数量用于调试
+            int currentValidCount = getRuleCount();
+            char buffer[128];
+            snprintf(buffer, sizeof(buffer), "数组已满，无法加载更多规则 (当前有效: %d, 已加载: %d)", currentValidCount, loadedCount);
+            if (logger) {
+                logger->log("warning", buffer);
+            } else {
+                Serial.printf("[IRMapper] %s\n", buffer);
+            }
+            break;
+        }
+        
+        IR_MapRule& rule = rules[emptyIndex];
         // 使用统一方法解析（仅支持十六进制字符串格式）
         if (!jsonObjectToRule(ruleObj, rule)) {
-            // 解析失败，可能是旧格式
+            // 解析失败，可能是旧格式或格式错误
+            failedCount++;
+            char buffer[128];
+            snprintf(buffer, sizeof(buffer), "规则解析失败 (已跳过 %d 条)", failedCount);
+            if (logger) {
+                logger->log("error", buffer);
+            } else {
+                Serial.printf("[IRMapper] %s\n", buffer);
+            }
             continue;
         }
         
@@ -302,33 +545,92 @@ bool IRMapper::loadFromFlash() {
             nextId = rule.id + 1;
         }
         
-        ruleCount++;
+        rule.valid = true;
+        loadedCount++;
         hasValidRules = true;
     }
     
     // 情况3：文件存在但所有规则都是旧格式（解析失败）
     if (!hasValidRules && originalRuleCount > 0) {
-        Serial.println("[IRMapper] 检测到旧格式数据，重置为空文件");
+        if (logger) {
+            logger->log("error", "检测到旧格式数据，重置为空文件");
+        } else {
+            Serial.println("[IRMapper] 检测到旧格式数据，重置为空文件");
+        }
         if (Storage::saveFile(CONFIG_FILE_MAPS, "[]")) {
-            ruleCount = 0;
+            // 清空所有规则（统一数据源）
+            for (int i = 0; i < MAX_MAP_RULES; i++) {
+                rules[i].valid = false;
+            }
             nextId = 1;
             return true;
         }
         return false;
     }
     
+    // 情况4：部分规则加载失败，如果失败率超过50%，重置文件
+    if (originalRuleCount > 0 && failedCount > 0) {
+        float failureRate = (float)failedCount / originalRuleCount;
+        if (failureRate > 0.5f) {
+            char buffer[128];
+            snprintf(buffer, sizeof(buffer), "规则加载失败率过高 (%.1f%%)，重置文件", failureRate * 100);
+            if (logger) {
+                logger->log("error", buffer);
+            } else {
+                Serial.printf("[IRMapper] %s\n", buffer);
+            }
+            if (Storage::saveFile(CONFIG_FILE_MAPS, "[]")) {
+                // 清空所有规则（统一数据源）
+                for (int i = 0; i < MAX_MAP_RULES; i++) {
+                    rules[i].valid = false;
+                }
+                nextId = 1;
+                return true;
+            }
+            return false;
+        } else {
+            char buffer[128];
+            snprintf(buffer, sizeof(buffer), "成功加载 %d/%d 条规则，跳过 %d 条无效规则", 
+                    loadedCount, originalRuleCount, failedCount);
+            if (logger) {
+                logger->log("system", buffer);
+            } else {
+                Serial.printf("[IRMapper] %s\n", buffer);
+            }
+        }
+    }
+    
+    // 最终验证：检查实际加载的规则数量
+    int finalCount = getRuleCount();
+    if (finalCount != loadedCount) {
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "警告：加载后规则数量不一致 (加载: %d, 统计: %d)", loadedCount, finalCount);
+        if (logger) {
+            logger->log("warning", buffer);
+        } else {
+            Serial.printf("[IRMapper] %s\n", buffer);
+        }
+    }
+    // 注意：移除了"规则加载完成"的日志，因为：
+    // 1. 如果加载成功，规则数量信息已经在"读取Maps文件"日志中体现
+    // 2. 避免重复输出，减少日志噪音
+    // 3. 如果需要，可以通过查询接口获取规则数量
+    
     return true;
 }
 
 bool IRMapper::exportToJSON(String& json) {
     // 动态计算JSON大小：每条规则约200字节
-    size_t jsonSize = (ruleCount * 200) + 2048;
+    // 使用getRuleCount()统一数据源
+    int validCount = getRuleCount();
+    size_t jsonSize = (validCount * 200) + 2048;
     if (jsonSize < 4096) jsonSize = 4096;
     DynamicJsonDocument doc(jsonSize);
     JsonArray rulesArray = doc.to<JsonArray>();
     
     // 使用统一方法，设置hexFormat=true，统一使用十六进制格式（与saveToFlash一致）
-    for (int i = 0; i < ruleCount; i++) {
+    // 遍历整个数组，与getAllRules保持一致
+    for (int i = 0; i < MAX_MAP_RULES; i++) {
         if (!rules[i].valid) continue;
         
         JsonObject ruleObj = rulesArray.createNestedObject();
@@ -349,13 +651,20 @@ bool IRMapper::importFromJSON(const String& json) {
         return false;
     }
     
-    // 清空现有规则
-    ruleCount = 0;
+    // 清空现有规则（统一数据源：遍历整个数组）
+    for (int i = 0; i < MAX_MAP_RULES; i++) {
+        rules[i].valid = false;
+    }
     nextId = 1;
     
     JsonArray rulesArray = doc.as<JsonArray>();
+    int loadedCount = 0;
     for (JsonObject ruleObj : rulesArray) {
-        if (ruleCount >= MAX_MAP_RULES) break;
+        if (loadedCount >= MAX_MAP_RULES) break;
+        
+        // 找到第一个无效槽位（统一数据源）
+        int emptyIndex = findEmptySlot();
+        if (emptyIndex == -1) break;  // 数组已满
         
         IR_MapRule rule;
         // 使用统一方法解析（仅支持十六进制字符串格式）
@@ -364,7 +673,9 @@ bool IRMapper::importFromJSON(const String& json) {
         }
         
         rule.id = ruleObj["id"] | 0;
-        rules[ruleCount++] = rule;
+        rules[emptyIndex] = rule;
+        rules[emptyIndex].valid = true;
+        loadedCount++;
         if (rule.id >= nextId) {
             nextId = rule.id + 1;
         }
@@ -374,7 +685,8 @@ bool IRMapper::importFromJSON(const String& json) {
 }
 
 bool IRMapper::findRuleIndex(const UnifiedSignal& aSignal, int& index) {
-    for (int i = 0; i < ruleCount; i++) {
+    // 统一数据源：遍历整个数组
+    for (int i = 0; i < MAX_MAP_RULES; i++) {
         if (!rules[i].valid) continue;
         
         if (SignalUtils::signalsEqual(aSignal, rules[i].aSignal)) {
@@ -387,7 +699,8 @@ bool IRMapper::findRuleIndex(const UnifiedSignal& aSignal, int& index) {
 }
 
 bool IRMapper::findRuleIndexById(uint8_t id, int& index) {
-    for (int i = 0; i < ruleCount; i++) {
+    // 统一数据源：遍历整个数组
+    for (int i = 0; i < MAX_MAP_RULES; i++) {
         if (rules[i].valid && rules[i].id == id) {
             index = i;
             return true;
@@ -436,7 +749,14 @@ bool IRMapper::jsonObjectToRule(JsonObject& obj, IR_MapRule& rule) {
     }
     
     // B信号序列（使用统一反序列化方法）
+    if (!obj.containsKey("bSignals")) {
+        return false;  // 缺少bSignals字段
+    }
     JsonArray bSignals = obj["bSignals"];
+    if (bSignals.isNull() || bSignals.size() == 0) {
+        return false;  // bSignals数组为空
+    }
+    
     rule.bSignalCount = 0;
     for (JsonObject bSignal : bSignals) {
         if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
@@ -445,6 +765,11 @@ bool IRMapper::jsonObjectToRule(JsonObject& obj, IR_MapRule& rule) {
             return false;
         }
         rule.bSignalCount++;
+    }
+    
+    // 验证至少有一个B信号
+    if (rule.bSignalCount == 0) {
+        return false;
     }
     
     // 间隔

@@ -1,15 +1,15 @@
 #include "api_response.h"
 
-String APIResponse::success(const String& data) {
-    return UnifiedAPI::createSuccessResponse(data, "success");
+String APIResponse::success(const String& data, Logger* logger, const char* context) {
+    return UnifiedAPI::createSuccessResponse(data, "success", logger, context);
 }
 
-String APIResponse::success(JsonObject& data) {
-    return UnifiedAPI::createSuccessResponse(data, "success");
+String APIResponse::success(JsonObject& data, Logger* logger, const char* context) {
+    return UnifiedAPI::createSuccessResponse(data, "success", logger, context);
 }
 
-String APIResponse::success(JsonArray& data) {
-    return UnifiedAPI::createSuccessResponse(data, "success");
+String APIResponse::success(JsonArray& data, Logger* logger, const char* context) {
+    return UnifiedAPI::createSuccessResponse(data, "success", logger, context);
 }
 
 String APIResponse::error(const String& message, int code) {

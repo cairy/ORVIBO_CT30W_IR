@@ -500,23 +500,56 @@ void HAMQTTHandler::processCommand(const String& payload) {
 }
 
 void HAMQTTHandler::handleQueryMaps() {
-    // 使用公共函数
-    String dataJson = APIHandlers::handleQueryMaps(mapper);
+    // 使用公共函数，传递 logger
+    String dataJson = APIHandlers::handleQueryMaps(mapper, &logger);
     if (dataJson.length() == 0) {
         publishState("error", "Low Memory");
         return;
     }
     
     // 解析为JsonArray并包装为统一响应
-    DynamicJsonDocument dataDoc(2048);
+    // 动态计算JSON大小
+    size_t docSize = dataJson.length() + 1024;
+    if (docSize < 2048) docSize = 2048;
+    if (docSize > 8192) docSize = 8192;
+    
+    DynamicJsonDocument dataDoc(docSize);
     DeserializationError err = deserializeJson(dataDoc, dataJson);
     if (err) {
+        char errorMsg[128];
+        snprintf(errorMsg, sizeof(errorMsg), "Failed to parse rules: %s", err.c_str());
+        logger.log("error", errorMsg);
         publishState("error", "Failed to parse rules");
         return;
     }
     
+    // 检查文档是否溢出
+    if (dataDoc.overflowed()) {
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "JSON文档溢出，尝试使用更大的文档 (当前大小: %d bytes)", docSize);
+        logger.log("warning", buffer);
+        
+        // 尝试使用更大的文档重新解析
+        size_t largerSize = dataJson.length() * 2 + 2048;
+        if (largerSize <= 16384) {
+            DynamicJsonDocument largerDoc(largerSize);
+            DeserializationError largerErr = deserializeJson(largerDoc, dataJson);
+            if (!largerErr && !largerDoc.overflowed()) {
+                dataDoc = largerDoc;
+            } else {
+                logger.log("error", "更大的文档仍然溢出或解析失败");
+                publishState("error", "JSON document overflowed");
+                return;
+            }
+        } else {
+            logger.log("error", "JSON文档过大，无法重试");
+            publishState("error", "JSON too large");
+            return;
+        }
+    }
+    
     JsonArray rulesArray = dataDoc.as<JsonArray>();
-    String output = UnifiedAPI::createSuccessResponse(rulesArray, "success");
+    String output = UnifiedAPI::createSuccessResponse(rulesArray, "success", &logger, "MQTT: /maps");
     mqtt.publish(MQTT_TOPIC_STATE, output);
 }
 
@@ -542,15 +575,48 @@ void HAMQTTHandler::handleGetLogs() {
     }
     
     // 解析为JsonArray并包装为统一响应
-    DynamicJsonDocument dataDoc(1024);
+    // 动态计算JSON大小
+    size_t docSize = dataJson.length() + 512;
+    if (docSize < 1024) docSize = 1024;
+    if (docSize > 4096) docSize = 4096;
+    
+    DynamicJsonDocument dataDoc(docSize);
     DeserializationError err = deserializeJson(dataDoc, dataJson);
     if (err) {
+        char errorMsg[128];
+        snprintf(errorMsg, sizeof(errorMsg), "Failed to parse logs: %s", err.c_str());
+        logger.log("error", errorMsg);
         publishState("error", "Failed to parse logs");
         return;
     }
     
+    // 检查文档是否溢出
+    if (dataDoc.overflowed()) {
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "JSON文档溢出，尝试使用更大的文档 (当前大小: %d bytes)", docSize);
+        logger.log("warning", buffer);
+        
+        // 尝试使用更大的文档重新解析
+        size_t largerSize = dataJson.length() * 2 + 1024;
+        if (largerSize <= 8192) {
+            DynamicJsonDocument largerDoc(largerSize);
+            DeserializationError largerErr = deserializeJson(largerDoc, dataJson);
+            if (!largerErr && !largerDoc.overflowed()) {
+                dataDoc = largerDoc;
+            } else {
+                logger.log("error", "更大的文档仍然溢出或解析失败");
+                publishState("error", "JSON document overflowed");
+                return;
+            }
+        } else {
+            logger.log("error", "JSON文档过大，无法重试");
+            publishState("error", "JSON too large");
+            return;
+        }
+    }
+    
     JsonArray logArray = dataDoc.as<JsonArray>();
-    String output = UnifiedAPI::createSuccessResponse(logArray, "success");
+    String output = UnifiedAPI::createSuccessResponse(logArray, "success", &logger);
     mqtt.publish(MQTT_TOPIC_STATE, output);
 }
 

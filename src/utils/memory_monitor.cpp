@@ -171,8 +171,9 @@ size_t MemoryMonitor::calculateJsonSize(size_t baseSize, int itemCount, size_t i
 size_t MemoryMonitor::calculateRulesJsonSize(int ruleCount) {
     // 每条规则约120字节基础开销 + 每个B信号约40字节
     // 假设平均每条规则有2个B信号
+    // 注意：使用hex格式时，字符串会更长，需要更多空间
     size_t baseSize = 256;
-    size_t itemSize = 120 + (2 * 40);  // 平均每条规则200字节
+    size_t itemSize = 200 + (2 * 80);  // 平均每条规则360字节（考虑hex格式和对象开销）
     return calculateJsonSize(baseSize, ruleCount, itemSize);
 }
 

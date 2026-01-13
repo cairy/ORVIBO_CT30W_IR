@@ -547,10 +547,61 @@ String IRLearner::convertToBase64Format() {
         commands[cmdName] = base64;
     }
     
+    // 检查文档是否溢出
+    if (doc.overflowed()) {
+        char buffer[192];
+        snprintf(buffer, sizeof(buffer), "[IRLearner: convertToBase64Format] JSON文档溢出，尝试使用更大的文档 (当前大小: %d bytes, 命令数: %d)", estimatedSize, learnedDevice->commandCount);
+        logger.log("warning", buffer);
+        
+        // 尝试使用更大的文档重新构建
+        size_t largerSize = estimatedSize * 2;
+        if (largerSize <= 6144) {  // 限制最大6KB
+            DynamicJsonDocument largerDoc(largerSize);
+            largerDoc["manufacturer"] = "Learned";
+            JsonArray largerModels = largerDoc.createNestedArray("supportedModels");
+            largerModels.add("Learned Device");
+            largerDoc["commandsEncoding"] = "Raw";
+            largerDoc["supportedController"] = "MQTT";
+            JsonObject largerCommands = largerDoc.createNestedObject("commands");
+            
+            for (int i = 0; i < learnedDevice->commandCount && i < MAX_LEARN_COMMANDS; i++) {
+                const LearnedCommand& cmd = learnedDevice->commands[i];
+                if (!cmd.valid) continue;
+                if (ESP.getFreeHeap() < 2048) break;
+                
+                String base64 = encodeTimingToBase64(cmd.timing, cmd.timingCount);
+                if (base64.length() == 0) continue;
+                
+                const char* cmdName = (cmd.name[0] != '\0') ? cmd.name : "";
+                largerCommands[cmdName] = base64;
+            }
+            
+            if (!largerDoc.overflowed()) {
+                doc = largerDoc;
+            } else {
+                char errorBuffer[192];
+                snprintf(errorBuffer, sizeof(errorBuffer), "[IRLearner: convertToBase64Format] 更大的文档仍然溢出 (大小: %d bytes, 命令数: %d)", largerSize, learnedDevice->commandCount);
+                logger.log("error", errorBuffer);
+            }
+        } else {
+            char errorBuffer[192];
+            snprintf(errorBuffer, sizeof(errorBuffer), "[IRLearner: convertToBase64Format] JSON文档过大，无法重试 (需要: %d bytes, 命令数: %d)", largerSize, learnedDevice->commandCount);
+            logger.log("error", errorBuffer);
+        }
+    }
+    
     // 序列化为字符串
     String output;
     output.reserve(estimatedSize);  // 预分配内存
     serializeJson(doc, output);
+    
+    // 如果仍然溢出，记录错误
+    if (doc.overflowed()) {
+        char buffer[192];
+        snprintf(buffer, sizeof(buffer), "[IRLearner: convertToBase64Format] JSON文档溢出，无法序列化 (大小: %d bytes, 命令数: %d)", estimatedSize, learnedDevice->commandCount);
+        logger.log("error", buffer);
+    }
+    
     return output;
 }
 
@@ -632,10 +683,71 @@ String IRLearner::convertToSignalIDFormat() {
         }
     }
     
+    // 检查文档是否溢出
+    if (doc.overflowed()) {
+        char buffer[192];
+        snprintf(buffer, sizeof(buffer), "[IRLearner: convertToSignalIDFormat] JSON文档溢出，尝试使用更大的文档 (当前大小: %d bytes, 命令数: %d)", estimatedSize, learnedDevice->commandCount);
+        logger.log("warning", buffer);
+        
+        // 尝试使用更大的文档重新构建
+        size_t largerSize = estimatedSize * 2;
+        if (largerSize <= 4096) {  // 限制最大4KB
+            DynamicJsonDocument largerDoc(largerSize);
+            largerDoc["manufacturer"] = "Learned";
+            JsonArray largerModels = largerDoc.createNestedArray("supportedModels");
+            largerModels.add("Learned Device");
+            largerDoc["commandsEncoding"] = "Raw";
+            largerDoc["supportedController"] = "MQTT";
+            JsonObject largerCommands = largerDoc.createNestedObject("commands");
+            
+            for (int i = 0; i < learnedDevice->commandCount && i < MAX_LEARN_COMMANDS; i++) {
+                const LearnedCommand& cmd = learnedDevice->commands[i];
+                if (!cmd.valid) continue;
+                if (ESP.getFreeHeap() < 1500) break;
+                
+                const char* cmdName = (cmd.name[0] != '\0') ? cmd.name : "";
+                
+                if (cmd.hasProtocol && !cmd.signal.useTiming) {
+                    char protocolStr[128];
+                    snprintf(protocolStr, sizeof(protocolStr), "%u,0x%08X,%u", 
+                             cmd.signal.protocol, cmd.signal.data, cmd.signal.repeatCount);
+                    largerCommands[cmdName] = protocolStr;
+                } else if (cmd.signal.useTiming) {
+                    largerCommands[cmdName] = cmd.signal.timingBase64;
+                } else {
+                    String base64 = encodeTimingToBase64(cmd.timing, cmd.timingCount);
+                    if (base64.length() > 0) {
+                        largerCommands[cmdName] = base64;
+                    }
+                }
+            }
+            
+            if (!largerDoc.overflowed()) {
+                doc = largerDoc;
+            } else {
+                char errorBuffer[192];
+                snprintf(errorBuffer, sizeof(errorBuffer), "[IRLearner: convertToSignalIDFormat] 更大的文档仍然溢出 (大小: %d bytes, 命令数: %d)", largerSize, learnedDevice->commandCount);
+                logger.log("error", errorBuffer);
+            }
+        } else {
+            char errorBuffer[192];
+            snprintf(errorBuffer, sizeof(errorBuffer), "[IRLearner: convertToSignalIDFormat] JSON文档过大，无法重试 (需要: %d bytes, 命令数: %d)", largerSize, learnedDevice->commandCount);
+            logger.log("error", errorBuffer);
+        }
+    }
+    
     // 序列化为字符串
     String output;
     output.reserve(estimatedSize);  // 预分配内存
     serializeJson(doc, output);
+    
+    // 如果仍然溢出，记录错误
+    if (doc.overflowed()) {
+        char buffer[192];
+        snprintf(buffer, sizeof(buffer), "[IRLearner: convertToSignalIDFormat] JSON文档溢出，无法序列化 (大小: %d bytes, 命令数: %d)", estimatedSize, learnedDevice->commandCount);
+        logger.log("error", buffer);
+    }
+    
     return output;
 }
 
@@ -708,10 +820,71 @@ String IRLearner::convertToArrayFormat() {
         commands[cmdName] = arrayStr;
     }
     
+    // 检查文档是否溢出
+    if (doc.overflowed()) {
+        char buffer[192];
+        snprintf(buffer, sizeof(buffer), "[IRLearner: convertToArrayFormat] JSON文档溢出，尝试使用更大的文档 (当前大小: %d bytes, 命令数: %d)", estimatedSize, learnedDevice->commandCount);
+        logger.log("warning", buffer);
+        
+        // 尝试使用更大的文档重新构建
+        size_t largerSize = estimatedSize * 2;
+        if (largerSize <= 6144) {  // 限制最大6KB
+            DynamicJsonDocument largerDoc(largerSize);
+            largerDoc["manufacturer"] = "Learned";
+            JsonArray largerModels = largerDoc.createNestedArray("supportedModels");
+            largerModels.add("Learned Device");
+            largerDoc["commandsEncoding"] = "Raw";
+            largerDoc["supportedController"] = "MQTT";
+            JsonObject largerCommands = largerDoc.createNestedObject("commands");
+            
+            for (int i = 0; i < learnedDevice->commandCount && i < MAX_LEARN_COMMANDS; i++) {
+                const LearnedCommand& cmd = learnedDevice->commands[i];
+                if (!cmd.valid) continue;
+                if (ESP.getFreeHeap() < 2048) break;
+                
+                String arrayStr;
+                arrayStr.reserve(cmd.timingCount * 10 + 2);
+                arrayStr = "[";
+                for (int j = 0; j < cmd.timingCount; j++) {
+                    if (j > 0) arrayStr += ",";
+                    long duration = cmd.timing[j].duration;
+                    if (!cmd.timing[j].level) {
+                        duration = -duration;
+                    }
+                    arrayStr += String(duration);
+                }
+                arrayStr += "]";
+                
+                const char* cmdName = (cmd.name[0] != '\0') ? cmd.name : "";
+                largerCommands[cmdName] = arrayStr;
+            }
+            
+            if (!largerDoc.overflowed()) {
+                doc = largerDoc;
+            } else {
+                char errorBuffer[192];
+                snprintf(errorBuffer, sizeof(errorBuffer), "[IRLearner: convertToArrayFormat] 更大的文档仍然溢出 (大小: %d bytes, 命令数: %d)", largerSize, learnedDevice->commandCount);
+                logger.log("error", errorBuffer);
+            }
+        } else {
+            char errorBuffer[192];
+            snprintf(errorBuffer, sizeof(errorBuffer), "[IRLearner: convertToArrayFormat] JSON文档过大，无法重试 (需要: %d bytes, 命令数: %d)", largerSize, learnedDevice->commandCount);
+            logger.log("error", errorBuffer);
+        }
+    }
+    
     // 序列化为字符串
     String output;
     output.reserve(estimatedSize);  // 预分配内存
     serializeJson(doc, output);
+    
+    // 如果仍然溢出，记录错误
+    if (doc.overflowed()) {
+        char buffer[192];
+        snprintf(buffer, sizeof(buffer), "[IRLearner: convertToArrayFormat] JSON文档溢出，无法序列化 (大小: %d bytes, 命令数: %d)", estimatedSize, learnedDevice->commandCount);
+        logger.log("error", buffer);
+    }
+    
     return output;
 }
 

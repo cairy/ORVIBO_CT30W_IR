@@ -17,7 +17,8 @@ class APIHandlers {
 public:
     // 查询映射规则（返回JSON字符串，data部分）
     // 成功返回JSON字符串，失败返回空字符串（需要检查内存）
-    static String handleQueryMaps(IRMapper& mapper);
+    // logger: 可选的日志记录器，用于记录错误
+    static String handleQueryMaps(IRMapper& mapper, Logger* logger = nullptr);
     
     // 更新映射规则
     // 返回: 成功返回消息字符串，失败返回错误消息

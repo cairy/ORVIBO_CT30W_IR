@@ -138,6 +138,9 @@ void setup() {
     // 加载网络配置
     networkConfig.load();
     
+    // 设置日志记录器到映射表管理器
+    irMapper.setLogger(&logger);
+    
     // 初始化映射表（在网络模块之前初始化，避免内存不足）
     if (!irMapper.init()) {
         Serial.println("映射表初始化失败！");

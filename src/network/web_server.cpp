@@ -217,7 +217,7 @@ void WebServer::handleAPIStatus() {
     dataObj["ruleCount"] = mapper->getRuleCount();
     dataObj["forwarding"] = forwarder->isForwarding();
     
-    String output = APIResponse::success(dataObj);
+    String output = APIResponse::success(dataObj, logger);
     sendJSONResponse(200, output);
 }
 
@@ -227,23 +227,66 @@ void WebServer::handleAPIMaps() {
         return;
     }
     
-    // 使用公共函数
-    String dataJson = APIHandlers::handleQueryMaps(*mapper);
+    // 使用公共函数，传递 logger
+    String dataJson = APIHandlers::handleQueryMaps(*mapper, logger);
     if (dataJson.length() == 0) {
         sendErrorResponse(503, "Insufficient memory");
         return;
     }
     
     // 解析为JsonArray并包装为统一响应
-    DynamicJsonDocument dataDoc(2048);
+    // 动态计算JSON大小：解析JSON需要的内存通常是字符串长度的1.5-2倍
+    // 加上响应包装开销（success, status, timestamp, data字段）
+    size_t docSize = (dataJson.length() * 2) + 1024;  // 2倍 + 1KB包装开销
+    if (docSize < 2048) docSize = 2048;  // 最小2KB
+    if (docSize > 16384) docSize = 16384;  // 限制最大16KB，避免内存不足
+    
+    DynamicJsonDocument dataDoc(docSize);
     DeserializationError err = deserializeJson(dataDoc, dataJson);
     if (err) {
-        sendErrorResponse(500, "Failed to parse rules");
+        char errorMsg[128];
+        snprintf(errorMsg, sizeof(errorMsg), "Failed to parse rules: %s", err.c_str());
+        if (logger != nullptr) {
+            logger->log("error", errorMsg);
+        }
+        sendErrorResponse(500, errorMsg);
         return;
     }
     
+    // 检查文档是否溢出
+    if (dataDoc.overflowed()) {
+        char buffer[192];
+        snprintf(buffer, sizeof(buffer), "[接口: /api/maps] JSON文档溢出，尝试使用更大的文档 (当前大小: %d bytes, 数据长度: %d)", docSize, dataJson.length());
+        if (logger != nullptr) {
+            logger->log("warning", buffer);
+        }
+        
+        // 尝试使用更大的文档重新解析
+        size_t largerSize = dataJson.length() * 2 + 2048;
+        if (largerSize <= 16384) {  // 限制最大16KB
+            DynamicJsonDocument largerDoc(largerSize);
+            DeserializationError largerErr = deserializeJson(largerDoc, dataJson);
+            if (!largerErr && !largerDoc.overflowed()) {
+                dataDoc = largerDoc;
+            } else {
+                if (logger != nullptr) {
+                    logger->log("error", "[接口: /api/maps] 更大的文档仍然溢出或解析失败");
+                }
+                sendErrorResponse(500, "JSON document overflowed");
+                return;
+            }
+        } else {
+            if (logger != nullptr) {
+                logger->log("error", "[接口: /api/maps] JSON文档过大，无法重试");
+            }
+            sendErrorResponse(500, "JSON too large");
+            return;
+        }
+    }
+    
     JsonArray rulesArray = dataDoc.as<JsonArray>();
-    String output = APIResponse::success(rulesArray);
+    String output = APIResponse::success(rulesArray, logger, "/api/maps");
+    
     sendJSONResponse(200, output);
 }
 
@@ -264,7 +307,7 @@ void WebServer::handleAPIUpdateMap() {
     String message = APIHandlers::handleUpdateMap(*mapper, body, success);
     
     if (success) {
-        sendJSONResponse(200, APIResponse::success(message));
+        sendJSONResponse(200, APIResponse::success(message, logger));
     } else {
         sendErrorResponse(400, message);
     }
@@ -292,7 +335,7 @@ void WebServer::handleAPILogs() {
     }
     
     JsonArray logArray = dataDoc.as<JsonArray>();
-    String output = APIResponse::success(logArray);
+    String output = APIResponse::success(logArray, logger);
     sendJSONResponse(200, output);
 }
 
@@ -313,7 +356,7 @@ void WebServer::handleAPILearnStart() {
     String message = APIHandlers::handleStartLearn(*learner, body, success);
     
     if (success) {
-        sendJSONResponse(200, APIResponse::success(message));
+        sendJSONResponse(200, APIResponse::success(message, logger));
     } else {
         sendErrorResponse(400, message);
     }
@@ -341,7 +384,7 @@ void WebServer::handleAPILearnStatus() {
     }
     
     JsonObject dataObj = dataDoc.as<JsonObject>();
-    String output = APIResponse::success(dataObj);
+    String output = APIResponse::success(dataObj, logger);
     sendJSONResponse(200, output);
 }
 
@@ -356,7 +399,7 @@ void WebServer::handleAPILearnStop() {
     String message = APIHandlers::handleStopLearn(*learner, success);
     
     if (success) {
-        sendJSONResponse(200, APIResponse::success(message));
+        sendJSONResponse(200, APIResponse::success(message, logger));
     } else {
         sendErrorResponse(500, message);
     }
@@ -387,21 +430,21 @@ void WebServer::handleAPILearnResult() {
     
     if (err) {
         // 如果不是JSON，直接作为字符串返回
-        String output = APIResponse::success(dataJson);
+        String output = APIResponse::success(dataJson, logger);
         sendJSONResponse(200, output);
     } else {
         // 如果是JSON，提取为JsonObject或JsonArray
         if (dataDoc.is<JsonObject>()) {
             JsonObject obj = dataDoc.as<JsonObject>();
-            String output = APIResponse::success(obj);
+            String output = APIResponse::success(obj, logger);
             sendJSONResponse(200, output);
         } else if (dataDoc.is<JsonArray>()) {
             JsonArray arr = dataDoc.as<JsonArray>();
-            String output = APIResponse::success(arr);
+            String output = APIResponse::success(arr, logger);
             sendJSONResponse(200, output);
         } else {
             // 其他情况，作为字符串返回
-            String output = APIResponse::success(dataJson);
+            String output = APIResponse::success(dataJson, logger);
             sendJSONResponse(200, output);
         }
     }
@@ -429,7 +472,7 @@ void WebServer::handleAPIRecentSignals() {
     }
     
     JsonArray signalsArray = dataDoc.as<JsonArray>();
-    String output = APIResponse::success(signalsArray);
+    String output = APIResponse::success(signalsArray, logger);
     sendJSONResponse(200, output);
 }
 

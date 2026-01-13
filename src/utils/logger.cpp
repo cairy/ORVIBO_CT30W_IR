@@ -348,8 +348,41 @@ void Logger::saveToFlash() {
         }
     }
     
+    // 检查文档是否溢出
+    if (doc.overflowed()) {
+        Serial.printf("[Logger: saveToFlash] JSON文档溢出，尝试使用更大的文档 (当前大小: %d bytes, 日志数: %d)\n", jsonSize, log_count);
+        // 尝试使用更大的文档重新构建
+        size_t largerSize = jsonSize * 2;
+        if (largerSize <= 8192) {  // 限制最大8KB
+            DynamicJsonDocument largerDoc(largerSize);
+            JsonArray largerArray = largerDoc.to<JsonArray>();
+            for (int i = 0; i < log_count; i++) {
+                int idx = (start_idx + i) % MAX_LOG_ENTRIES;
+                if (logs[idx].valid) {
+                    JsonObject entry = largerArray.createNestedObject();
+                    entry["timestamp"] = logs[idx].timestamp;
+                    entry["type"] = logs[idx].type;
+                    entry["content"] = logs[idx].content;
+                }
+            }
+            if (!largerDoc.overflowed()) {
+                doc = largerDoc;
+            } else {
+                Serial.printf("[Logger: saveToFlash] 更大的文档仍然溢出 (大小: %d bytes, 日志数: %d)\n", largerSize, log_count);
+            }
+        } else {
+            Serial.printf("[Logger: saveToFlash] JSON文档过大，无法重试 (需要: %d bytes, 日志数: %d)\n", largerSize, log_count);
+        }
+    }
+    
     serializeJson(doc, file);
     file.close();
+    
+    // 如果仍然溢出，记录错误
+    if (doc.overflowed()) {
+        Serial.printf("[Logger: saveToFlash] JSON文档溢出，无法保存日志 (大小: %d bytes, 日志数: %d)\n", jsonSize, log_count);
+    }
+    
     needsSave = false;
 }
 

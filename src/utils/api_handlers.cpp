@@ -1,7 +1,7 @@
 #include "api_handlers.h"
 #include "ir_core/unified_signal.h"
 
-String APIHandlers::handleQueryMaps(IRMapper& mapper) {
+String APIHandlers::handleQueryMaps(IRMapper& mapper, Logger* logger) {
     int count = mapper.getRuleCount();
     size_t jsonSize = MemoryMonitor::calculateRulesJsonSize(count);
     
@@ -15,21 +15,66 @@ String APIHandlers::handleQueryMaps(IRMapper& mapper) {
         return "";  // 分配失败
     }
     
-    bool success = mapper.getAllRules(rules, count);
-    if (!success) {
+    // 获取所有规则，返回实际填充的数量
+    int actualCount = mapper.getAllRules(rules, count);
+    if (actualCount == 0) {
         delete[] rules;
-        return "";  // 获取失败
+        // 如果没有规则，返回空数组
+        DynamicJsonDocument doc(256);
+        doc.to<JsonArray>();  // 创建空数组
+        String output;
+        serializeJson(doc, output);
+        return output;
     }
     
     // 构建JSON（只返回data部分）
-    size_t totalSize = jsonSize + 256;
+    // 增加更大的缓冲：JSON文档内存需求通常是估算大小的1.5-2倍
+    // 特别是使用hex格式时，字符串会更长
+    size_t totalSize = (jsonSize * 2) + 1024;  // 2倍 + 1KB缓冲
+    if (totalSize < 2048) totalSize = 2048;  // 最小2KB
+    if (totalSize > 16384) totalSize = 16384;  // 限制最大16KB
     DynamicJsonDocument doc(totalSize);
     JsonArray rulesArray = doc.to<JsonArray>();
     
-    // 使用统一的转换方法
-    for (int i = 0; i < count; i++) {
+    // 使用统一的转换方法，使用实际填充的数量
+    for (int i = 0; i < actualCount; i++) {
         JsonObject ruleObj = rulesArray.createNestedObject();
         IRMapper::ruleToJsonObject(rules[i], ruleObj, true);  // true表示使用hex格式
+    }
+    
+    // 检查文档是否溢出
+    if (doc.overflowed()) {
+        char buffer[192];
+        snprintf(buffer, sizeof(buffer), "[API: /api/maps] JSON文档溢出，尝试使用更大的文档 (当前大小: %d bytes, 规则数: %d)", totalSize, actualCount);
+        if (logger != nullptr) {
+            logger->log("warning", buffer);
+        }
+        
+        // 尝试使用更大的文档重新构建
+        size_t largerSize = totalSize * 2;
+        if (largerSize <= 16384) {  // 限制最大16KB
+            DynamicJsonDocument largerDoc(largerSize);
+            JsonArray largerArray = largerDoc.to<JsonArray>();
+            for (int i = 0; i < actualCount; i++) {
+                JsonObject ruleObj = largerArray.createNestedObject();
+                IRMapper::ruleToJsonObject(rules[i], ruleObj, true);
+            }
+            if (!largerDoc.overflowed()) {
+                doc = largerDoc;
+            } else {
+                char errorBuffer[192];
+                snprintf(errorBuffer, sizeof(errorBuffer), "[API: /api/maps] 更大的文档仍然溢出 (大小: %d bytes, 规则数: %d)", largerSize, actualCount);
+                if (logger != nullptr) {
+                    logger->log("error", errorBuffer);
+                }
+            }
+        } else {
+            char errorBuffer[192];
+            snprintf(errorBuffer, sizeof(errorBuffer), "[API: /api/maps] JSON文档过大，无法重试 (需要: %d bytes, 规则数: %d)", largerSize, actualCount);
+            if (logger != nullptr) {
+                logger->log("error", errorBuffer);
+            }
+        }
     }
     
     // 立即释放规则数组内存
@@ -37,6 +82,15 @@ String APIHandlers::handleQueryMaps(IRMapper& mapper) {
     
     String output;
     serializeJson(doc, output);
+    
+    // 如果文档溢出，返回空字符串（表示失败）
+    if (doc.overflowed()) {
+        if (logger != nullptr) {
+            logger->log("error", "[API: /api/maps] JSON文档溢出，无法序列化规则");
+        }
+        return "";
+    }
+    
     return output;
 }
 
@@ -66,8 +120,8 @@ String APIHandlers::handleUpdateMap(IRMapper& mapper, const String& json, bool& 
         // 清空所有现有规则
         IR_MapRule rules[MAX_MAP_RULES];
         int count = mapper.getRuleCount();
-        mapper.getAllRules(rules, count);
-        for (int i = 0; i < count; i++) {
+        int actualCount = mapper.getAllRules(rules, count);
+        for (int i = 0; i < actualCount; i++) {
             mapper.deleteRule(rules[i].id);
         }
         

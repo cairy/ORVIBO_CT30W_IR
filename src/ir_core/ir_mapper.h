@@ -8,6 +8,7 @@
 
 // 前向声明
 #include <ArduinoJson.h>
+class Logger;
 
 // 映射规则
 struct IR_MapRule {
@@ -31,6 +32,7 @@ class IRMapper {
 public:
     IRMapper();
     bool init();
+    void setLogger(Logger* logger) { this->logger = logger; }  // 设置日志记录器（可选）
     bool initDefaultMappings();
     bool addRule(const IR_MapRule& rule, bool saveImmediately = true);
     bool updateRule(uint8_t id, const IR_MapRule& rule);
@@ -39,7 +41,7 @@ public:
     bool isSignalInMappings(const UnifiedSignal& signal);  // 检查信号是否在映射表中（作为A信号或B信号）
     bool getRule(uint8_t id, IR_MapRule& rule);
     int getRuleCount() const;
-    bool getAllRules(IR_MapRule* rules, int maxCount);
+    int getAllRules(IR_MapRule* rules, int maxCount);  // 返回实际填充的规则数量
     bool saveToFlash();
     bool loadFromFlash();
     bool exportToJSON(String& json);
@@ -53,11 +55,15 @@ public:
 
 private:
     IR_MapRule rules[MAX_MAP_RULES];
-    int ruleCount;
+    int ruleCount;  // 已废弃：仅保留用于向后兼容，不再用于遍历
     uint8_t nextId;
+    Logger* logger;  // 日志记录器指针（可选）
     
     bool findRuleIndex(const UnifiedSignal& aSignal, int& index);
     bool findRuleIndexById(uint8_t id, int& index);
+    
+    // 内部辅助函数：找到第一个无效槽位
+    int findEmptySlot() const;
 };
 
 #endif // IR_MAPPER_H
