@@ -338,56 +338,73 @@ void IRLearner::processDeviceLearnSignal(const IRTiming* timing, int count) {
     
     // 尝试解析协议（可选，不影响学习结果）
     UnifiedSignal signal;
-    if (parser.parseSignal(timing, actualTimingCount, signal)) {
+    bool parseSuccess = parser.parseSignal(timing, actualTimingCount, signal);
+    
+    if (!parseSuccess) {
+        // 解析失败，使用时序码
+        signal.clear();
+        signal.useTiming = true;  // 时序码信号
+        signal.timingBase64 = SignalUtils::timingToBase64(timing, actualTimingCount);
+        signal.timingCount = actualTimingCount;
+    } else {
         // 解析成功，保存UnifiedSignal
-        cmd.signal = signal;
-        cmd.hasProtocol = signal.isProtocol;
-        
         // 如果解析成功但使用时序码，保存时序码Base64
         if (signal.useTiming) {
-            cmd.signal.timingBase64 = SignalUtils::timingToBase64(timing, actualTimingCount);
+            signal.timingBase64 = SignalUtils::timingToBase64(timing, actualTimingCount);
         }
-        
-        // 重复信号检测（使用cmd.signal，因为可能已更新timingBase64）
-        if (hasLastSignal && SignalUtils::signalsEqual(cmd.signal, lastLearnedSignal)) {
-            unsigned long currentTime = millis();
-            unsigned long interval = currentTime - lastLearnedSignalTime;
-            String signalDesc = parser.signalToString(cmd.signal);
-            String logMsg = "检测到重复信号: " + signalDesc + "，间隔: " + String(interval) + "ms";
-            logger.logLearn(logMsg);
-            Serial.println("[学习] " + logMsg);
+    }
+    
+    // 保存单个信号（用于向后兼容）
+    cmd.signal = signal;
+    cmd.hasProtocol = signal.isProtocol();
+    
+    // 序列检测逻辑：判断是否加入当前序列
+    unsigned long currentTime = millis();
+    unsigned long interval = 0;
+    if (hasLastSignal && lastLearnedSignalTime > 0) {
+        if (currentTime >= lastLearnedSignalTime) {
+            interval = currentTime - lastLearnedSignalTime;
+        } else {
+            interval = (0xFFFFFFFFUL - lastLearnedSignalTime) + currentTime;
         }
-        
-        Serial.println("=== 指令学习完成 ===");
-        Serial.println("指令名称: " + String(cmd.name));
-        Serial.println("信号: " + parser.signalToString(signal));
+    }
+    
+    // 初始化序列（如果还没有）
+    if (cmd.sequence.signalCount == 0) {
+        cmd.sequence.clear();
+        cmd.sequence.timestamp = currentTime;
+    }
+    
+    // 判断是否加入序列
+    if (interval > 0 && interval < SIGNAL_INTERVAL_MAX_MS && cmd.sequence.signalCount < MAX_B_SIGNALS_PER_RULE) {
+        // 加入序列
+        cmd.sequence.addSignal(signal, interval);
     } else {
-        // 解析失败，使用时序码
-        cmd.signal.clear();
-        cmd.signal.useTiming = true;
-        cmd.signal.isProtocol = false;
-        cmd.signal.timingBase64 = SignalUtils::timingToBase64(timing, actualTimingCount);
-        cmd.signal.timingCount = actualTimingCount;
-        cmd.hasProtocol = false;
-        
-        // 重复信号检测（针对时序码）
-        if (hasLastSignal && SignalUtils::signalsEqual(cmd.signal, lastLearnedSignal)) {
-            unsigned long currentTime = millis();
-            unsigned long interval = currentTime - lastLearnedSignalTime;
-            String logMsg = "检测到重复信号: 原始时序数据（未解析协议），间隔: " + String(interval) + "ms";
-            logger.logLearn(logMsg);
-            Serial.println("[学习] " + logMsg);
-        }
-        
-        Serial.println("=== 指令学习完成 ===");
-        Serial.println("指令名称: " + String(cmd.name));
-        Serial.println("信号: 原始时序数据（未解析协议）");
+        // 开始新序列（单个信号也是序列）
+        cmd.sequence.clear();
+        cmd.sequence.timestamp = currentTime;
+        cmd.sequence.addSignal(signal, 0);
+    }
+    
+    // 重复信号检测
+    if (hasLastSignal && SignalUtils::signalsEqual(signal, lastLearnedSignal)) {
+        String signalDesc = parser.signalToString(signal);
+        String logMsg = "检测到重复信号: " + signalDesc + "，间隔: " + String(interval) + "ms";
+        logger.logLearn(logMsg);
+        Serial.println("[学习] " + logMsg);
+    }
+    
+    Serial.println("=== 指令学习完成 ===");
+    Serial.println("指令名称: " + String(cmd.name));
+    Serial.println("信号: " + parser.signalToString(signal));
+    if (cmd.sequence.signalCount > 1) {
+        Serial.printf("序列长度: %d 个信号\n", cmd.sequence.signalCount);
     }
     
     // 更新上一个学习的信号（无论是否重复都保存）
-    lastLearnedSignal = cmd.signal;
+    lastLearnedSignal = signal;
     hasLastSignal = true;
-    lastLearnedSignalTime = millis();
+    lastLearnedSignalTime = currentTime;
     
     cmd.valid = true;
     learnedDevice->commandCount = currentCommandIndex + 1;
@@ -655,31 +672,38 @@ String IRLearner::convertToSignalIDFormat() {
         
         const char* cmdName = (cmd.name[0] != '\0') ? cmd.name : "";
         
-        // 检查内存：如果内存不足，停止处理（降低阈值，因为协议格式字符串较短）
+        // 检查内存：如果内存不足，停止处理
         if (ESP.getFreeHeap() < 1500) {
             break;
         }
         
-        if (cmd.hasProtocol && !cmd.signal.useTiming) {
-            // 如果解析成功且使用协议，输出协议格式字符串
-            // 格式：protocol,data,repeatCount
-            char protocolStr[128];
-            snprintf(protocolStr, sizeof(protocolStr), "%u,0x%08X,%u", 
-                     cmd.signal.protocol, cmd.signal.data, cmd.signal.repeatCount);
-            commands[cmdName] = protocolStr;
+        // 使用序列格式输出（单个信号也是序列）
+        if (cmd.sequence.signalCount > 0 && cmd.sequence.valid) {
+            // 序列格式：输出为JSON对象
+            JsonObject seqObj = commands.createNestedObject(cmdName);
+            SignalUtils::sequenceToJSON(cmd.sequence, seqObj, true);
             protocolCount++;
-        } else if (cmd.signal.useTiming) {
-            // 如果使用时序码，输出时序码Base64格式
-            commands[cmdName] = cmd.signal.timingBase64;
-            base64Count++;
         } else {
-            // 如果parseSignal()返回false，回退到Base64格式
-            String base64 = encodeTimingToBase64(cmd.timing, cmd.timingCount);
-            if (base64.length() > 0) {
-                commands[cmdName] = base64;
+            // 回退：如果序列无效，使用单个信号格式
+            if (cmd.hasProtocol && !cmd.signal.useTiming) {
+                // 协议格式字符串
+                char protocolStr[128];
+                snprintf(protocolStr, sizeof(protocolStr), "%u,0x%08X,%u", 
+                         cmd.signal.protocol, cmd.signal.data, cmd.signal.repeatCount);
+                commands[cmdName] = protocolStr;
+                protocolCount++;
+            } else if (cmd.signal.useTiming) {
+                // 时序码Base64格式
+                commands[cmdName] = cmd.signal.timingBase64;
                 base64Count++;
+            } else {
+                // 回退到Base64格式
+                String base64 = encodeTimingToBase64(cmd.timing, cmd.timingCount);
+                if (base64.length() > 0) {
+                    commands[cmdName] = base64;
+                    base64Count++;
+                }
             }
-            // 立即释放base64字符串的内存（通过作用域）
         }
     }
     
@@ -707,17 +731,24 @@ String IRLearner::convertToSignalIDFormat() {
                 
                 const char* cmdName = (cmd.name[0] != '\0') ? cmd.name : "";
                 
-                if (cmd.hasProtocol && !cmd.signal.useTiming) {
-                    char protocolStr[128];
-                    snprintf(protocolStr, sizeof(protocolStr), "%u,0x%08X,%u", 
-                             cmd.signal.protocol, cmd.signal.data, cmd.signal.repeatCount);
-                    largerCommands[cmdName] = protocolStr;
-                } else if (cmd.signal.useTiming) {
-                    largerCommands[cmdName] = cmd.signal.timingBase64;
+                // 使用序列格式输出
+                if (cmd.sequence.signalCount > 0 && cmd.sequence.valid) {
+                    JsonObject seqObj = largerCommands.createNestedObject(cmdName);
+                    SignalUtils::sequenceToJSON(cmd.sequence, seqObj, true);
                 } else {
-                    String base64 = encodeTimingToBase64(cmd.timing, cmd.timingCount);
-                    if (base64.length() > 0) {
-                        largerCommands[cmdName] = base64;
+                    // 回退：单个信号格式
+                    if (cmd.hasProtocol && !cmd.signal.useTiming) {
+                        char protocolStr[128];
+                        snprintf(protocolStr, sizeof(protocolStr), "%u,0x%08X,%u", 
+                                 cmd.signal.protocol, cmd.signal.data, cmd.signal.repeatCount);
+                        largerCommands[cmdName] = protocolStr;
+                    } else if (cmd.signal.useTiming) {
+                        largerCommands[cmdName] = cmd.signal.timingBase64;
+                    } else {
+                        String base64 = encodeTimingToBase64(cmd.timing, cmd.timingCount);
+                        if (base64.length() > 0) {
+                            largerCommands[cmdName] = base64;
+                        }
                     }
                 }
             }
@@ -1230,8 +1261,7 @@ bool IRLearner::parseProtocolString(const String& protocolStr, UnifiedSignal& si
         signal.clear();
         signal.protocol = protocol;
         signal.data = data;
-        signal.isProtocol = (protocol >= 1 && protocol <= 5);
-        signal.useTiming = false;
+        signal.useTiming = false;  // 协议信号（protocol >= 1 && protocol <= 5 时）
         signal.repeatCount = 1;
         repeatCount = 1;
         
@@ -1268,8 +1298,7 @@ bool IRLearner::parseProtocolString(const String& protocolStr, UnifiedSignal& si
         signal.clear();
         signal.protocol = protocol;
         signal.data = data;
-        signal.isProtocol = (protocol >= 1 && protocol <= 5);
-        signal.useTiming = false;
+        signal.useTiming = false;  // 协议信号（protocol >= 1 && protocol <= 5 时）
         signal.repeatCount = repeat;
         repeatCount = repeat;
         
@@ -1311,7 +1340,7 @@ bool IRLearner::parseProtocolString(const String& protocolStr, UnifiedSignal& si
         
         // hash字段已移除，不再解析（保留hashStr解析以兼容旧格式，但不使用）
         
-        // 解析isProtocol（true/false或1/0）
+        // 解析isProtocol（true/false或1/0，兼容旧格式）
         bool isProtocol = false;
         if (isProtocolStr == "true" || isProtocolStr == "1" || isProtocolStr == "True" || isProtocolStr == "TRUE") {
             isProtocol = true;
@@ -1324,8 +1353,7 @@ bool IRLearner::parseProtocolString(const String& protocolStr, UnifiedSignal& si
         signal.clear();
         signal.protocol = protocol;
         signal.data = data;
-        signal.isProtocol = isProtocol;
-        signal.useTiming = false;
+        signal.useTiming = !isProtocol;  // 根据 isProtocol 设置 useTiming
         signal.repeatCount = repeat;
         repeatCount = repeat;
         

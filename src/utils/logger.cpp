@@ -3,8 +3,8 @@
 #include <ArduinoJson.h>
 
 Logger::Logger() : log_index(0), log_count(0), needsSave(false),
-                   recentSignalIndex(0), recentSignalCount(0),
-                   lastSignalTime(0),
+                   recentSequenceIndex(0), recentSequenceCount(0),
+                   isBuildingSequence(false), lastSignalTime(0), lastSignalMatched(false),
                    logPublishCallback(nullptr) {
     for (int i = 0; i < MAX_LOG_ENTRIES; i++) {
         logs[i].valid = false;
@@ -12,8 +12,9 @@ Logger::Logger() : log_index(0), log_count(0), needsSave(false),
         logs[i].content[0] = '\0';
     }
     for (int i = 0; i < MAX_RECENT_SIGNALS; i++) {
-        recentSignals[i].valid = false;
+        recentSequences[i].clear();
     }
+    currentSequence.clear();
 }
 
 bool Logger::init() {
@@ -162,26 +163,46 @@ void Logger::logReceiveSignal(const UnifiedSignal& signal, bool matched) {
             interval = (0xFFFFFFFFUL - lastSignalTime) + now;
         }
         
-        // 如果间隔超过阈值（5秒），重置为新的会话
+        // 如果间隔超过阈值（5秒），完成当前序列并开始新序列
         if (interval > SIGNAL_INTERVAL_RESET_THRESHOLD_MS) {
-            lastSignalTime = 0;  // 重置，下一个信号将显示间隔为0
+            if (isBuildingSequence) {
+                finalizeCurrentSequence();
+            }
             interval = 0;
+            lastSignalTime = 0;
         }
     }
     
-    // 记录到最近信号缓冲区（环形缓冲区）
-    SignalUtils::copySignal(signal, recentSignals[recentSignalIndex].signal);
-    recentSignals[recentSignalIndex].timestamp = now;
-    recentSignals[recentSignalIndex].matched = matched;
-    recentSignals[recentSignalIndex].valid = true;
-    
-    recentSignalIndex = (recentSignalIndex + 1) % MAX_RECENT_SIGNALS;
-    if (recentSignalCount < MAX_RECENT_SIGNALS) {
-        recentSignalCount++;
+    // 序列检测逻辑
+    if (!isBuildingSequence) {
+        // 开始新序列
+        currentSequence.clear();
+        currentSequence.timestamp = now;
+        currentSequence.matched = matched;
+        currentSequence.addSignal(signal, 0);
+        isBuildingSequence = true;
+        lastSignalTime = now;
+        lastSignalMatched = matched;
+    } else {
+        // 判断是否加入当前序列
+        if (interval < SIGNAL_INTERVAL_MAX_MS && currentSequence.signalCount < MAX_B_SIGNALS_PER_RULE) {
+            // 加入当前序列
+            currentSequence.addSignal(signal, interval);
+            lastSignalTime = now;
+            lastSignalMatched = matched;  // 更新匹配状态（使用最后一个信号的匹配状态）
+        } else {
+            // 完成当前序列，开始新序列
+            finalizeCurrentSequence();
+            currentSequence.clear();
+            currentSequence.timestamp = now;
+            currentSequence.matched = matched;
+            currentSequence.addSignal(signal, 0);
+            isBuildingSequence = true;
+            lastSignalTime = now;
+            lastSignalMatched = matched;
+            interval = 0;
+        }
     }
-    
-    // 更新上一个信号的时间戳
-    lastSignalTime = now;
     
     // 直接串口输出（轻量操作，不写入日志缓冲区）
     if (signal.useTiming) {
@@ -231,22 +252,49 @@ void Logger::logReceiveSignal(const UnifiedSignal& signal, bool matched) {
     }
 }
 
-int Logger::getRecentSignals(RecentSignal* signals, int max_count) {
-    if (signals == nullptr || max_count <= 0) {
+int Logger::getRecentSignalSequences(SignalSequence* sequences, int max_count) {
+    if (sequences == nullptr || max_count <= 0) {
         return 0;
     }
     
-    int copy_count = (max_count < recentSignalCount) ? max_count : recentSignalCount;
-    int start_idx = (recentSignalCount < MAX_RECENT_SIGNALS) ? 0 : recentSignalIndex;
+    // 如果正在构建序列，先完成它
+    if (isBuildingSequence) {
+        finalizeCurrentSequence();
+    }
+    
+    int copy_count = (max_count < recentSequenceCount) ? max_count : recentSequenceCount;
+    int start_idx = (recentSequenceCount < MAX_RECENT_SIGNALS) ? 0 : recentSequenceIndex;
     
     for (int i = 0; i < copy_count; i++) {
         int idx = (start_idx + i) % MAX_RECENT_SIGNALS;
-        if (recentSignals[idx].valid) {
-            signals[i] = recentSignals[idx];
+        if (recentSequences[idx].valid) {
+            SignalUtils::copySequence(recentSequences[idx], sequences[i]);
         }
     }
     
     return copy_count;
+}
+
+void Logger::finalizeCurrentSequence() {
+    if (!isBuildingSequence || currentSequence.signalCount == 0) {
+        return;
+    }
+    
+    // 更新匹配状态（使用最后一个信号的匹配状态）
+    currentSequence.matched = lastSignalMatched;
+    currentSequence.valid = true;
+    
+    // 记录到最近序列缓冲区（环形缓冲区）
+    SignalUtils::copySequence(currentSequence, recentSequences[recentSequenceIndex]);
+    
+    recentSequenceIndex = (recentSequenceIndex + 1) % MAX_RECENT_SIGNALS;
+    if (recentSequenceCount < MAX_RECENT_SIGNALS) {
+        recentSequenceCount++;
+    }
+    
+    // 重置构建状态
+    isBuildingSequence = false;
+    currentSequence.clear();
 }
 
 int Logger::getLogCount() const {
@@ -289,7 +337,13 @@ void Logger::setLogPublishCallback(LogPublishCallback callback) {
 }
 
 void Logger::resetSignalInterval() {
+    // 完成当前序列（如果有）
+    if (isBuildingSequence) {
+        finalizeCurrentSequence();
+    }
     lastSignalTime = 0;
+    isBuildingSequence = false;
+    currentSequence.clear();
 }
 
 void Logger::publishToHA(const String& type, const String& content) {

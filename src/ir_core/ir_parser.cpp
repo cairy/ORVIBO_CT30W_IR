@@ -83,14 +83,12 @@ bool IRParser::convertDecodeResult(decode_results& results, UnifiedSignal& signa
     if (results.decode_type == UNKNOWN) {
         // 未知协议，使用时序码（但这里没有时序数据，所以返回false）
         // 实际使用时序码的情况应该在parseSignal中处理
-        signal.isProtocol = false;
-        signal.useTiming = false;
+        signal.useTiming = false;  // 既不是协议也不是时序码（无效状态）
         return false;
     }
     
     // 已知协议，转换为我们的协议编号
-    signal.isProtocol = true;
-    signal.useTiming = false;
+    signal.useTiming = false;  // 协议信号
     signal.data = (uint32_t)results.value;
     signal.repeatCount = 1;
     
@@ -117,7 +115,7 @@ bool IRParser::convertDecodeResult(decode_results& results, UnifiedSignal& signa
     }
     // 其他协议，不支持
     else {
-        signal.isProtocol = false;
+        signal.useTiming = false;  // 无效状态
         signal.protocol = 0;
         return false;
     }
@@ -149,44 +147,38 @@ bool IRParser::parseSignal(const IRTiming* timing, int count, UnifiedSignal& sig
     UnifiedSignal tempSignal;
     if (parseNEC(timing, maxCount, tempSignal)) {
         signal = tempSignal;
-        signal.isProtocol = true;
-        signal.useTiming = false;
+        signal.useTiming = false;  // 协议信号
         signal.repeatCount = 1;
         return true;
     }
     if (parseRC5(timing, maxCount, tempSignal)) {
         signal = tempSignal;
-        signal.isProtocol = true;
-        signal.useTiming = false;
+        signal.useTiming = false;  // 协议信号
         signal.repeatCount = 1;
         return true;
     }
     if (parseRC6(timing, maxCount, tempSignal)) {
         signal = tempSignal;
-        signal.isProtocol = true;
-        signal.useTiming = false;
+        signal.useTiming = false;  // 协议信号
         signal.repeatCount = 1;
         return true;
     }
     if (parseSony(timing, maxCount, tempSignal)) {
         signal = tempSignal;
-        signal.isProtocol = true;
-        signal.useTiming = false;
+        signal.useTiming = false;  // 协议信号
         signal.repeatCount = 1;
         return true;
     }
     if (parseSamsung(timing, maxCount, tempSignal)) {
         signal = tempSignal;
-        signal.isProtocol = true;
-        signal.useTiming = false;
+        signal.useTiming = false;  // 协议信号
         signal.repeatCount = 1;
         return true;
     }
     
     // 未匹配协议，使用时序码
     signal.clear();
-    signal.isProtocol = false;
-    signal.useTiming = true;
+    signal.useTiming = true;  // 时序码信号
     signal.protocol = 0;
     signal.data = 0;
     signal.timingCount = maxCount;
@@ -211,7 +203,7 @@ String IRParser::getProtocolName(uint32_t protocol) const {
 String IRParser::signalToString(const UnifiedSignal& signal) const {
     if (signal.useTiming) {
         return "Timing:" + String(signal.timingCount) + " points";
-    } else if (signal.isProtocol) {
+    } else if (signal.isProtocol()) {
         return getProtocolName(signal.protocol) + ":" + String(signal.data, HEX);
     } else {
         return "Unknown";
@@ -370,8 +362,7 @@ bool IRParser::parseNEC(const IRTiming* timing, int count, UnifiedSignal& signal
     // 这里我们使用完整的32位数据作为信号标识
     signal.protocol = 1;  // NEC
     signal.data = data;  // 使用完整的32位数据
-    signal.isProtocol = true;
-    signal.useTiming = false;
+    signal.useTiming = false;  // 协议信号
     return true;
 }
 
@@ -458,8 +449,7 @@ bool IRParser::parseRC5(const IRTiming* timing, int count, UnifiedSignal& signal
     
     signal.protocol = 2;  // RC5
     signal.data = data;
-    signal.isProtocol = true;
-    signal.useTiming = false;
+    signal.useTiming = false;  // 协议信号
     return true;
 }
 
@@ -556,8 +546,7 @@ bool IRParser::parseRC6(const IRTiming* timing, int count, UnifiedSignal& signal
     
     signal.protocol = 3;  // RC6
     signal.data = data;
-    signal.isProtocol = true;
-    signal.useTiming = false;
+    signal.useTiming = false;  // 协议信号
     return true;
 }
 
@@ -647,8 +636,7 @@ bool IRParser::parseSony(const IRTiming* timing, int count, UnifiedSignal& signa
     
     signal.protocol = 4;  // Sony
     signal.data = data;
-    signal.isProtocol = true;
-    signal.useTiming = false;
+    signal.useTiming = false;  // 协议信号
     return true;
 }
 
@@ -723,8 +711,7 @@ bool IRParser::parseSamsung(const IRTiming* timing, int count, UnifiedSignal& si
     // Samsung协议使用32位数据：地址(16位) + 命令(16位)
     signal.protocol = 5;  // Samsung
     signal.data = data;  // 使用完整的32位数据
-    signal.isProtocol = true;
-    signal.useTiming = false;
+    signal.useTiming = false;  // 协议信号
     return true;
 }
 

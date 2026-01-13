@@ -13,14 +13,6 @@ struct LogEntry {
     bool valid;                       // 条目是否有效
 };
 
-// 最近接收的信号结构
-struct RecentSignal {
-    UnifiedSignal signal;             // 统一信号
-    unsigned long timestamp;           // 时间戳
-    bool matched;                      // 是否在映射库中匹配
-    bool valid;                        // 条目是否有效
-};
-
 // 日志管理器
 class Logger {
 public:
@@ -32,13 +24,13 @@ public:
     void log(const String& type, const String& content);
     void log(const char* type, const char* content);  // 优化：const char*版本，避免String对象创建
     void logReceive(const String& signal_info);
-    void logReceiveSignal(const UnifiedSignal& signal, bool matched);  // 记录接收的信号
+    void logReceiveSignal(const UnifiedSignal& signal, bool matched);  // 记录接收的信号（内部使用，自动检测序列）
     void logTransmit(const String& signal_info);
     void logError(const String& error_msg);
     void logLearn(const String& signal_info);
     int getLogCount() const;
     bool getLogs(LogEntry* entries, int max_count);
-    int getRecentSignals(RecentSignal* signals, int max_count);  // 获取最近接收的信号
+    int getRecentSignalSequences(SignalSequence* sequences, int max_count);  // 获取最近接收的信号序列
     void clearLogs();
     void publishToHA(const String& type, const String& content);
     void flush();  // 强制保存到Flash
@@ -55,16 +47,22 @@ private:
     int log_count;
     bool needsSave;                   // 是否需要保存到Flash（延迟保存）
     
-    // 最近信号记录（环形缓冲区）
-    RecentSignal recentSignals[MAX_RECENT_SIGNALS];
-    int recentSignalIndex;
-    int recentSignalCount;
+    // 最近信号序列记录（环形缓冲区）
+    SignalSequence recentSequences[MAX_RECENT_SIGNALS];
+    int recentSequenceIndex;
+    int recentSequenceCount;
     
-    // 上一个信号的时间戳（用于计算时间间隔）
-    unsigned long lastSignalTime;
+    // 当前正在构建的序列（用于序列检测）
+    SignalSequence currentSequence;
+    bool isBuildingSequence;
+    unsigned long lastSignalTime;  // 上一个信号的时间戳（用于计算时间间隔）
+    bool lastSignalMatched;        // 上一个信号的匹配状态
     
     // 日志推送回调函数指针（事件驱动推送）
     LogPublishCallback logPublishCallback;
+    
+    // 完成当前序列构建（私有方法）
+    void finalizeCurrentSequence();
     
     void saveToFlash();
     void loadFromFlash();

@@ -29,19 +29,19 @@
 
 ```json
 {
-  "protocol": 1,           // 协议类型：1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung, 0=未知
-  "data": "0x00003039",    // 协议数据（标准协议解析出的数据值，十六进制字符串格式）
-  "isProtocol": true,      // 是否为标准协议：true=标准协议，false=时序码
-  "useTiming": false,      // 是否使用时序码：true=时序码，false=协议
-  "timingBase64": "",      // 时序码Base64字符串（使用时序码时有效）
-  "timingCount": 0,        // 时序码数量（使用时序码时有效）
-  "repeatCount": 1         // 重复次数（默认1）
+  "protocol": 1,           // 协议类型（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung, 0=未知），仅当 useTiming=false 时有效
+  "data": "0x00003039",    // 协议数据（32位），仅当 useTiming=false 时有效
+  "useTiming": false,      // 是否使用时序码（true=时序码信号，false=协议信号）
+  "timingBase64": "",      // 时序码Base64字符串（存储用，Flash中），仅当 useTiming=true 时有效
+  "timingCount": 0,        // 时序码数量（时序点的个数），仅当 useTiming=true 时有效
+  "repeatCount": 1         // 重复发送次数（默认1），用于控制信号发送的重复次数
 }
 ```
 
 **说明**：
-- `useTiming=false` 且 `isProtocol=true` 时，使用 `protocol` 和 `data` 进行匹配和发送（标准协议）
-- `useTiming=true` 时，使用 `timingBase64` 进行匹配和发送（时序码，用于非标准协议或需要精确时序的信号）
+- `useTiming=false` 时，使用 `protocol` 和 `data` 进行匹配和发送（标准协议信号）
+- `useTiming=true` 时，使用 `timingBase64` 进行匹配和发送（时序码信号，用于非标准协议或需要精确时序的信号）
+- `isProtocol` 字段已移除，可通过 `!useTiming` 推导（即 `isProtocol = !useTiming`）
 - 录制的信号、最近接收的信号和规则中的信号可以直接相互拷贝使用
 
 ### 支持的协议
@@ -158,7 +158,7 @@
     {
       "id": 1,
       "aSignal": {...},
-      "bSignals": [...]
+      "bSequence": {...}
     }
   ],
   "timestamp": 1234567890
@@ -386,15 +386,18 @@ GET http://设备IP/api/signals/recent
 ```json
 [
   {
-    "signal": {
-      "protocol": 1,
-      "data": "0x00003039",
-      "isProtocol": true,
-      "useTiming": false,
-      "timingBase64": "",
-      "timingCount": 0,
-      "repeatCount": 1
-    },
+    "signals": [
+      {
+        "protocol": 1,
+        "data": "0x00003039",
+        "useTiming": false,
+        "timingBase64": "",
+        "timingCount": 0,
+        "repeatCount": 1
+      }
+    ],
+    "intervals": [],
+    "repeatCount": 1,
     "timestamp": 1234567890,
     "matched": true
   }
@@ -402,15 +405,16 @@ GET http://设备IP/api/signals/recent
 ```
 
 **说明**：
-- `protocol`：协议类型（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung, 0=未知）
-- `data`：协议数据（十六进制字符串格式，如"0x00003039"）
-- `isProtocol`：是否为标准协议
-- `useTiming`：是否使用时序码（true=时序码，false=协议）
-- `timingBase64`：时序码Base64字符串（使用时序码时有效）
-- `timingCount`：时序码数量（使用时序码时有效）
-- `repeatCount`：重复次数
-- `matched`：是否在映射库中匹配
+- 返回格式为信号序列数组，每个序列包含：
+  - `signals`：信号数组（单个信号也是序列，signalCount=1）
+  - `intervals`：间隔数组（signalCount-1个间隔，对应signalCount个信号）
+  - `repeatCount`：重复发送次数（默认1）
+  - `timestamp`：时间戳（仅用于最近接收）
+  - `matched`：是否在映射库中匹配（仅用于最近接收，仅第一个信号）
+- 单个信号也是序列（`signalCount=1`，`intervals=[]`）
+- 序列检测逻辑：间隔 < 1000ms 视为同一序列，间隔 > 5000ms 视为新序列开始
 - 最多保留最近3条记录
+- 注意：`isProtocol` 字段已移除，可通过 `!useTiming` 推导
 
 **发送红外信号：**
 
@@ -460,7 +464,6 @@ Content-Type: application/json
   "signal": {
     "protocol": 1,
     "data": "0x00003039",
-    "isProtocol": true,
     "useTiming": false,
     "timingBase64": "",
     "timingCount": 0,
@@ -493,24 +496,23 @@ Content-Type: application/json
     "aSignal": {
       "protocol": 1,
       "data": "0x00003039",
-      "isProtocol": true,
       "useTiming": false,
       "timingBase64": "",
       "timingCount": 0,
       "repeatCount": 1
     },
-    "bSignals": [{
-      "protocol": 1,
-      "data": "0x00010932",
-      "isProtocol": true,
-      "useTiming": false,
-      "timingBase64": "",
-      "timingCount": 0,
-      "repeatCount": 1
-    }],
-    "bSignalCount": 1,
-    "intervals": [],
-    "repeatCount": 2
+    "bSequence": {
+      "signals": [{
+        "protocol": 1,
+        "data": "0x00010932",
+        "useTiming": false,
+        "timingBase64": "",
+        "timingCount": 0,
+        "repeatCount": 1
+      }],
+      "intervals": [],
+      "repeatCount": 2
+    }
   }
 }
 ```
@@ -524,8 +526,7 @@ Content-Type: application/json
   "rules": [
     {
       "aSignal": {...},
-      "bSignals": [...],
-      "bSignalCount": 1,
+      "bSequence": {...},
       "intervals": [],
       "repeatCount": 1
     },
@@ -593,7 +594,7 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 {
   "success": true,
   "status": "success",
-  "data": [{"id":1,"aSignal":{...},"bSignals":[...],...}],
+  "data": [{"id":1,"aSignal":{...},"bSequence":{...},...}],
   "timestamp": 1234567890
 }
 ```
@@ -607,24 +608,23 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
     "aSignal": {
       "protocol": 1,
       "data": "0x00003039",
-      "isProtocol": true,
       "useTiming": false,
       "timingBase64": "",
       "timingCount": 0,
       "repeatCount": 1
     },
-    "bSignals": [{
-      "protocol": 1,
-      "data": "0x00010932",
-      "isProtocol": true,
-      "useTiming": false,
-      "timingBase64": "",
-      "timingCount": 0,
-      "repeatCount": 1
-    }],
-    "bSignalCount": 1,
-    "intervals": [],
-    "repeatCount": 2
+    "bSequence": {
+      "signals": [{
+        "protocol": 1,
+        "data": "0x00010932",
+        "useTiming": false,
+        "timingBase64": "",
+        "timingCount": 0,
+        "repeatCount": 1
+      }],
+      "intervals": [],
+      "repeatCount": 2
+    }
   }
 }
 ```
@@ -638,23 +638,23 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
       "aSignal": {
         "protocol": 1,
         "data": "0x00003039",
-        "isProtocol": true,
         "useTiming": false,
         "timingBase64": "",
         "timingCount": 0,
         "repeatCount": 1
       },
-      "bSignals": [{
-        "protocol": 1,
-        "data": "0x00010932",
-        "isProtocol": true,
-        "useTiming": false,
-        "timingBase64": "",
-        "isProtocol": true
-      }],
-      "bSignalCount": 1,
-      "intervals": [],
-      "repeatCount": 1
+      "bSequence": {
+        "signals": [{
+          "protocol": 1,
+          "data": "0x00010932",
+          "useTiming": false,
+          "timingBase64": "",
+          "timingCount": 0,
+          "repeatCount": 1
+        }],
+        "intervals": [],
+        "repeatCount": 1
+      }
     }
   ]
 }
@@ -774,7 +774,6 @@ Payload：Base64字符串|repeatCount 或 [数组]|repeatCount 或 protocol,data
   "signal": {
     "protocol": 1,
     "data": "0x00003039",
-    "isProtocol": true,
     "useTiming": false,
     "timingBase64": "",
     "timingCount": 0,
@@ -915,8 +914,7 @@ data:
       "signal": {
         "protocol": 1,
         "data": "0x00003039",
-        "hash": "0x00000000",
-        "isProtocol": true
+        "useTiming": false
       },
       "repeatCount": 1
     }

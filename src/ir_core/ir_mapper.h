@@ -15,13 +15,8 @@ struct IR_MapRule {
     // A信号标识（使用统一信号结构）
     UnifiedSignal aSignal;
     
-    // B信号序列（最多5个，使用统一信号结构）
-    UnifiedSignal bSignals[MAX_B_SIGNALS_PER_RULE];
-    uint8_t bSignalCount;
-    
-    // 配置参数
-    uint16_t intervals[MAX_B_SIGNALS_PER_RULE - 1];  // 信号间隔（4个间隔对应5个信号）
-    uint8_t repeatCount;  // 重复次数（1-10）
+    // B信号序列（使用统一序列结构，包含信号数组、间隔数组和重复次数）
+    SignalSequence bSequence;
     
     bool valid;
     uint8_t id;  // 规则ID

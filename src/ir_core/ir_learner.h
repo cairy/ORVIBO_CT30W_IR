@@ -17,10 +17,11 @@ enum LearnMode {
 // 学习的指令结构
 struct LearnedCommand {
     char name[MAX_COMMAND_NAME_LEN];  // 指令名称
-    IRTiming timing[MAX_LEARN_TIMING_COUNT];  // 时序数据（总是保存）
+    IRTiming timing[MAX_LEARN_TIMING_COUNT];  // 时序数据（总是保存，用于单个信号）
     int timingCount;                  // 时序数量
-    UnifiedSignal signal;             // 统一信号（如果解析成功，包含协议信息；否则使用时序码）
+    UnifiedSignal signal;             // 统一信号（如果解析成功，包含协议信息；否则使用时序码，用于单个信号）
     bool hasProtocol;                 // 是否成功解析了协议
+    SignalSequence sequence;          // 信号序列（支持多个信号+间隔，单个信号时signalCount=1）
     bool valid;                       // 是否有效
 };
 

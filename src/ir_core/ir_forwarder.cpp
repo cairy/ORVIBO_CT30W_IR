@@ -56,26 +56,26 @@ void IRForwarder::update() {
             rule.aSignal.clear();
             rule.aSignal.protocol = task.signal_data[0] & 0xFF;
             rule.aSignal.data = task.signal_data[1];
-            rule.aSignal.isProtocol = true;
-            rule.aSignal.useTiming = false;
+            rule.aSignal.useTiming = false;  // 协议信号
             rule.aSignal.repeatCount = 1;
             
             // 构建B信号序列
-            rule.bSignalCount = task.signal_count;
-            for (int i = 0; i < rule.bSignalCount && i < MAX_B_SIGNALS_PER_RULE; i++) {
-                rule.bSignals[i].clear();
-                rule.bSignals[i].protocol = task.b_protocols[i];  // 使用队列中存储的协议信息
-                rule.bSignals[i].data = task.signal_data[i + 2];  // B信号数据从signal_data[2]开始
-                rule.bSignals[i].isProtocol = true;  // 假设都是协议信号（队列中存储的是data）
-                rule.bSignals[i].useTiming = false;
-                rule.bSignals[i].repeatCount = 1;
+            rule.bSequence.clear();
+            for (int i = 0; i < task.signal_count && i < MAX_B_SIGNALS_PER_RULE; i++) {
+                UnifiedSignal bSignal;
+                bSignal.clear();
+                bSignal.protocol = task.b_protocols[i];  // 使用队列中存储的协议信息
+                bSignal.data = task.signal_data[i + 2];  // B信号数据从signal_data[2]开始
+                bSignal.useTiming = false;  // 假设都是协议信号（队列中存储的是data）
+                bSignal.repeatCount = 1;
+                
+                uint16_t interval = 0;
+                if (i > 0 && i - 1 < MAX_B_SIGNALS_PER_RULE - 1) {
+                    interval = task.intervals[i - 1];
+                }
+                rule.bSequence.addSignal(bSignal, interval);
             }
-            
-            // 设置间隔和重复次数
-            for (int i = 0; i < rule.bSignalCount - 1 && i < MAX_B_SIGNALS_PER_RULE - 1; i++) {
-                rule.intervals[i] = task.intervals[i];
-            }
-            rule.repeatCount = task.repeat_count;
+            rule.bSequence.repeatCount = task.repeat_count;
             rule.valid = true;
             
             // 直接执行转发，使用队列中的数据
@@ -100,25 +100,26 @@ bool IRForwarder::forwardSignal(const UnifiedSignal& aSignal) {
     task.signal_id = 0;  // 不再使用signal_id
     task.signal_data[0] = aSignal.protocol;  // protocol
     task.signal_data[1] = aSignal.data;  // 完整的32位data
-    task.signal_count = rule->bSignalCount;
+    task.signal_count = rule->bSequence.signalCount;
     
     // B信号数据从signal_data[2]开始存储，同时存储协议信息
-    for (int i = 0; i < rule->bSignalCount && i < 3; i++) {  // 最多3个B信号（signal_data[2-4]）
-        if (rule->bSignals[i].useTiming) {
+    int signalCount = (rule->bSequence.signalCount < 3) ? rule->bSequence.signalCount : 3;
+    for (int i = 0; i < signalCount; i++) {  // 最多3个B信号（signal_data[2-4]）
+        if (rule->bSequence.signals[i].useTiming) {
             // 使用时序码：存储时序码Base64字符串的哈希（简化处理）
-            task.signal_data[i + 2] = rule->bSignals[i].timingBase64.length();  // 临时存储长度
+            task.signal_data[i + 2] = rule->bSequence.signals[i].timingBase64.length();  // 临时存储长度
         } else {
             // 使用协议：存储data
-            task.signal_data[i + 2] = rule->bSignals[i].data;
+            task.signal_data[i + 2] = rule->bSequence.signals[i].data;
         }
-        task.b_protocols[i] = rule->bSignals[i].protocol;  // 存储B信号协议
+        task.b_protocols[i] = rule->bSequence.signals[i].protocol;  // 存储B信号协议
     }
     
-    for (int i = 0; i < rule->bSignalCount - 1; i++) {
-        task.intervals[i] = rule->intervals[i];
+    for (int i = 0; i < signalCount - 1 && i < 2; i++) {
+        task.intervals[i] = rule->bSequence.intervals[i];
     }
     
-    task.repeat_count = rule->repeatCount;
+    task.repeat_count = rule->bSequence.repeatCount;
     task.valid = true;
     
     return queue.push(task);
@@ -132,7 +133,101 @@ bool IRForwarder::isEnabled() const {
     return enabled;
 }
 
+bool IRForwarder::sendSequence(const SignalSequence& sequence) {
+    if (!sequence.isValid() || sequence.signalCount == 0) {
+        return false;
+    }
+    
+    // 检查第一个信号是否使用时序码
+    bool useTiming = (sequence.signalCount > 0 && sequence.signals[0].useTiming);
+    
+    // 检查第一个信号是否为NEC协议（且不使用时序码）
+    bool isNEC = (sequence.signalCount > 0 && 
+                  !sequence.signals[0].useTiming &&
+                  sequence.signals[0].isProtocol() && 
+                  sequence.signals[0].protocol == 1);
+    
+    if (useTiming) {
+        // 使用时序码：直接发送时序码，包含精确的延迟
+        for (uint8_t repeat = 0; repeat < sequence.repeatCount; repeat++) {
+            // 发射每个信号
+            for (uint8_t i = 0; i < sequence.signalCount; i++) {
+                const UnifiedSignal& signal = sequence.signals[i];
+                
+                if (signal.useTiming && signal.hasTiming()) {
+                    // 加载时序码（创建非const副本）
+                    UnifiedSignal signalCopy = signal;
+                    if (signalCopy.loadTiming()) {
+                        transmitter.transmit(signalCopy.timing, signalCopy.timingCount);
+                        signalCopy.freeTiming();
+                    }
+                }
+                
+                // 信号间隔（最后一个信号后不需要间隔）
+                if (i < sequence.signalCount - 1) {
+                    delayPrecise(sequence.intervals[i]);
+                }
+            }
+            
+            // 重复间隔（最后一次重复后不需要间隔）
+            if (repeat < sequence.repeatCount - 1) {
+                delayPrecise(100);  // 默认100ms重复间隔
+            }
+        }
+    } else if (isNEC && sequence.signalCount == 1) {
+        // NEC协议单个信号：发送1次完整信号 + (repeatCount-1)次重复码
+        const UnifiedSignal& signal = sequence.signals[0];
+        
+        // 发送第一个完整信号
+        transmitter.sendNEC(signal.data, 32);
+        
+        // 发送重复码（如果repeatCount > 1）
+        if (sequence.repeatCount > 1) {
+            for (uint8_t r = 1; r < sequence.repeatCount; r++) {
+                delay(10);  // 最小延迟，确保信号完整发送
+                transmitter.sendNECRepeat();
+                
+                if (r < sequence.repeatCount - 1) {
+                    delay(40);  // 重复码间隔（标准NEC协议间隔）
+                }
+            }
+        }
+    } else {
+        // 其他协议或序列：使用自定义时序生成
+        for (uint8_t repeat = 0; repeat < sequence.repeatCount; repeat++) {
+            // 发射每个信号
+            for (uint8_t i = 0; i < sequence.signalCount; i++) {
+                const UnifiedSignal& signal = sequence.signals[i];
+                
+                int timingCount = 0;
+                if (compileSignal(signal, timingBuffer, timingCount) && timingCount > 0) {
+                    transmitter.transmit(timingBuffer, timingCount);
+                }
+                
+                // 信号间隔（最后一个信号后不需要间隔）
+                if (i < sequence.signalCount - 1) {
+                    delayPrecise(sequence.intervals[i]);
+                }
+            }
+            
+            // 重复间隔（最后一次重复后不需要间隔）
+            if (repeat < sequence.repeatCount - 1) {
+                delayPrecise(100);  // 默认100ms重复间隔
+            }
+        }
+    }
+    
+    logger.resetSignalInterval();  // 发送完成后重置信号间隔
+    return true;
+}
+
 bool IRForwarder::sendSignal(const UnifiedSignal& signal, uint8_t repeatCount) {
+    // 兼容层：将单个信号转换为序列，然后调用 sendSequence
+    SignalSequence sequence;
+    sequence.clear();
+    sequence.addSignal(signal, 0);
+    sequence.repeatCount = repeatCount;
+    return sendSequence(sequence);
     if (repeatCount == 0) repeatCount = 1;
     
     // 如果使用时序码，直接发送时序码
@@ -159,7 +254,7 @@ bool IRForwarder::sendSignal(const UnifiedSignal& signal, uint8_t repeatCount) {
     }
     
     // 使用协议发送
-    if (signal.isProtocol && signal.protocol == 1) {
+    if (signal.isProtocol() && signal.protocol == 1) {
         // NEC协议
         for (uint8_t i = 0; i < repeatCount; i++) {
             if (i == 0) {
@@ -174,7 +269,7 @@ bool IRForwarder::sendSignal(const UnifiedSignal& signal, uint8_t repeatCount) {
         }
         logger.resetSignalInterval();  // 发送完成后重置信号间隔
         return true;
-    } else if (signal.isProtocol) {
+    } else if (signal.isProtocol()) {
         // 其他协议：使用时序生成器
         int count = 0;
         if (generator.generateTiming(signal.protocol, signal.data, timingBuffer, count, 300)) {
@@ -227,7 +322,7 @@ bool IRForwarder::compileSignal(const UnifiedSignal& signal, IRTiming* timing, i
     if (signal.useTiming) {
         // 时序码信号：从Base64加载时序
         return SignalUtils::base64ToTiming(signal.timingBase64, timing, count, 300);
-    } else if (signal.isProtocol) {
+    } else if (signal.isProtocol()) {
         // 协议信号：使用时序生成器生成时序
         return generator.generateTiming(signal.protocol, signal.data, timing, count, 300);
     } else {
@@ -241,20 +336,20 @@ bool IRForwarder::executeForward(const IR_MapRule& rule) {
     unsigned long startTime = millis();
     
     // 检查第一个信号是否使用时序码
-    bool useTiming = (rule.bSignalCount > 0 && rule.bSignals[0].useTiming);
+    bool useTiming = (rule.bSequence.signalCount > 0 && rule.bSequence.signals[0].useTiming);
     
     // 检查第一个信号是否为NEC协议（且不使用时序码）
-    bool isNEC = (rule.bSignalCount > 0 && 
-                  !rule.bSignals[0].useTiming &&
-                  rule.bSignals[0].isProtocol && 
-                  rule.bSignals[0].protocol == 1);
+    bool isNEC = (rule.bSequence.signalCount > 0 && 
+                  !rule.bSequence.signals[0].useTiming &&
+                  rule.bSequence.signals[0].isProtocol() && 
+                  rule.bSequence.signals[0].protocol == 1);
     
     if (useTiming) {
         // 使用时序码：直接发送时序码，包含精确的延迟
-        for (uint8_t repeat = 0; repeat < rule.repeatCount; repeat++) {
+        for (uint8_t repeat = 0; repeat < rule.bSequence.repeatCount; repeat++) {
             // 发射每个B信号
-            for (uint8_t i = 0; i < rule.bSignalCount; i++) {
-                const UnifiedSignal& signal = rule.bSignals[i];
+            for (uint8_t i = 0; i < rule.bSequence.signalCount; i++) {
+                const UnifiedSignal& signal = rule.bSequence.signals[i];
                 
                 if (signal.useTiming && signal.hasTiming()) {
                     // 加载时序码（创建非const副本）
@@ -266,13 +361,13 @@ bool IRForwarder::executeForward(const IR_MapRule& rule) {
                 }
                 
                 // 信号间隔（最后一个信号后不需要间隔）
-                if (i < rule.bSignalCount - 1) {
-                    delayPrecise(rule.intervals[i]);
+                if (i < rule.bSequence.signalCount - 1) {
+                    delayPrecise(rule.bSequence.intervals[i]);
                 }
             }
             
             // 重复间隔（最后一次重复后不需要间隔）
-            if (repeat < rule.repeatCount - 1) {
+            if (repeat < rule.bSequence.repeatCount - 1) {
                 delayPrecise(100);  // 默认100ms重复间隔
             }
         }
@@ -280,18 +375,18 @@ bool IRForwarder::executeForward(const IR_MapRule& rule) {
         // NEC协议：发送1次完整信号 + (repeatCount-1)次重复码
         // 注意：开关机应该使用时序码，这里只处理其他按键（如音量、静音等）
         // 这些按键不需要额外的延迟，直接按NEC协议标准发送即可
-        const UnifiedSignal& signal = rule.bSignals[0];
+        const UnifiedSignal& signal = rule.bSequence.signals[0];
         
         // 发送第一个完整信号
         transmitter.sendNEC(signal.data, 32);
         
         // 发送重复码（如果repeatCount > 1）
-        if (rule.repeatCount > 1) {
-            for (uint8_t r = 1; r < rule.repeatCount; r++) {
+        if (rule.bSequence.repeatCount > 1) {
+            for (uint8_t r = 1; r < rule.bSequence.repeatCount; r++) {
                 delay(10);  // 最小延迟，确保信号完整发送
                 transmitter.sendNECRepeat();
                 
-                if (r < rule.repeatCount - 1) {
+                if (r < rule.bSequence.repeatCount - 1) {
                     delay(40);  // 重复码间隔（标准NEC协议间隔）
                 }
             }
@@ -300,10 +395,10 @@ bool IRForwarder::executeForward(const IR_MapRule& rule) {
         // 其他协议：使用自定义时序生成
         
         // 执行重复发射
-        for (uint8_t repeat = 0; repeat < rule.repeatCount; repeat++) {
+        for (uint8_t repeat = 0; repeat < rule.bSequence.repeatCount; repeat++) {
             // 发射每个B信号
-            for (uint8_t i = 0; i < rule.bSignalCount; i++) {
-                const UnifiedSignal& signal = rule.bSignals[i];
+            for (uint8_t i = 0; i < rule.bSequence.signalCount; i++) {
+                const UnifiedSignal& signal = rule.bSequence.signals[i];
                 
                 int timingCount = 0;
                 if (compileSignal(signal, timingBuffer, timingCount) && timingCount > 0) {
@@ -311,13 +406,13 @@ bool IRForwarder::executeForward(const IR_MapRule& rule) {
                 }
                 
                 // 信号间隔（最后一个信号后不需要间隔）
-                if (i < rule.bSignalCount - 1) {
-                    delayPrecise(rule.intervals[i]);
+                if (i < rule.bSequence.signalCount - 1) {
+                    delayPrecise(rule.bSequence.intervals[i]);
                 }
             }
             
             // 重复间隔（最后一次重复后不需要间隔）
-            if (repeat < rule.repeatCount - 1) {
+            if (repeat < rule.bSequence.repeatCount - 1) {
                 delayPrecise(100);  // 默认100ms重复间隔
             }
         }
@@ -352,9 +447,9 @@ bool IRForwarder::parseAndSendSignal(const String& payload) {
     IRLearner::SignalFormat format = IRLearner::detectSignalFormat(trimmed);
     
     if (format == IRLearner::FORMAT_SIGNALID) {
-        // UnifiedSignal对象格式（JSON）
+        // JSON格式：可能是单个信号或序列
         size_t jsonSize = trimmed.length() + 256;
-        if (jsonSize > 1024) jsonSize = 1024;
+        if (jsonSize > 2048) jsonSize = 2048;
         if (jsonSize < 256) jsonSize = 256;
         
         // 加强内存检查：确保有足够的内存
@@ -369,20 +464,39 @@ bool IRForwarder::parseAndSendSignal(const String& payload) {
             return false;
         }
         
-        JsonObject signalObj = doc["signal"];
-        if (signalObj.isNull()) {
+        // 检查是否为序列格式（包含 signals 数组）
+        if (doc.containsKey("signals")) {
+            // 序列格式
+            SignalSequence sequence;
+            JsonObject docObj = doc.as<JsonObject>();
+            if (!SignalUtils::sequenceFromJSON(docObj, sequence)) {
+                return false;
+            }
+            return sendSequence(sequence);
+        } else if (doc.containsKey("signal")) {
+            // 单个信号格式（兼容旧格式）
+            JsonObject signalObj = doc["signal"];
+            if (signalObj.isNull()) {
+                return false;
+            }
+            
+            uint8_t repeatCount = doc["repeatCount"] | 1;
+            
+            UnifiedSignal signal;
+            if (!SignalUtils::signalFromJSON(signalObj, signal)) {
+                return false;
+            }
+            signal.repeatCount = repeatCount;
+            
+            // 转换为序列格式发送
+            SignalSequence sequence;
+            sequence.clear();
+            sequence.addSignal(signal, 0);
+            sequence.repeatCount = repeatCount;
+            return sendSequence(sequence);
+        } else {
             return false;
         }
-        
-        uint8_t repeatCount = doc["repeatCount"] | 1;
-        
-        UnifiedSignal signal;
-        if (!SignalUtils::signalFromJSON(signalObj, signal)) {
-            return false;
-        }
-        signal.repeatCount = repeatCount;
-        
-        return sendSignal(signal, repeatCount);
     } else {
         // 字符串格式（Base64/数组/协议），使用统一解析函数
         UnifiedSignal signal;
@@ -393,11 +507,16 @@ bool IRForwarder::parseAndSendSignal(const String& payload) {
             return false;
         }
         
-        // 根据格式发送信号
+        // 根据格式发送信号（转换为序列格式）
+        SignalSequence sequence;
+        sequence.clear();
         if (format == IRLearner::FORMAT_PROTOCOL) {
             signal.repeatCount = repeatCount;
-            return sendSignal(signal, repeatCount);
+            sequence.addSignal(signal, 0);
+            sequence.repeatCount = repeatCount;
+            return sendSequence(sequence);
         } else {
+            // 时序码格式：直接发送原始时序
             return sendRawTiming(learnTimingBuffer, timingCount, repeatCount);
         }
     }

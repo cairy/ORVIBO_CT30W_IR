@@ -353,24 +353,21 @@ String APIHandlers::handleGetRecentSignals(Logger& logger) {
         return "";  // 内存不足
     }
     
-    RecentSignal signals[MAX_RECENT_SIGNALS];
-    int count = logger.getRecentSignals(signals, MAX_RECENT_SIGNALS);
+    SignalSequence sequences[MAX_RECENT_SIGNALS];
+    int count = logger.getRecentSignalSequences(sequences, MAX_RECENT_SIGNALS);
     
     // 构建JSON（只返回data部分）
-    size_t jsonSize = 256 + (count * 100);
-    if (jsonSize > 1536) jsonSize = 1536;
+    // 估算JSON大小：基础256字节 + 每个序列约200-500字节（取决于信号数量）
+    size_t jsonSize = 256 + (count * 500);
+    if (jsonSize > 2048) jsonSize = 2048;
     if (jsonSize < 512) jsonSize = 512;
     
     DynamicJsonDocument doc(jsonSize);
-    JsonArray signalsArray = doc.to<JsonArray>();
+    JsonArray sequencesArray = doc.to<JsonArray>();
     
     for (int i = 0; i < count; i++) {
-        JsonObject signalObj = signalsArray.createNestedObject();
-        signalObj["timestamp"] = signals[i].timestamp;
-        signalObj["matched"] = signals[i].matched;
-        
-        JsonObject signal = signalObj.createNestedObject("signal");
-        SignalUtils::signalToJSON(signals[i].signal, signal, true);
+        JsonObject seqObj = sequencesArray.createNestedObject();
+        SignalUtils::sequenceToJSON(sequences[i], seqObj, true);
     }
     
     String output;
@@ -397,9 +394,9 @@ String APIHandlers::handleSendSignal(IRForwarder& forwarder, const String& paylo
     
     // 如果检测到JSON格式（FORMAT_SIGNALID），按JSON格式解析
     if (format == IRLearner::FORMAT_SIGNALID) {
-        // UnifiedSignal对象格式（JSON）
+        // JSON格式：可能是单个信号或序列
         size_t jsonSize = trimmed.length() + 256;
-        if (jsonSize > 1024) jsonSize = 1024;
+        if (jsonSize > 2048) jsonSize = 2048;
         if (jsonSize < 256) jsonSize = 256;
         
         if (!MemoryMonitor::checkMemory(jsonSize + 512)) {
@@ -413,27 +410,52 @@ String APIHandlers::handleSendSignal(IRForwarder& forwarder, const String& paylo
             return "Invalid JSON";
         }
         
-        JsonObject signalObj = doc["signal"];
-        if (signalObj.isNull()) {
-            return "Missing 'signal' field";
-        }
-        
-        uint8_t repeatCount = doc["repeatCount"] | 1;
-        
-        UnifiedSignal signal;
-        if (!SignalUtils::signalFromJSON(signalObj, signal)) {
-            return "Invalid signal format";
-        }
-        signal.repeatCount = repeatCount;
-        
-        if (forwarder.sendSignal(signal, repeatCount)) {
-            success = true;
-            return "Signal sent";
+        // 检查是否为序列格式（包含 signals 数组）
+        if (doc.containsKey("signals")) {
+            // 序列格式
+            SignalSequence sequence;
+            JsonObject docObj = doc.as<JsonObject>();
+            if (!SignalUtils::sequenceFromJSON(docObj, sequence)) {
+                return "Invalid sequence format";
+            }
+            if (forwarder.sendSequence(sequence)) {
+                success = true;
+                return "Sequence sent";
+            } else {
+                return "Failed to send sequence";
+            }
+        } else if (doc.containsKey("signal")) {
+            // 单个信号格式（兼容旧格式）
+            JsonObject signalObj = doc["signal"];
+            if (signalObj.isNull()) {
+                return "Missing 'signal' field";
+            }
+            
+            uint8_t repeatCount = doc["repeatCount"] | 1;
+            
+            UnifiedSignal signal;
+            if (!SignalUtils::signalFromJSON(signalObj, signal)) {
+                return "Invalid signal format";
+            }
+            signal.repeatCount = repeatCount;
+            
+            // 转换为序列格式发送
+            SignalSequence sequence;
+            sequence.clear();
+            sequence.addSignal(signal, 0);
+            sequence.repeatCount = repeatCount;
+            
+            if (forwarder.sendSequence(sequence)) {
+                success = true;
+                return "Signal sent";
+            } else {
+                return "Failed to send signal";
+            }
         } else {
-            return "Failed to send signal";
+            return "Missing 'signals' or 'signal' field";
         }
     } else {
-        // 使用统一的解析和发送方法（字符串格式）
+        // 使用统一的解析和发送方法（字符串格式，内部已支持序列格式）
         if (forwarder.parseAndSendSignal(trimmed)) {
             success = true;
             return "Signal sent";

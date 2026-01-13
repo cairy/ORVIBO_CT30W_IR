@@ -39,7 +39,7 @@ void SignalUtils::signalToJSON(const UnifiedSignal& signal, JsonObject& obj, boo
     } else {
         obj["data"] = signal.data;
     }
-    obj["isProtocol"] = signal.isProtocol;
+    // 不再序列化 isProtocol，因为可以通过 useTiming 推导：isProtocol = !useTiming
     obj["useTiming"] = signal.useTiming;
     obj["timingCount"] = signal.timingCount;
     obj["repeatCount"] = signal.repeatCount;
@@ -60,8 +60,14 @@ bool SignalUtils::signalFromJSON(JsonObject& obj, UnifiedSignal& signal) {
     } else {
         signal.data = obj["data"] | 0;
     }
-    signal.isProtocol = obj["isProtocol"] | false;
-    signal.useTiming = obj["useTiming"] | false;
+    // 兼容旧格式：如果存在 isProtocol 字段，根据它设置 useTiming
+    // 新格式只使用 useTiming 字段
+    if (obj.containsKey("isProtocol")) {
+        bool isProtocol = obj["isProtocol"] | false;
+        signal.useTiming = !isProtocol;
+    } else {
+        signal.useTiming = obj["useTiming"] | false;
+    }
     signal.timingCount = obj["timingCount"] | 0;
     signal.repeatCount = obj["repeatCount"] | 1;
     
@@ -81,7 +87,6 @@ bool SignalUtils::copySignal(const UnifiedSignal& src, UnifiedSignal& dst) {
     
     dst.protocol = src.protocol;
     dst.data = src.data;
-    dst.isProtocol = src.isProtocol;
     dst.useTiming = src.useTiming;
     dst.timingBase64 = src.timingBase64;
     dst.timingCount = src.timingCount;
@@ -109,7 +114,7 @@ bool SignalUtils::signalsEqual(const UnifiedSignal& a, const UnifiedSignal& b) {
         return a.timingBase64 == b.timingBase64 && a.timingCount == b.timingCount;
     } else {
         // 使用协议：比较protocol和data
-        return a.isProtocol == b.isProtocol &&
+        return a.isProtocol() == b.isProtocol() &&
                a.protocol == b.protocol &&
                a.data == b.data;
     }
@@ -304,4 +309,134 @@ bool SignalUtils::base64ToTiming(const String& base64, IRTiming* timing, int& co
     }
     
     return (count > 0);
+}
+
+void SignalUtils::sequenceToJSON(const SignalSequence& seq, JsonObject& obj, bool hexFormat) {
+    // 信号数组
+    JsonArray signalsArray = obj.createNestedArray("signals");
+    for (int i = 0; i < seq.signalCount; i++) {
+        JsonObject signalObj = signalsArray.createNestedObject();
+        signalToJSON(seq.signals[i], signalObj, hexFormat);
+    }
+    
+    // 间隔数组
+    JsonArray intervalsArray = obj.createNestedArray("intervals");
+    for (int i = 0; i < seq.signalCount - 1; i++) {
+        intervalsArray.add(seq.intervals[i]);
+    }
+    
+    // 重复次数
+    obj["repeatCount"] = seq.repeatCount;
+    
+    // 辅助字段（如果有效）
+    if (seq.timestamp > 0) {
+        obj["timestamp"] = seq.timestamp;
+    }
+    if (seq.valid) {
+        obj["matched"] = seq.matched;
+    }
+}
+
+bool SignalUtils::sequenceFromJSON(JsonObject& obj, SignalSequence& seq) {
+    seq.clear();
+    
+    // 解析信号数组
+    if (!obj.containsKey("signals")) {
+        return false;
+    }
+    JsonArray signalsArray = obj["signals"];
+    if (signalsArray.isNull() || signalsArray.size() == 0) {
+        return false;
+    }
+    
+    int signalCount = 0;
+    for (JsonObject signalObj : signalsArray) {
+        if (signalCount >= MAX_B_SIGNALS_PER_RULE) {
+            break;
+        }
+        if (!signalFromJSON(signalObj, seq.signals[signalCount])) {
+            return false;
+        }
+        signalCount++;
+    }
+    
+    if (signalCount == 0) {
+        return false;
+    }
+    seq.signalCount = signalCount;
+    
+    // 解析间隔数组
+    if (obj.containsKey("intervals")) {
+        JsonArray intervalsArray = obj["intervals"];
+        int intervalCount = 0;
+        for (uint16_t interval : intervalsArray) {
+            if (intervalCount >= MAX_B_SIGNALS_PER_RULE - 1) {
+                break;
+            }
+            if (intervalCount < seq.signalCount - 1) {
+                seq.intervals[intervalCount] = interval;
+            }
+            intervalCount++;
+        }
+    }
+    
+    // 解析重复次数
+    seq.repeatCount = obj["repeatCount"] | 1;
+    if (seq.repeatCount == 0) {
+        seq.repeatCount = 1;
+    }
+    
+    // 解析辅助字段（可选）
+    seq.timestamp = obj["timestamp"] | 0;
+    seq.matched = obj["matched"] | false;
+    seq.valid = true;
+    
+    return seq.isValid();
+}
+
+bool SignalUtils::copySequence(const SignalSequence& src, SignalSequence& dst) {
+    dst.clear();
+    
+    // 拷贝信号数组
+    for (int i = 0; i < src.signalCount; i++) {
+        if (!copySignal(src.signals[i], dst.signals[i])) {
+            return false;
+        }
+    }
+    dst.signalCount = src.signalCount;
+    
+    // 拷贝间隔数组
+    for (int i = 0; i < src.signalCount - 1; i++) {
+        dst.intervals[i] = src.intervals[i];
+    }
+    
+    // 拷贝其他字段
+    dst.repeatCount = src.repeatCount;
+    dst.timestamp = src.timestamp;
+    dst.matched = src.matched;
+    dst.valid = src.valid;
+    
+    return true;
+}
+
+bool SignalUtils::sequencesEqual(const SignalSequence& a, const SignalSequence& b) {
+    if (a.signalCount != b.signalCount) {
+        return false;
+    }
+    
+    // 比较信号
+    for (int i = 0; i < a.signalCount; i++) {
+        if (!signalsEqual(a.signals[i], b.signals[i])) {
+            return false;
+        }
+    }
+    
+    // 比较间隔
+    for (int i = 0; i < a.signalCount - 1; i++) {
+        if (a.intervals[i] != b.intervals[i]) {
+            return false;
+        }
+    }
+    
+    return true;
 }

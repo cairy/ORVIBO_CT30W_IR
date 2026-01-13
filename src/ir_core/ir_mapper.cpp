@@ -54,11 +54,6 @@ bool IRMapper::initDefaultMappings() {
     // 创建映射规则
     IR_MapRule rule;
     
-    // 初始化间隔数组
-    for (int i = 0; i < MAX_B_SIGNALS_PER_RULE - 1; i++) {
-        rule.intervals[i] = 0;
-    }
-    
     // 定义所有默认规则
     struct DefaultRule {
         uint32_t sourceData;
@@ -77,16 +72,11 @@ bool IRMapper::initDefaultMappings() {
     
     // 初始化基础规则结构
     rule.aSignal.protocol = NEC_PROTOCOL;
-    rule.aSignal.isProtocol = true;
-    rule.aSignal.useTiming = false;
+    rule.aSignal.useTiming = false;  // 协议信号
     rule.aSignal.repeatCount = 1;
     
-    rule.bSignalCount = 1;
-    rule.bSignals[0].protocol = NEC_PROTOCOL;
-    rule.bSignals[0].isProtocol = true;
-    rule.bSignals[0].useTiming = false;
-    rule.bSignals[0].repeatCount = 1;
-    
+    rule.bSequence.clear();
+    rule.bSequence.repeatCount = 1;
     rule.valid = true;
     
     // 批量添加规则，不立即保存（节省内存）
@@ -95,8 +85,16 @@ bool IRMapper::initDefaultMappings() {
     
     for (int i = 0; i < totalRules; i++) {
         rule.aSignal.data = defaultRules[i].sourceData;
-        rule.bSignals[0].data = defaultRules[i].targetData;
-        rule.repeatCount = defaultRules[i].repeatCount;
+        
+        // 构建B信号序列
+        rule.bSequence.clear();
+        UnifiedSignal bSignal;
+        bSignal.protocol = NEC_PROTOCOL;
+        bSignal.useTiming = false;  // 协议信号
+        bSignal.data = defaultRules[i].targetData;
+        bSignal.repeatCount = 1;
+        rule.bSequence.addSignal(bSignal, 0);
+        rule.bSequence.repeatCount = defaultRules[i].repeatCount;
         
         if (addRule(rule, false)) {
             successCount++;
@@ -235,9 +233,9 @@ bool IRMapper::isSignalInMappings(const UnifiedSignal& signal) {
     for (int i = 0; i < MAX_MAP_RULES; i++) {
         if (!rules[i].valid) continue;
         
-        // 检查B信号
-        for (int j = 0; j < rules[i].bSignalCount; j++) {
-            if (SignalUtils::signalsEqual(signal, rules[i].bSignals[j])) {
+        // 检查B信号序列
+        for (int j = 0; j < rules[i].bSequence.signalCount; j++) {
+            if (SignalUtils::signalsEqual(signal, rules[i].bSequence.signals[j])) {
                 return true;
             }
         }
@@ -717,22 +715,9 @@ void IRMapper::ruleToJsonObject(const IR_MapRule& rule, JsonObject& obj, bool he
     JsonObject aSignal = obj.createNestedObject("aSignal");
     SignalUtils::signalToJSON(rule.aSignal, aSignal, hexFormat);
     
-    // B信号序列（使用统一序列化方法）
-    JsonArray bSignals = obj.createNestedArray("bSignals");
-    for (int j = 0; j < rule.bSignalCount; j++) {
-        JsonObject bSignal = bSignals.createNestedObject();
-        SignalUtils::signalToJSON(rule.bSignals[j], bSignal, hexFormat);
-    }
-    
-    obj["bSignalCount"] = rule.bSignalCount;
-    
-    // 间隔
-    JsonArray intervals = obj.createNestedArray("intervals");
-    for (int j = 0; j < rule.bSignalCount - 1; j++) {
-        intervals.add(rule.intervals[j]);
-    }
-    
-    obj["repeatCount"] = rule.repeatCount;
+    // B信号序列（使用统一序列序列化方法）
+    JsonObject bSequence = obj.createNestedObject("bSequence");
+    SignalUtils::sequenceToJSON(rule.bSequence, bSequence, hexFormat);
 }
 
 // 统一的JSON转规则方法
@@ -748,40 +733,58 @@ bool IRMapper::jsonObjectToRule(JsonObject& obj, IR_MapRule& rule) {
         return false;
     }
     
-    // B信号序列（使用统一反序列化方法）
-    if (!obj.containsKey("bSignals")) {
-        return false;  // 缺少bSignals字段
-    }
-    JsonArray bSignals = obj["bSignals"];
-    if (bSignals.isNull() || bSignals.size() == 0) {
-        return false;  // bSignals数组为空
-    }
-    
-    rule.bSignalCount = 0;
-    for (JsonObject bSignal : bSignals) {
-        if (rule.bSignalCount >= MAX_B_SIGNALS_PER_RULE) break;
-        
-        if (!SignalUtils::signalFromJSON(bSignal, rule.bSignals[rule.bSignalCount])) {
+    // B信号序列（使用统一序列反序列化方法）
+    // 兼容旧格式：如果存在 bSignals 数组，转换为新格式
+    if (obj.containsKey("bSequence")) {
+        JsonObject bSequence = obj["bSequence"];
+        if (bSequence.isNull()) {
             return false;
         }
-        rule.bSignalCount++;
+        if (!SignalUtils::sequenceFromJSON(bSequence, rule.bSequence)) {
+            return false;
+        }
+    } else if (obj.containsKey("bSignals")) {
+        // 兼容旧格式：从 bSignals 数组和 intervals 数组构建序列
+        JsonArray bSignals = obj["bSignals"];
+        if (bSignals.isNull() || bSignals.size() == 0) {
+            return false;
+        }
+        
+        rule.bSequence.clear();
+        JsonArray intervals = obj["intervals"];
+        int intervalIndex = 0;
+        
+        for (JsonObject bSignal : bSignals) {
+            if (rule.bSequence.signalCount >= MAX_B_SIGNALS_PER_RULE) break;
+            
+            UnifiedSignal signal;
+            if (!SignalUtils::signalFromJSON(bSignal, signal)) {
+                return false;
+            }
+            
+            uint16_t interval = 0;
+            if (intervalIndex < intervals.size() && intervalIndex < rule.bSequence.signalCount) {
+                interval = intervals[intervalIndex];
+            }
+            
+            if (!rule.bSequence.addSignal(signal, interval)) {
+                return false;
+            }
+            intervalIndex++;
+        }
+        
+        if (rule.bSequence.signalCount == 0) {
+            return false;
+        }
+        
+        rule.bSequence.repeatCount = obj["repeatCount"] | 1;
+        if (rule.bSequence.repeatCount == 0) {
+            rule.bSequence.repeatCount = 1;
+        }
+    } else {
+        return false;  // 缺少bSequence或bSignals字段
     }
     
-    // 验证至少有一个B信号
-    if (rule.bSignalCount == 0) {
-        return false;
-    }
-    
-    // 间隔
-    JsonArray intervals = obj["intervals"];
-    int intervalCount = 0;
-    for (uint16_t interval : intervals) {
-        if (intervalCount >= MAX_B_SIGNALS_PER_RULE - 1) break;
-        rule.intervals[intervalCount++] = interval;
-    }
-    
-    rule.repeatCount = obj["repeatCount"] | 1;
     rule.valid = true;
-    
     return true;
 }
