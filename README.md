@@ -301,6 +301,13 @@ GET http://设备IP/api/learn/status
 3. 当`progress`变化时，表示当前信号学习成功，可以继续下一个信号
 4. 当学习完成时，调用`/api/learn/result`获取学习结果
 
+**重复信号检测：**
+- 学习过程中会自动检测重复信号
+- 如果连续接收到相同的信号，会在日志中记录并显示时间间隔
+- 日志格式：`检测到重复信号: [信号描述]，间隔: [间隔]ms`
+- 重复信号仍会被保存（不去重），便于用户了解信号接收情况
+- 可通过串口输出或日志API查看重复信号信息
+
 **停止设备学习：**
 ```bash
 POST http://设备IP/api/learn/stop
@@ -989,6 +996,31 @@ automation:
 - **映射规则不生效**：检查规则格式和 A 信号匹配，查看串口日志
 
 ### 调试技巧
+
+**串口信号输出格式：**
+
+设备接收到红外信号时，会在串口输出以下格式的信息：
+
+- **协议信号**：
+  ```
+  [receive] Protocol:1, Data:11B08F7, Matched:Yes, Interval:245ms
+  ```
+  - `Protocol`: 协议类型（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung）
+  - `Data`: 协议数据（十六进制）
+  - `Matched`: 是否在映射表中匹配
+  - `Interval`: 与前一个信号的时间间隔（毫秒，首次信号不显示）
+
+- **时序码信号**：
+  ```
+  [receive] Timing:156 points, Base64:ABC123XYZ456... (208 chars), Matched:No, Interval:312ms
+  ```
+  - `Timing`: 时序点数
+  - `Base64`: Base64字符串的前16个字符（用于识别）+ 总长度
+  - `Matched`: 是否在映射表中匹配
+  - `Interval`: 与前一个信号的时间间隔（毫秒，首次信号不显示）
+
+所有信号都会记录到`recentSignals`缓冲区（最近3个），可通过`/api/signals/recent` API查询。
+
 ```cpp
 // 检查内存（方式一：直接使用ESP API）
 Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
@@ -1044,7 +1076,10 @@ Serial.printf("Total: %d, Used: %d\n", fs_info.totalBytes, fs_info.usedBytes);
   - 重复信号（电源）：移除初始延迟，直接发送信号
   - 重复码间隔：从50ms优化到40ms（提升20%）
 - **IRsend库集成**：NEC协议使用IRremoteESP8266库的IRsend直接发送，时序更准确，性能更好
-- **日志记录优化**：仅在调试模式或匹配失败时记录日志，减少转发路径上的开销（非调试模式下减少约80%日志开销）
+- **信号记录优化**：所有信号都输出到串口和recentSignals缓冲区，不再写入日志缓冲区和MQTT推送，大幅减少转发路径上的开销
+  - 串口输出包含信号详情（协议信号显示协议和数据，时序码信号显示时序点数和Base64前缀）
+  - 显示与前一个信号的时间间隔，便于调试
+  - recentSignals缓冲区保留最近3个信号，可通过API查询
 - **减少调试输出**：移除不必要的Serial输出，减少阻塞时间
 
 #### 间隔误差优化
