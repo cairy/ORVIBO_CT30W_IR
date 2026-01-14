@@ -8,7 +8,8 @@
 #include <ArduinoJson.h>
 
 IRForwarder::IRForwarder(IRMapper& mapper, IRTransmitter& transmitter, MessageQueue& queue, Logger& logger)
-    : mapper(mapper), transmitter(transmitter), queue(queue), logger(logger), forwarding(false), enabled(true) {
+    : mapper(mapper), transmitter(transmitter), queue(queue), logger(logger), forwarding(false), enabled(true),
+      delayState(FORWARD_DELAY_IDLE), pendingTaskValid(false) {
     // 初始化预编译缓存
     for (int i = 0; i < MAX_MAP_RULES; i++) {
         for (int j = 0; j < MAX_B_SIGNALS_PER_RULE; j++) {
@@ -17,6 +18,15 @@ IRForwarder::IRForwarder(IRMapper& mapper, IRTransmitter& transmitter, MessageQu
             compiledSignals[i][j].valid = false;
         }
     }
+    
+    // 初始化重复信号转发优化相关状态
+    lastReceivedSignal.valid = false;
+    lastReceivedSignal.timestamp = 0;
+    lastReceivedSignal.isRepeatCode = false;
+    
+    lastFullSignalRule.valid = false;
+    lastFullSignalRule.ruleId = 0;
+    lastFullSignalRule.timestamp = 0;
 }
 
 bool IRForwarder::init() {
@@ -39,6 +49,48 @@ bool IRForwarder::init() {
 }
 
 void IRForwarder::update() {
+    // 处理延时状态机
+    processDelayState();
+    
+    // 如果延时完成且有待转发任务，执行转发
+    if (delayState == FORWARD_DELAY_READY && pendingTaskValid) {
+        // 从pendingTask构建规则并执行转发
+        IR_MapRule rule;
+        
+        // 解析A信号（虽然不需要，但保留用于调试）
+        rule.aSignal.clear();
+        rule.aSignal.protocol = pendingTask.signal_data[0] & 0xFF;
+        rule.aSignal.data = pendingTask.signal_data[1];
+        rule.aSignal.useTiming = false;  // 协议信号
+        rule.aSignal.repeatCount = 1;
+        
+        // 构建B信号序列
+        rule.bSequence.clear();
+        for (int i = 0; i < pendingTask.signal_count && i < MAX_B_SIGNALS_PER_RULE; i++) {
+            UnifiedSignal bSignal;
+            bSignal.clear();
+            bSignal.protocol = pendingTask.b_protocols[i];
+            bSignal.data = pendingTask.signal_data[i + 2];
+            bSignal.useTiming = false;
+            bSignal.repeatCount = 1;
+            
+            uint16_t interval = 0;
+            if (i > 0 && i - 1 < MAX_B_SIGNALS_PER_RULE - 1) {
+                interval = pendingTask.intervals[i - 1];
+            }
+            rule.bSequence.addSignal(bSignal, interval);
+        }
+        rule.bSequence.repeatCount = pendingTask.repeat_count;
+        rule.valid = true;
+        
+        // 执行转发
+        executeForward(rule);
+        
+        // 清除待转发任务
+        pendingTaskValid = false;
+        delayState = FORWARD_DELAY_IDLE;
+    }
+    
     // 优化：如果正在转发，快速返回，避免阻塞
     if (forwarding) {
         return;
@@ -89,40 +141,148 @@ bool IRForwarder::forwardSignal(const UnifiedSignal& aSignal) {
         return false;  // 转发功能已禁用
     }
     
-    IR_MapRule* rule = mapper.findRule(aSignal);
-    if (rule == nullptr) {
-        return false;
-    }
+    unsigned long now = millis();
+    bool isRepeat = isRepeatCode(aSignal);
     
-    // 通过消息队列提交任务
-    ForwardTask task;
-    // 使用signal_data[0]存储protocol，signal_data[1]存储data，避免24位截断
-    task.signal_id = 0;  // 不再使用signal_id
-    task.signal_data[0] = aSignal.protocol;  // protocol
-    task.signal_data[1] = aSignal.data;  // 完整的32位data
-    task.signal_count = rule->bSequence.signalCount;
-    
-    // B信号数据从signal_data[2]开始存储，同时存储协议信息
-    int signalCount = (rule->bSequence.signalCount < 3) ? rule->bSequence.signalCount : 3;
-    for (int i = 0; i < signalCount; i++) {  // 最多3个B信号（signal_data[2-4]）
-        if (rule->bSequence.signals[i].useTiming) {
-            // 使用时序码：存储时序码Base64字符串的哈希（简化处理）
-            task.signal_data[i + 2] = rule->bSequence.signals[i].timingBase64.length();  // 临时存储长度
-        } else {
-            // 使用协议：存储data
-            task.signal_data[i + 2] = rule->bSequence.signals[i].data;
+    // 处理完整信号
+    if (!isRepeat) {
+        // 记录接收时间戳
+        lastReceivedSignal.valid = true;
+        lastReceivedSignal.timestamp = now;
+        lastReceivedSignal.isRepeatCode = false;
+        
+        // 清除之前保存的规则（确保重复码对应最新信号）
+        lastFullSignalRule.valid = false;
+        
+        // 查找映射规则
+        IR_MapRule* rule = mapper.findRule(aSignal);
+        if (rule == nullptr) {
+            return false;  // 未找到规则，不转发
         }
-        task.b_protocols[i] = rule->bSequence.signals[i].protocol;  // 存储B信号协议
+        
+        // 保存规则ID和A信号
+        lastFullSignalRule.valid = true;
+        lastFullSignalRule.ruleId = rule->id;
+        lastFullSignalRule.aSignal = aSignal;  // 保存A信号用于验证协议匹配
+        lastFullSignalRule.timestamp = now;
+        
+        // 创建转发任务
+        ForwardTask task;
+        if (!createForwardTask(*rule, task)) {
+            return false;
+        }
+        
+        // 开始非阻塞延时40ms
+        if (delayTimer.startDelay(FORWARD_DELAY_BEFORE_SEND_MS)) {
+            delayState = FORWARD_DELAY_WAITING;
+            pendingTask = task;
+            pendingTaskValid = true;
+            return true;
+        } else {
+            // 延时启动失败，直接通过队列转发（兼容旧逻辑）
+            return queue.push(task);
+        }
     }
-    
-    for (int i = 0; i < signalCount - 1 && i < 2; i++) {
-        task.intervals[i] = rule->bSequence.intervals[i];
+    // 处理重复码
+    else {
+        // 检查保存的规则是否超时
+        if (!lastFullSignalRule.valid) {
+            return false;  // 没有保存的规则，丢弃重复码
+        }
+        
+        // 计算时间间隔
+        if (!lastReceivedSignal.valid) {
+            return false;  // 没有上一个接收信号，丢弃
+        }
+        
+        unsigned long interval = safeInterval(now, lastReceivedSignal.timestamp);
+        
+        // 检查间隔是否在100-120ms范围内
+        if (interval < A_REPEAT_INTERVAL_MIN_MS || interval > A_REPEAT_INTERVAL_MAX_MS) {
+            // 间隔不在范围内，判断为B信号的重复码，丢弃
+            // 但是仍然更新接收时间戳，以便正确计算下一个重复码的时间间隔
+            lastReceivedSignal.timestamp = now;
+            lastReceivedSignal.isRepeatCode = true;
+            return false;
+        }
+        
+        // 检查协议是否匹配
+        if (aSignal.protocol != lastFullSignalRule.aSignal.protocol) {
+            // 协议不匹配，判断为B信号的重复码，丢弃
+            // 但是仍然更新接收时间戳，以便正确计算下一个重复码的时间间隔
+            lastReceivedSignal.timestamp = now;
+            lastReceivedSignal.isRepeatCode = true;
+            return false;
+        }
+        
+        // 间隔和协议都匹配，这是A信号的重复码
+        // 检查规则是否超时（在确认是A信号重复码后检查）
+        unsigned long ruleAge = safeInterval(now, lastFullSignalRule.timestamp);
+        if (ruleAge > REPEAT_RULE_TIMEOUT_MS) {
+            // 规则超时，但如果间隔和协议都匹配，说明这是A信号的重复码，重置超时计时器
+            lastFullSignalRule.timestamp = now;  // 重置超时计时器
+        }
+        
+        // 匹配成功，这是A信号的重复码
+        // 更新接收时间戳
+        lastReceivedSignal.timestamp = now;
+        lastReceivedSignal.isRepeatCode = true;
+        
+        // 重置规则超时计时器（因为这是A信号的重复码，说明用户还在持续按键）
+        lastFullSignalRule.timestamp = now;
+        
+        // 通过规则ID重新查找规则
+        IR_MapRule rule;
+        if (!mapper.getRule(lastFullSignalRule.ruleId, rule)) {
+            // 规则无效（被删除），清除保存的状态
+            lastFullSignalRule.valid = false;
+            return false;
+        }
+        
+        // 检查是否正在转发（智能合并）
+        if (isForwarding()) {
+            // 正在转发，尝试合并到当前转发序列
+            // 注意：由于转发是同步的，这里实际上无法直接合并
+            // 所以如果正在转发，我们仍然创建新任务，但会增加repeatCount
+            // 实际合并逻辑需要在转发过程中处理，这里简化处理
+        }
+        
+        // 创建转发任务（重复码转发）
+        ForwardTask task;
+        if (!createForwardTask(rule, task)) {
+            return false;
+        }
+        
+        // 重复码转发时的B信号生成规则
+        // 如果B协议是NEC且B序列只有一个信号：发送NEC重复码
+        bool isBNEC = (rule.bSequence.signalCount == 1 && 
+                       !rule.bSequence.signals[0].useTiming &&
+                       rule.bSequence.signals[0].isProtocol() &&
+                       rule.bSequence.signals[0].protocol == 1);
+        
+        if (isBNEC) {
+            // NEC重复码：修改B信号为重复码
+            task.signal_data[2] = NEC_REPEAT_CODE;
+            task.repeat_count = 1;  // 重复码只发送一次
+        } else if (rule.bSequence.signalCount == 1) {
+            // B协议不支持重复码：发送完整B信号
+            task.repeat_count = 1;
+        } else {
+            // B序列有多个信号：重复整个序列
+            task.repeat_count = 1;  // 重复码对应一次序列重复
+        }
+        
+        // 开始非阻塞延时40ms
+        if (delayTimer.startDelay(FORWARD_DELAY_BEFORE_SEND_MS)) {
+            delayState = FORWARD_DELAY_WAITING;
+            pendingTask = task;
+            pendingTaskValid = true;
+            return true;
+        } else {
+            // 延时启动失败，直接通过队列转发
+            return queue.push(task);
+        }
     }
-    
-    task.repeat_count = rule->bSequence.repeatCount;
-    task.valid = true;
-    
-    return queue.push(task);
 }
 
 void IRForwarder::setEnabled(bool enabled) {
@@ -175,18 +335,23 @@ bool IRForwarder::sendSequence(const SignalSequence& sequence) {
             }
         }
     } else if (isNEC && sequence.signalCount == 1) {
-        // NEC协议单个信号：发送1次完整信号 + (repeatCount-1)次重复码
-        // 按照NEC协议标准：完整信号后110ms发送重复码，重复码之间间隔110ms
+        // NEC协议单个信号：检查是否为重复码
         const UnifiedSignal& signal = sequence.signals[0];
         
-        // 发送第一个完整信号
-        transmitter.sendNEC(signal.data, 32);
-        
-        // 发送重复码（如果repeatCount > 1）
-        if (sequence.repeatCount > 1) {
-            for (uint8_t r = 1; r < sequence.repeatCount; r++) {
-                delay(110);  // NEC协议标准间隔：110ms
-                transmitter.sendNECRepeat();
+        if (signal.data == NEC_REPEAT_CODE) {
+            // 这是NEC重复码，直接发送重复码
+            transmitter.sendNECRepeat();
+        } else {
+            // 完整信号：发送1次完整信号 + (repeatCount-1)次重复码
+            // 按照NEC协议标准：完整信号后110ms发送重复码，重复码之间间隔110ms
+            transmitter.sendNEC(signal.data, 32);
+            
+            // 发送重复码（如果repeatCount > 1）
+            if (sequence.repeatCount > 1) {
+                for (uint8_t r = 1; r < sequence.repeatCount; r++) {
+                    delay(110);  // NEC协议标准间隔：110ms
+                    transmitter.sendNECRepeat();
+                }
             }
         }
     } else {
@@ -320,20 +485,58 @@ bool IRForwarder::executeForward(const IR_MapRule& rule) {
                 delayPrecise(100);  // 默认100ms重复间隔
             }
         }
-    } else if (isNEC) {
-        // NEC协议：发送1次完整信号 + (repeatCount-1)次重复码
-        // 按照NEC协议标准：完整信号后110ms发送重复码，重复码之间间隔110ms
-        // 注意：如果需要非标准间隔，应使用时序码序列结构
+    } else if (isNEC && rule.bSequence.signalCount == 1) {
+        // NEC协议单个信号：检查是否为重复码
         const UnifiedSignal& signal = rule.bSequence.signals[0];
         
-        // 发送第一个完整信号
-        transmitter.sendNEC(signal.data, 32);
-        
-        // 发送重复码（如果repeatCount > 1）
-        if (rule.bSequence.repeatCount > 1) {
-            for (uint8_t r = 1; r < rule.bSequence.repeatCount; r++) {
-                delay(110);  // NEC协议标准间隔：110ms
-                transmitter.sendNECRepeat();
+        if (signal.data == NEC_REPEAT_CODE) {
+            // 这是NEC重复码，直接发送重复码
+            transmitter.sendNECRepeat();
+        } else {
+            // 完整信号：发送1次完整信号 + (repeatCount-1)次重复码
+            // 按照NEC协议标准：完整信号后110ms发送重复码，重复码之间间隔110ms
+            transmitter.sendNEC(signal.data, 32);
+            
+            // 发送重复码（如果repeatCount > 1）
+            if (rule.bSequence.repeatCount > 1) {
+                for (uint8_t r = 1; r < rule.bSequence.repeatCount; r++) {
+                    delay(110);  // NEC协议标准间隔：110ms
+                    transmitter.sendNECRepeat();
+                }
+            }
+        }
+    } else if (isNEC && rule.bSequence.signalCount > 1) {
+        // NEC协议多个信号：需要检查每个信号是否为重复码
+        // 执行重复发射
+        for (uint8_t repeat = 0; repeat < rule.bSequence.repeatCount; repeat++) {
+            // 发射每个B信号
+            for (uint8_t i = 0; i < rule.bSequence.signalCount; i++) {
+                const UnifiedSignal& signal = rule.bSequence.signals[i];
+                
+                // 检查是否为NEC重复码
+                if (signal.protocol == 1 && signal.data == NEC_REPEAT_CODE && !signal.useTiming) {
+                    // 这是NEC重复码，使用sendNECRepeat()发送
+                    transmitter.sendNECRepeat();
+                } else if (signal.protocol == 1 && !signal.useTiming) {
+                    // NEC协议完整信号，使用sendNEC()发送
+                    transmitter.sendNEC(signal.data, 32);
+                } else {
+                    // 其他信号：使用自定义时序生成
+                    int timingCount = 0;
+                    if (compileSignal(signal, timingBuffer, timingCount) && timingCount > 0) {
+                        transmitter.transmit(timingBuffer, timingCount);
+                    }
+                }
+                
+                // 信号间隔（最后一个信号后不需要间隔）
+                if (i < rule.bSequence.signalCount - 1) {
+                    delayPrecise(rule.bSequence.intervals[i]);
+                }
+            }
+            
+            // 重复间隔（最后一次重复后不需要间隔）
+            if (repeat < rule.bSequence.repeatCount - 1) {
+                delayPrecise(100);  // 默认100ms重复间隔
             }
         }
     } else {
@@ -465,4 +668,59 @@ bool IRForwarder::parseAndSendSignal(const String& payload) {
             return sendRawTiming(learnTimingBuffer, timingCount, repeatCount);
         }
     }
+}
+
+bool IRForwarder::isRepeatCode(const UnifiedSignal& signal) {
+    // NEC协议重复码：protocol == 1 && data == 0xFFFFFFFF
+    return (signal.protocol == 1 && 
+            signal.data == NEC_REPEAT_CODE && 
+            !signal.useTiming);
+}
+
+unsigned long IRForwarder::safeInterval(unsigned long now, unsigned long lastTime) {
+    // 处理millis()溢出情况
+    if (now >= lastTime) {
+        return now - lastTime;
+    } else {
+        // 溢出情况：计算从lastTime到最大值，再到now的间隔
+        return ((0xFFFFFFFFUL - lastTime) + now);
+    }
+}
+
+void IRForwarder::processDelayState() {
+    if (delayState == FORWARD_DELAY_WAITING) {
+        if (delayTimer.isDelayComplete()) {
+            delayState = FORWARD_DELAY_READY;
+        }
+    }
+}
+
+bool IRForwarder::createForwardTask(const IR_MapRule& rule, ForwardTask& task) {
+    // 使用signal_data[0]存储protocol，signal_data[1]存储data，避免24位截断
+    task.signal_id = 0;  // 不再使用signal_id
+    task.signal_data[0] = rule.aSignal.protocol;  // protocol
+    task.signal_data[1] = rule.aSignal.data;  // 完整的32位data
+    task.signal_count = rule.bSequence.signalCount;
+    
+    // B信号数据从signal_data[2]开始存储，同时存储协议信息
+    int signalCount = (rule.bSequence.signalCount < 3) ? rule.bSequence.signalCount : 3;
+    for (int i = 0; i < signalCount; i++) {  // 最多3个B信号（signal_data[2-4]）
+        if (rule.bSequence.signals[i].useTiming) {
+            // 使用时序码：存储时序码Base64字符串的哈希（简化处理）
+            task.signal_data[i + 2] = rule.bSequence.signals[i].timingBase64.length();  // 临时存储长度
+        } else {
+            // 使用协议：存储data
+            task.signal_data[i + 2] = rule.bSequence.signals[i].data;
+        }
+        task.b_protocols[i] = rule.bSequence.signals[i].protocol;  // 存储B信号协议
+    }
+    
+    for (int i = 0; i < signalCount - 1 && i < 2; i++) {
+        task.intervals[i] = rule.bSequence.intervals[i];
+    }
+    
+    task.repeat_count = rule.bSequence.repeatCount;
+    task.valid = true;
+    
+    return true;
 }

@@ -21,6 +21,16 @@ bool IRMapper::initDefaultMappings() {
         return true;
     }
     
+    // 从旧程序提取的映射关系常量
+    const uint32_t NEC_PROTOCOL = 1;  // NEC协议
+    
+    // A信号（接收端）
+    const uint32_t SOURCE_VOLUP = 0x11B08F7;
+    const uint32_t SOURCE_VOLDOWN = 0x11B8877;
+    const uint32_t SOURCE_MUTE = 0x11B708F;
+    const uint32_t SOURCE_POWER = 0x11B26D9;
+    const uint32_t SOURCE_AVTV = 0x11B7689;
+    
     // 检查可用内存，如果内存不足则跳过初始化
     size_t freeHeap = ESP.getFreeHeap();
     if (freeHeap < 4096) {  // 至少需要4KB空闲内存来保存
@@ -33,16 +43,6 @@ bool IRMapper::initDefaultMappings() {
         }
         return false;
     }
-    
-    // 从旧程序提取的映射关系常量
-    const uint32_t NEC_PROTOCOL = 1;  // NEC协议
-    
-    // A信号（接收端）
-    const uint32_t SOURCE_VOLUP = 0x11B08F7;
-    const uint32_t SOURCE_VOLDOWN = 0x11B8877;
-    const uint32_t SOURCE_MUTE = 0x11B708F;
-    const uint32_t SOURCE_POWER = 0x11B26D9;
-    const uint32_t SOURCE_AVTV = 0x11B7689;
     
     // B信号（发送端）
     const uint32_t TARGET_VOLUP = 0xFD22DD;
@@ -66,7 +66,7 @@ bool IRMapper::initDefaultMappings() {
         {SOURCE_VOLUP, TARGET_VOLUP, 1, "音量+"},
         {SOURCE_VOLDOWN, TARGET_VOLDOWN, 1, "音量-"},
         {SOURCE_MUTE, TARGET_MUTE, 1, "静音"},
-        {SOURCE_POWER, TARGET_POWER, 3, "电源"},
+        {SOURCE_POWER, TARGET_POWER, 1, "电源"},  // repeatCount=1，因为序列中已经包含了3个信号
         {SOURCE_AVTV, TARGET_AVTV, 1, "AV/TV"}
     };
     
@@ -89,9 +89,10 @@ bool IRMapper::initDefaultMappings() {
         // 构建B信号序列
         rule.bSequence.clear();
         
-        // 特殊处理电源规则：包含两个B信号
+        // 特殊处理电源规则：包含三个B信号（完整信号 + 2次重复码）
+        // 参考 ir-converter-finally.ino：完整信号 + 延时30ms + 重复码 + 延时70ms + 重复码
         if (defaultRules[i].sourceData == SOURCE_POWER) {
-            // 第一个B信号：0xFDB04F
+            // 第一个B信号：完整信号 0xFDB04F
             UnifiedSignal bSignal1;
             bSignal1.protocol = NEC_PROTOCOL;
             bSignal1.useTiming = false;
@@ -99,13 +100,21 @@ bool IRMapper::initDefaultMappings() {
             bSignal1.repeatCount = 1;
             rule.bSequence.addSignal(bSignal1, 0);
             
-            // 第二个B信号：0xFFFFFFFF，间隔47ms
+            // 第二个B信号：第一次重复码 0xFFFFFFFF，间隔30ms
             UnifiedSignal bSignal2;
             bSignal2.protocol = NEC_PROTOCOL;
             bSignal2.useTiming = false;
             bSignal2.data = 0xFFFFFFFF;
             bSignal2.repeatCount = 1;
-            rule.bSequence.addSignal(bSignal2, 47);
+            rule.bSequence.addSignal(bSignal2, 30);
+            
+            // 第三个B信号：第二次重复码 0xFFFFFFFF，间隔70ms
+            UnifiedSignal bSignal3;
+            bSignal3.protocol = NEC_PROTOCOL;
+            bSignal3.useTiming = false;
+            bSignal3.data = 0xFFFFFFFF;
+            bSignal3.repeatCount = 1;
+            rule.bSequence.addSignal(bSignal3, 70);
         } else {
             // 其他规则：单个B信号
             UnifiedSignal bSignal;

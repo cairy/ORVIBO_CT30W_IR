@@ -243,8 +243,14 @@ void loop() {
                 ledControl.blink(1);
                 
                 // 查找映射并转发
-                // 只有作为A信号时才转发（避免循环转发）
+                // 完整信号：只有作为A信号时才转发（避免循环转发）
+                // 重复码：通过时间间隔和协议匹配判断是否转发（在forwardSignal内部处理）
                 if (rule != nullptr) {
+                    irForwarder.forwardSignal(signal);
+                } else {
+                    // 即使找不到规则，也尝试转发（可能是重复码，需要在forwardSignal内部判断）
+                    // 重复码会通过时间间隔和协议匹配来判断是否转发
+                    // 注意：B信号也会进入这里，但会在forwardSignal内部被正确丢弃
                     irForwarder.forwardSignal(signal);
                 }
             }

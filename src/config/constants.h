@@ -38,6 +38,13 @@
 #define MQTT_RESPONSE_MAX_MS 300      // MQTT接口最大响应时间（300ms）
 #define INTERRUPT_DISABLE_MAX_MS 10   // 发射时关闭中断最大时长（10ms）
 
+// 重复信号转发优化配置
+#define FORWARD_DELAY_BEFORE_SEND_MS 40      // 转发前延时（AB信号隔离）
+#define NEC_REPEAT_CODE 0xFFFFFFFF           // NEC重复码标识（32位）
+#define A_REPEAT_INTERVAL_MIN_MS 100         // A信号重复码最小间隔
+#define A_REPEAT_INTERVAL_MAX_MS 120         // A信号重复码最大间隔
+#define REPEAT_RULE_TIMEOUT_MS 500           // 重复码规则超时时间（500ms未收到重复码则清除规则）
+
 // 网络配置
 #define WIFI_RECONNECT_MAX_ATTEMPTS 10  // WiFi最大重连次数
 #define WIFI_RECONNECT_DELAY_MS 5000    // WiFi重连延迟（5秒）
