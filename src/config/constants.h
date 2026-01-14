@@ -31,6 +31,8 @@
 #define SIGNAL_INTERVAL_RESET_THRESHOLD_MS 5000  // 信号间隔重置阈值（5秒）
 #define SIGNAL_REPEAT_MIN 1           // 重复次数最小值
 #define SIGNAL_REPEAT_MAX 10          // 重复次数最大值
+#define REPEAT_CODE_INTERVAL_MIN_MS 100  // 重复码间隔最小值（用于NEC等协议）
+#define REPEAT_CODE_INTERVAL_MAX_MS 120  // 重复码间隔最大值（用于NEC等协议）
 
 // 性能约束
 #define FORWARD_DELAY_MAX_MS 50       // A信号接收后B信号发射最大延迟（50ms）
@@ -39,10 +41,8 @@
 #define INTERRUPT_DISABLE_MAX_MS 10   // 发射时关闭中断最大时长（10ms）
 
 // 重复信号转发优化配置
-#define FORWARD_DELAY_BEFORE_SEND_MS 40      // 转发前延时（AB信号隔离）
+#define FORWARD_DELAY_BEFORE_SEND_MS 1       // 转发前延时（AB信号隔离）
 #define NEC_REPEAT_CODE 0xFFFFFFFF           // NEC重复码标识（32位）
-#define A_REPEAT_INTERVAL_MIN_MS 100         // A信号重复码最小间隔
-#define A_REPEAT_INTERVAL_MAX_MS 120         // A信号重复码最大间隔
 #define REPEAT_RULE_TIMEOUT_MS 500           // 重复码规则超时时间（500ms未收到重复码则清除规则）
 
 // 网络配置

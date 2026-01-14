@@ -25,7 +25,9 @@
 
 ## 二、信号参数说明
 
-红外信号数据结构包含以下字段：
+### 2.1 单个信号（UnifiedSignal）
+
+单个红外信号数据结构包含以下字段：
 
 ```json
 {
@@ -43,6 +45,99 @@
 - `useTiming=true` 时，使用 `timingBase64` 进行匹配和发送（时序码信号，用于非标准协议或需要精确时序的信号）
 - `isProtocol` 字段已移除，可通过 `!useTiming` 推导（即 `isProtocol = !useTiming`）
 - 录制的信号、最近接收的信号和规则中的信号可以直接相互拷贝使用
+
+### 2.2 信号序列（SignalSequence）
+
+一个红外命令由信号序列表示，单个信号也是序列（`signalCount=1`）。信号序列结构包含以下字段：
+
+```json
+{
+  "signals": [             // 信号数组（最多5个信号）
+    {
+      "protocol": 1,
+      "data": "0x00003039",
+      "useTiming": false,
+      "timingBase64": "",
+      "timingCount": 0,
+      "repeatCount": 1
+    }
+  ],
+  "intervals": [0, 30, 70]  // 间隔数组（毫秒）
+}
+```
+
+**说明**：
+- **repeatCount控制**：序列中信号的`repeatCount`字段控制重复次数（使用序列中第一个信号的`repeatCount`字段，如果>1，重复发送整个序列）
+- **intervals 数组语义**：
+  - 如果 `intervals` 数量等于 `signalCount`：`intervals[0]` 表示第一个信号前的间隔，`intervals[i]` (i>0) 表示 `signals[i-1]` 和 `signals[i]` 之间的间隔
+  - 如果 `intervals` 数量等于 `signalCount-1`：`intervals[i]` 表示 `signals[i]` 和 `signals[i+1]` 之间的间隔（标准模式）
+- **单个信号也是序列**：当 `signalCount=1` 时，`intervals` 可以为空 `[]` 或包含一个值 `[delay]`（表示第一个信号前的间隔）
+- **重复间隔**：
+  - NEC协议重复码间隔：110ms（NEC协议标准，用于发送重复码）
+  - 时序码信号重复间隔：100ms（默认值，用于重复发送时序码信号序列）
+- **序列示例**：
+  - 单个信号（无第一个信号前间隔）：`{"signals": [{...}], "intervals": []}`
+  - 单个信号（有第一个信号前间隔）：`{"signals": [{...}], "intervals": [50]}`（50ms后发送第一个信号）
+  - 多个信号（标准模式）：`{"signals": [{...}, {...}], "intervals": [30]}`（两个信号之间间隔30ms）
+  - 多个信号（有第一个信号前间隔）：`{"signals": [{...}, {...}], "intervals": [50, 30]}`（50ms后发送第一个信号，两个信号之间间隔30ms）
+
+### 2.3 字符串序列格式
+
+API发送信号支持**字符串序列格式**，用于简洁地表示信号序列。格式规则如下：
+
+**格式规则**：
+```
+signal1[@interval1];signal2[@interval2];signal3[@interval3]|repeatCount
+```
+
+- **`;`** 分隔多个信号
+- **`@间隔毫秒数`** 表示与下一个信号的间隔（可选，默认0）
+- **`|repeatCount`** 表示序列级别的重复次数（可选，默认1）
+- **第一个信号前的间隔**：如果第一个信号段以`@`开头，例如`@50;signal1@30;signal2|1`
+
+**信号格式**：
+- **Base64格式**：时序码的Base64编码字符串，例如`ABC123==`
+- **数组格式**：时序码数组，例如`[8991,-4546,1000,-500]`
+- **协议格式**：`protocol,data`或`protocol,data,repeatCount`，例如`1,0xFF00FF00,2`
+
+**示例**：
+
+1. **单个信号**（向后兼容）：
+   - `ABC123==|2` - Base64信号，重复2次
+   - `[8991,-4546]|3` - 数组信号，重复3次
+   - `1,0xFF00FF00,2` - NEC协议信号，重复2次
+
+2. **两个信号的序列**：
+   - `ABC123==@30;DEF456==|2`
+   - 表示：信号1 → 等待30ms → 信号2，整个序列重复2次
+
+3. **三个信号的序列**：
+   - `[8991,-4546]@50;[1000,-2000]@30;[3000,-4000]|1`
+   - 表示：信号1 → 等待50ms → 信号2 → 等待30ms → 信号3
+
+4. **协议格式序列**：
+   - `1,0xFF00FF00@30;2,0x12345678@50;1,0xABCDEF00|2`
+   - 表示：3个协议信号，带间隔，序列重复2次
+
+5. **混合格式序列**：
+   - `ABC123==@30;[8991,-4546]@50;1,0xFF00FF00|1`
+   - 表示：Base64信号 → 数组信号 → 协议信号
+
+6. **第一个信号前间隔**：
+   - `@50;ABC123==@30;DEF456==|1`
+   - 表示：等待50ms → 信号1 → 等待30ms → 信号2
+
+**解析逻辑**：
+1. 先提取最后的`|repeatCount`（如果存在）
+2. 按`;`分割得到多个信号段
+3. 对每个信号段，提取`@间隔`（如果存在）
+4. 解析信号部分（Base64/数组/协议格式）
+5. 构建SignalSequence对象
+
+**注意事项**：
+- 序列级别的`repeatCount`会应用到序列中第一个信号的`repeatCount`字段
+- 如果信号自身有`repeatCount`（协议格式中的第三个参数），优先使用信号自身的`repeatCount`
+- 第一个信号前的间隔通过`@50;`格式指定，会设置到序列的`intervals[0]`
 
 ### 支持的协议
 
@@ -215,7 +310,7 @@
 | 启动学习 | POST `/api/learn/start` | `start_learn` | 启动设备学习模式 |
 | 查询学习状态 | GET `/api/learn/status` | `query_learn_status` | 返回学习进度（简化版：isLearning, progress, currentCommand） |
 | 停止学习 | POST `/api/learn/stop` | `stop_learn` | 停止设备学习 |
-| 查询学习结果 | GET `/api/learn/result` | `query_learn_result` | 返回SmartIR格式（支持format参数：base64/signalid/array） |
+| 查询学习结果 | GET `/api/learn/result` | `query_learn_result` | 返回学习结果（支持format参数：string/json，默认string） |
 | 获取最近信号 | GET `/api/signals/recent` | `get_recent_signals` | 返回信号数组 |
 | 发送信号 | POST `/api/signals/send` | `send_signal` | 发送红外信号（支持JSON和字符串格式） |
 | 设置转发状态 | - | `set_forwarding_enabled` | MQTT 特有 |
@@ -243,7 +338,7 @@
 | `/api/learn/start` | POST | 启动设备学习模式 |
 | `/api/learn/status` | GET | 查询学习状态和进度 |
 | `/api/learn/stop` | POST | 停止设备学习模式 |
-| `/api/learn/result` | GET | 查询学习结果（SmartIR格式） |
+| `/api/learn/result` | GET | 查询学习结果（支持format参数：string/json，默认string） |
 | `/api/signals/recent` | GET | 获取最近接收的信号 |
 | `/api/signals/send` | POST | 直接发送红外信号 |
 
@@ -316,66 +411,114 @@ POST http://设备IP/api/learn/stop
 **查询学习结果：**
 ```bash
 GET http://设备IP/api/learn/result
-GET http://设备IP/api/learn/result?format=base64    # Base64格式（默认）
-GET http://设备IP/api/learn/result?format=signalid  # 协议格式（如果解析成功，否则回退到Base64）
-GET http://设备IP/api/learn/result?format=array     # 数组格式
+GET http://设备IP/api/learn/result?format=string    # 字符串序列格式（默认）
+GET http://设备IP/api/learn/result?format=json      # JSON格式（信号序列JSON对象）
 ```
 
-**响应示例**（Base64格式，默认）：
+**响应示例**（字符串格式，默认）：
 ```json
 {
-  "manufacturer": "Learned",
-  "supportedModels": ["Learned Device"],
-  "commandsEncoding": "Raw",
-  "supportedController": "MQTT",
-  "commands": {
-    "开机": "Base64编码的时序数据",
-    "关机": "Base64编码的时序数据",
-    "温度+": "Base64编码的时序数据"
-  }
+  "success": true,
+  "status": "success",
+  "data": {
+    "manufacturer": "Learned",
+    "supportedModels": ["Learned Device"],
+    "commandsEncoding": "Raw",
+    "supportedController": "MQTT",
+    "commands": {
+      "开机": "ABC123==@30;DEF456==|2",
+      "关机": "[8991,-4546]@50;[1000,-2000]|1",
+      "温度+": "1,0xFF00FF00@30;1,0x87654321|1"
+    }
+  },
+  "timestamp": 1234567890
 }
 ```
 
-**响应示例**（协议格式，如果解析成功）：
+**说明**：
+- `commands`字段中每个命令的值是字符串序列格式
+- 示例说明：
+  - `"ABC123==@30;DEF456==|2"`：Base64信号序列，两个信号间隔30ms，序列重复2次
+  - `"[8991,-4546]@50;[1000,-2000]|1"`：数组信号序列，两个信号间隔50ms
+  - `"1,0xFF00FF00@30;1,0x87654321|1"`：协议信号序列（NEC协议），两个信号间隔30ms
+
+**响应示例**（JSON格式，format=json）：
 ```json
 {
-  "manufacturer": "Learned",
-  "supportedModels": ["Learned Device"],
-  "commandsEncoding": "Raw",
-  "supportedController": "MQTT",
-  "commands": {
-    "开机": "1,0xFF00FF00,1",
-    "关机": "1,0xFF10EF,1"
-  }
+  "success": true,
+  "status": "success",
+  "data": {
+    "manufacturer": "Learned",
+    "supportedModels": ["Learned Device"],
+    "commandsEncoding": "Raw",
+    "supportedController": "MQTT",
+    "commands": {
+      "开机": {
+        "signals": [
+          {
+            "protocol": 0,
+            "data": "0x00000000",
+            "useTiming": true,
+            "timingBase64": "ABC123XYZ456...",
+            "timingCount": 156,
+            "repeatCount": 1
+          },
+          {
+            "protocol": 1,
+            "data": "0x00003039",
+            "useTiming": false,
+            "timingBase64": "",
+            "timingCount": 0,
+            "repeatCount": 1
+          }
+        ],
+        "intervals": [0, 30]
+      },
+      "关机": {
+        "signals": [
+          {
+            "protocol": 1,
+            "data": "0x00003039",
+            "useTiming": false,
+            "timingBase64": "",
+            "timingCount": 0,
+            "repeatCount": 1
+          }
+        ],
+        "intervals": []
+      }
+    }
+  },
+  "timestamp": 1234567890
 }
 ```
 
-**响应示例**（数组格式）：
-```json
-{
-  "manufacturer": "Learned",
-  "supportedModels": ["Learned Device"],
-  "commandsEncoding": "Raw",
-  "supportedController": "MQTT",
-  "commands": {
-    "开机": "[8991,-4546,553,-578,...]",
-    "关机": "[8991,-4546,553,-578,...]"
-  }
-}
-```
+**说明**：
+- `commands`字段中每个命令的值是信号序列JSON对象
+- 序列对象包含：
+  - `signals`：信号数组，每个信号包含`protocol`、`data`、`useTiming`、`timingBase64`、`timingCount`、`repeatCount`字段
+  - `intervals`：间隔数组（毫秒）
+- 示例说明：
+  - `"开机"`：包含2个信号的序列，间隔30ms
+  - `"关机"`：单个信号序列（`signalCount=1`，`intervals=[]`）
 
 **格式说明：**
-- **Base64格式**（默认）：输出SmartIR JSON配置文件格式，可直接复制到SmartIR JSON配置文件使用
-- **协议格式**（`format=signalid`）：如果信号解析成功，输出协议格式字符串
-  - 格式：`protocol,data,repeatCount`（3参数格式）
-  - protocol是数字常量（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung，0表示非标准协议）
-  - 如果解析失败，会回退到Base64格式
-- **数组格式**（`format=array`）：输出数组格式字符串，兼容SmartIR JSON配置文件格式
+- **字符串格式**（`format=string`或默认）：返回JSON格式，`data`字段包含SmartIR格式的JSON对象，`commands`字段的值是字符串序列格式
+  - 信号序列格式详见2.3节
+  - `commands`字段中每个命令的值是字符串序列格式（如`"ABC123==@30;DEF456==|2"`），可直接用于API发送信号
+  - 支持单个信号和信号序列
+- **JSON格式**（`format=json`）：返回JSON格式，`data`字段包含JSON对象，`commands`字段的值是信号序列JSON对象
+  - `commands`字段中每个命令的值是信号序列JSON对象（包含`signals`和`intervals`字段）
+  - 与SmartIR不兼容，但提供完整的信号序列信息
+  - 支持单个信号和信号序列
 
 **重要**：
-- 学习结果输出为**完整的SmartIR JSON配置文件格式**，可以直接复制到SmartIR JSON配置文件中使用
-- SmartIR发送MQTT消息时，会直接发送`commands`字段中的值（字符串），设备会自动解析这些格式
-- HTTP API和MQTT接口使用完全统一的格式，都直接接收字符串格式（Base64/数组/协议）
+- **默认返回字符串格式**，便于直接使用和发送
+- 学习、映射、发送使用统一的Sequence格式，确保格式一致性
+- 字符串格式支持序列，可直接用于API发送
+- JSON格式可直接复制到SmartIR JSON配置文件使用
+- SmartIR发送MQTT消息时，会直接发送`commands`字段中的值（字符串），设备会自动解析这些格式，支持序列格式
+- HTTP API和MQTT接口使用完全统一的格式，支持JSON和字符串两种格式，都统一转换为Sequence格式发送
 
 **获取最近接收的信号：**
 ```bash
@@ -397,7 +540,6 @@ GET http://设备IP/api/signals/recent
       }
     ],
     "intervals": [],
-    "repeatCount": 1,
     "timestamp": 1234567890,
     "matched": true
   }
@@ -407,11 +549,11 @@ GET http://设备IP/api/signals/recent
 **说明**：
 - 返回格式为信号序列数组，每个序列包含：
   - `signals`：信号数组（单个信号也是序列，signalCount=1）
-  - `intervals`：间隔数组（signalCount-1个间隔，对应signalCount个信号）
-  - `repeatCount`：重复发送次数（默认1）
+  - `intervals`：间隔数组（可能是 signalCount 或 signalCount-1 个间隔，详见信号序列说明）
   - `timestamp`：时间戳（仅用于最近接收）
   - `matched`：是否在映射库中匹配（仅用于最近接收，仅第一个信号）
-- 单个信号也是序列（`signalCount=1`，`intervals=[]`）
+- **注意**：序列中信号的`repeatCount`字段控制重复次数（使用序列中第一个信号的`repeatCount`字段）
+- 单个信号也是序列（`signalCount=1`，`intervals=[]` 或 `intervals=[delay]`）
 - 序列检测逻辑：间隔 < 1000ms 视为同一序列，间隔 > 5000ms 视为新序列开始
 - 最多保留最近3条记录
 - 注意：`isProtocol` 字段已移除，可通过 `!useTiming` 推导
@@ -455,31 +597,34 @@ Content-Type: text/plain
 - 示例：
   - 标准协议：`"1,0xFF00FF00,2"`（NEC协议，重复2次）
 
-**格式4：UnifiedSignal对象格式**（统一信号格式，Content-Type: application/json）
+**格式4：JSON序列格式**（统一信号格式，Content-Type: application/json）
 ```bash
 POST http://设备IP/api/signals/send
 Content-Type: application/json
 
 {
-  "signal": {
-    "protocol": 1,
-    "data": "0x00003039",
-    "useTiming": false,
-    "timingBase64": "",
-    "timingCount": 0,
-    "repeatCount": 1
-  },
-  "repeatCount": 1
+  "signals": [
+    {
+      "protocol": 1,
+      "data": "0x00003039",
+      "useTiming": false,
+      "timingBase64": "",
+      "timingCount": 0,
+      "repeatCount": 1
+    }
+  ],
+  "intervals": [0, 30]
 }
 ```
 
 **说明**：
-- HTTP API和MQTT接口完全统一格式
-- 如果Content-Type是text/plain，按字符串格式解析（Base64/数组/协议）
-- 如果Content-Type是application/json，按JSON格式解析（UnifiedSignal对象格式）
-- 字符串格式可以直接使用学习结果或SmartIR JSON配置文件中的commands字段值
-- UnifiedSignal对象格式支持协议信号和时序码信号两种格式
-- 使用时序码时，`useTiming=true`，`timingBase64`包含Base64编码的时序数据
+- **支持两种格式**：JSON格式和字符串格式
+- **JSON格式**：Content-Type为`application/json`时，使用序列格式JSON（`{"signals":[...], "intervals":[...]}`）
+- **字符串格式**：Content-Type为`text/plain`或未指定时，使用字符串序列格式（详见2.3节）
+- **字符串格式优势**：简洁易读，可直接使用学习结果，支持序列格式
+- **JSON格式优势**：结构化数据，便于程序处理
+- 所有格式最终都转换为SignalSequence格式发送
+- 序列中信号的`repeatCount`字段控制重复次数（不再使用外部`repeatCount`参数）
 
 **更新映射规则：**
 
@@ -510,8 +655,7 @@ Content-Type: application/json
         "timingCount": 0,
         "repeatCount": 1
       }],
-      "intervals": [],
-      "repeatCount": 2
+      "intervals": []
     }
   }
 }
@@ -526,9 +670,7 @@ Content-Type: application/json
   "rules": [
     {
       "aSignal": {...},
-      "bSequence": {...},
-      "intervals": [],
-      "repeatCount": 1
+      "bSequence": {...}
     },
     ...
   ]
@@ -555,14 +697,13 @@ Content-Type: application/json
 - `smartir/light/+/send` - 灯光设备
 
 **支持的格式**：
-- Base64字符串：`Base64字符串|repeatCount`（`|repeatCount`可选）
-- 数组字符串：`[8991,-4546,553,-578,...]|repeatCount`（`|repeatCount`可选）
-- 协议格式字符串：
-  - 2参数：`protocol,data`（向后兼容）
-  - 3参数：`protocol,data,repeatCount`（向后兼容）
-  - 3参数：`protocol,data,repeatCount`（协议格式）
+- **字符串序列格式**（详见2.3节）：
+  - 单个信号：`ABC123==|2`、`[8991,-4546]|3`、`1,0xFF00FF00,2`
+  - 序列格式：`ABC123==@30;DEF456==|2`
+  - 第一个信号前间隔：`@50;ABC123==@30;DEF456==|1`
+- **JSON格式**：序列格式JSON（`{"signals":[...], "intervals":[...]}`）
 
-SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被设备自动解析和处理，无需任何转换。
+SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被设备自动解析和处理，支持序列格式，无需任何转换。
 
 **支持的指令（action）：**
 
@@ -576,7 +717,7 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 | `stop_learn` | 停止设备学习 | 无 | POST `/api/learn/stop` |
 | `query_learn_result` | 查询学习结果 | 无 | GET `/api/learn/result` |
 | `get_recent_signals` | 获取最近接收的信号 | 无 | GET `/api/signals/recent` |
-| `send_signal` | 发送红外信号 | `signal`, `repeatCount` | POST `/api/signals/send` |
+| `send_signal` | 发送红外信号 | 支持JSON和字符串两种格式 | POST `/api/signals/send` |
 | `set_forwarding_enabled` | 设置转发启用状态 | `enabled` | - |
 | `get_status` | 获取设备状态 | 无 | GET `/api/status` |
 
@@ -622,8 +763,7 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
         "timingCount": 0,
         "repeatCount": 1
       }],
-      "intervals": [],
-      "repeatCount": 2
+      "intervals": []
     }
   }
 }
@@ -652,8 +792,7 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
           "timingCount": 0,
           "repeatCount": 1
         }],
-        "intervals": [],
-        "repeatCount": 1
+        "intervals": []
       }
     }
   ]
@@ -722,16 +861,15 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 ```json
 {
   "action": "query_learn_result",
-  "format": "base64"
+  "format": "string"
 }
 ```
 
-**format参数**（可选，默认base64）：
-- `base64`：Base64格式（默认）
-- `signalid`：UnifiedSignal格式（协议格式字符串）
-- `array`：数组格式
+**format参数**（可选，默认string）：
+- `string`：字符串序列格式（默认），返回JSON格式，`data`字段包含SmartIR格式的JSON对象，`commands`字段的值是字符串序列格式
+- `json`：JSON格式，返回JSON格式，`data`字段包含JSON对象，`commands`字段的值是信号序列JSON对象
 
-**响应**（SmartIR兼容格式，统一格式）：
+**响应示例**（字符串格式，默认）：
 ```json
 {
   "success": true,
@@ -742,13 +880,74 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
     "commandsEncoding": "Raw",
     "supportedController": "MQTT",
     "commands": {
-      "开机": "Base64编码的时序数据",
-      "关机": "Base64编码的时序数据"
+      "开机": "ABC123==@30;DEF456==|2",
+      "关机": "[8991,-4546]@50;[1000,-2000]|1",
+      "音量+": "1,0xFF00FF00@30;1,0x87654321|1"
     }
   },
   "timestamp": 1234567890
 }
 ```
+
+**响应示例**（JSON格式，format=json）：
+```json
+{
+  "success": true,
+  "status": "success",
+  "data": {
+    "manufacturer": "Learned",
+    "supportedModels": ["Learned Device"],
+    "commandsEncoding": "Raw",
+    "supportedController": "MQTT",
+    "commands": {
+      "开机": {
+        "signals": [
+          {
+            "protocol": 0,
+            "data": "0x00000000",
+            "useTiming": true,
+            "timingBase64": "ABC123XYZ456...",
+            "timingCount": 156,
+            "repeatCount": 1
+          },
+          {
+            "protocol": 1,
+            "data": "0x00003039",
+            "useTiming": false,
+            "timingBase64": "",
+            "timingCount": 0,
+            "repeatCount": 1
+          }
+        ],
+        "intervals": [0, 30]
+      },
+      "关机": {
+        "signals": [
+          {
+            "protocol": 1,
+            "data": "0x00003039",
+            "useTiming": false,
+            "timingBase64": "",
+            "timingCount": 0,
+            "repeatCount": 1
+          }
+        ],
+        "intervals": []
+      }
+    }
+  },
+  "timestamp": 1234567890
+}
+```
+
+**说明**：
+- `commands`字段中每个命令的值是信号序列JSON对象
+- 序列对象包含：
+  - `signals`：信号数组，每个信号包含`protocol`、`data`、`useTiming`、`timingBase64`、`timingCount`、`repeatCount`字段
+  - `intervals`：间隔数组（毫秒）
+- 示例说明：
+  - `"开机"`：包含2个信号的序列，间隔30ms
+  - `"关机"`：单个信号序列（`signalCount=1`，`intervals=[]`）
 
 **9. 获取最近接收的信号：**
 ```json
@@ -761,25 +960,32 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 
 MQTT接口支持两种方式：
 
-**方式1：直接发送字符串**（推荐，与SmartIR兼容）
+**方式1：直接发送字符串**（推荐，支持序列格式）
 ```
 主题：homeassistant/orvibo-ct30w/command
-Payload：Base64字符串|repeatCount 或 [数组]|repeatCount 或 protocol,data,repeatCount
+Payload：字符串序列格式（详见2.3节）
+
+示例：
+- 单个信号：ABC123==|2 或 [8991,-4546]|3 或 1,0xFF00FF00,2
+- 序列格式：ABC123==@30;DEF456==|2
+- 第一个信号前间隔：@50;ABC123==@30;DEF456==|1
 ```
 
 **方式2：JSON格式**
 ```json
 {
   "action": "send_signal",
-  "signal": {
-    "protocol": 1,
-    "data": "0x00003039",
-    "useTiming": false,
-    "timingBase64": "",
-    "timingCount": 0,
-    "repeatCount": 1
-  },
-  "repeatCount": 1
+  "signals": [
+    {
+      "protocol": 1,
+      "data": "0x00003039",
+      "useTiming": false,
+      "timingBase64": "",
+      "timingCount": 0,
+      "repeatCount": 1
+    }
+  ],
+  "intervals": [0, 30]
 }
 ```
 
@@ -884,11 +1090,12 @@ data:
   topic: homeassistant/orvibo-ct30w/command
   payload: |
     {
-      "action": "query_learn_result"
+      "action": "query_learn_result",
+      "format": "string"
     }
 ```
 
-响应会在 `homeassistant/orvibo-ct30w/state` 主题中发布。
+响应会在 `homeassistant/orvibo-ct30w/state` 主题中发布。默认返回字符串序列格式，每行一个命令。
 
 **2. 获取设备状态：**
 ```yaml
@@ -976,7 +1183,16 @@ automation:
 
 #### 统一信号格式
 
-设备使用统一的 `UnifiedSignal` 结构表示红外信号，详见 [二、信号参数说明](#二信号参数说明)。此格式在所有场景中统一使用：日志记录、转发规则、API接口、MQTT消息、Flash存储等。支持协议信号和时序码信号两种格式，录制的信号、最近接收的信号和规则中的信号可以直接相互拷贝使用。
+设备使用统一的信号结构表示红外信号：
+- **单个信号**：使用 `UnifiedSignal` 结构，详见 [2.1 单个信号（UnifiedSignal）](#21-单个信号unifiedsignal)
+- **信号序列**：使用 `SignalSequence` 结构，详见 [2.2 信号序列（SignalSequence）](#22-信号序列signalsequence）
+
+**重要说明**：
+- 单个信号也是序列（`signalCount=1`）
+- 序列中信号的`repeatCount`字段控制重复次数（使用序列中第一个信号的`repeatCount`字段，如果>1，重复发送整个序列）
+- 此格式在所有场景中统一使用：日志记录、转发规则、API接口、MQTT消息、Flash存储等
+- 支持协议信号和时序码信号两种格式
+- 录制的信号、最近接收的信号和规则中的信号可以直接相互拷贝使用
 
 ## 五、常见问题
 
@@ -1042,8 +1258,9 @@ Serial.printf("Total: %d, Used: %d\n", fs_info.totalBytes, fs_info.usedBytes);
 
 ## 六、性能指标
 
-- **转发延迟**：≤ 10ms（单次信号，A信号接收后B信号发射的最大延迟）
-- **转发延迟（重复信号）**：≤ 50ms（电源键等需要重复码的信号）
+- **转发延迟**：≤ 50ms（A信号接收后B信号发射的最大延迟，包括1ms转发前延时和处理时间）
+- **转发前延时**：1ms（用于AB信号隔离，避免信号冲突）
+- **重复码识别间隔**：100-120ms（NEC协议标准，用于识别重复码信号）
 - **间隔误差**：≤ 20ms（连续信号间隔的最大误差）
 - **信号缓存**：最多 3 个（支持并发接收的短时间多信号）
 - **内存使用**：≤ 90%（运行时内存占用控制，超过90%时自动清理）
@@ -1061,18 +1278,20 @@ Serial.printf("Total: %d, Used: %d\n", fs_info.totalBytes, fs_info.usedBytes);
 - **移除OTA功能**：完全移除OTA功能，释放约5-10KB内存（包括ESP8266HTTPUpdate库的静态内存占用）
 - **JSON文档大小优化**：减少API响应中的JSON文档大小，降低动态内存分配峰值
 - **Web服务器延迟启动**：启动后8秒延迟判断，MQTT成功则不启动Web服务器，节省5-10KB内存
-- **智能内存清理**：每30秒检查一次，超过85%且连续两次检查都超过阈值时才清理，避免频繁清理
+- **智能内存清理**：每30秒检查一次（`MEMORY_CHECK_INTERVAL = 30000`），超过85%且连续两次检查都超过阈值时才清理，避免频繁清理
 - **日志保存优化**：只在日志数量达到阈值（约13条）或错误日志时才保存，减少Flash写入
 
 #### 转发延迟优化
 - **异步消息队列**：使用消息队列解耦接收和转发流程，避免阻塞
 - **快速返回机制**：转发过程中快速检查并返回，减少不必要的等待
 - **队列处理优化**：队列处理间隔从10ms优化到5ms，提升响应速度
+- **红外发射任务优化**：发射任务间隔优化到5ms，提升响应速度
 - **主循环优化**：移除主循环中的`delay(1)`阻塞，改用非阻塞`yield()`，提升实时性
+- **非阻塞延时机制**：使用`PreciseTimer`实现非阻塞延时，转发前延时1ms用于AB信号隔离，不阻塞主循环
 - **延迟时间优化**：
-  - 单次信号（音量、静音）：从20ms进一步优化到10ms（移除不必要的延迟，提升50%）
-  - 重复信号（电源）：移除初始延迟，直接发送信号
-  - 重复码间隔：从50ms优化到40ms（提升20%）
+  - 转发前延时：优化到1ms（用于AB信号隔离，避免信号冲突）
+  - 最大延迟约束：50ms（包括转发前延时和处理时间）
+  - 重复码识别：100-120ms间隔（NEC协议标准，用于识别重复码信号）
 - **IRsend库集成**：NEC协议使用IRremoteESP8266库的IRsend直接发送，时序更准确，性能更好
 - **信号记录优化**：所有信号都输出到串口和recentSignals缓冲区，不再写入日志缓冲区和MQTT推送，大幅减少转发路径上的开销
   - 串口输出包含信号详情（协议信号显示协议和数据，时序码信号显示时序点数和Base64前缀）

@@ -47,7 +47,7 @@ public:
     // 查询学习结果（返回JSON字符串，data部分）
     // format: "base64"（默认）, "signalid", "array"
     // 成功返回JSON字符串，失败返回空字符串（需要检查内存）
-    static String handleQueryLearnResult(IRLearner& learner, const String& format = "base64");
+    static String handleQueryLearnResult(IRLearner& learner, const String& format = "string");
     
     // 获取最近信号（返回JSON字符串，data部分）
     // 成功返回JSON字符串，失败返回空字符串（需要检查内存）

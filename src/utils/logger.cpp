@@ -175,19 +175,19 @@ void Logger::logReceiveSignal(const UnifiedSignal& signal, bool matched) {
     
     // 序列检测逻辑
     if (!isBuildingSequence) {
-        // 开始新序列
+        // 开始新序列（第一个信号，不使用第一个信号前间隔）
         currentSequence.clear();
         currentSequence.timestamp = now;
         currentSequence.matched = matched;
-        currentSequence.addSignal(signal, 0);
+        currentSequence.addSignal(signal, 0, false);
         isBuildingSequence = true;
         lastSignalTime = now;
         lastSignalMatched = matched;
     } else {
         // 判断是否加入当前序列
         if (interval < SIGNAL_INTERVAL_MAX_MS && currentSequence.signalCount < MAX_B_SIGNALS_PER_RULE) {
-            // 加入当前序列
-            currentSequence.addSignal(signal, interval);
+            // 加入当前序列（标准模式：interval 是前一个信号和当前信号之间的间隔）
+            currentSequence.addSignal(signal, interval, false);
             lastSignalTime = now;
             lastSignalMatched = matched;  // 更新匹配状态（使用最后一个信号的匹配状态）
         } else {
@@ -196,7 +196,7 @@ void Logger::logReceiveSignal(const UnifiedSignal& signal, bool matched) {
             currentSequence.clear();
             currentSequence.timestamp = now;
             currentSequence.matched = matched;
-            currentSequence.addSignal(signal, 0);
+            currentSequence.addSignal(signal, 0, false);
             isBuildingSequence = true;
             lastSignalTime = now;
             lastSignalMatched = matched;

@@ -140,8 +140,6 @@ bool IRLearner::startDeviceLearn(const String& deviceName, const String& command
     // 初始化指令数组
     for (int i = 0; i < MAX_LEARN_COMMANDS; i++) {
         learnedDevice->commands[i].valid = false;
-        learnedDevice->commands[i].timingCount = 0;
-        learnedDevice->commands[i].hasProtocol = false;
         learnedDevice->commands[i].name[0] = '\0';
     }
     
@@ -332,10 +330,6 @@ void IRLearner::processDeviceLearnSignal(const IRTiming* timing, int count) {
         cmd.name[0] = '\0';
     }
     
-    // 总是保存时序数据
-    cmd.timingCount = actualTimingCount;
-    memcpy(cmd.timing, timing, sizeof(IRTiming) * cmd.timingCount);
-    
     // 尝试解析协议（可选，不影响学习结果）
     UnifiedSignal signal;
     bool parseSuccess = parser.parseSignal(timing, actualTimingCount, signal);
@@ -354,10 +348,6 @@ void IRLearner::processDeviceLearnSignal(const IRTiming* timing, int count) {
         }
     }
     
-    // 保存单个信号（用于向后兼容）
-    cmd.signal = signal;
-    cmd.hasProtocol = signal.isProtocol();
-    
     // 序列检测逻辑：判断是否加入当前序列
     unsigned long currentTime = millis();
     unsigned long interval = 0;
@@ -375,15 +365,34 @@ void IRLearner::processDeviceLearnSignal(const IRTiming* timing, int count) {
         cmd.sequence.timestamp = currentTime;
     }
     
+    // 在判断是否加入序列之前，先检查是否为重复码
+    if (interval > 0 && interval < SIGNAL_INTERVAL_MAX_MS && cmd.sequence.signalCount > 0) {
+        // 检查是否为重复码：信号相同且间隔在重复码范围内
+        const UnifiedSignal& lastSignal = cmd.sequence.signals[cmd.sequence.signalCount - 1];
+        if (SignalUtils::signalsEqual(signal, lastSignal) && 
+            interval >= REPEAT_CODE_INTERVAL_MIN_MS && 
+            interval <= REPEAT_CODE_INTERVAL_MAX_MS) {
+            // 是重复码，增加上一个信号的repeatCount
+            if (cmd.sequence.signals[cmd.sequence.signalCount - 1].repeatCount < SIGNAL_REPEAT_MAX) {
+                cmd.sequence.signals[cmd.sequence.signalCount - 1].repeatCount++;
+            }
+            // 更新时间戳，但不添加新信号
+            lastLearnedSignal = signal;
+            hasLastSignal = true;
+            lastLearnedSignalTime = currentTime;
+            return;  // 直接返回，不继续处理
+        }
+    }
+    
     // 判断是否加入序列
     if (interval > 0 && interval < SIGNAL_INTERVAL_MAX_MS && cmd.sequence.signalCount < MAX_B_SIGNALS_PER_RULE) {
-        // 加入序列
-        cmd.sequence.addSignal(signal, interval);
+        // 加入序列（标准模式：interval 是前一个信号和当前信号之间的间隔）
+        cmd.sequence.addSignal(signal, interval, false);
     } else {
         // 开始新序列（单个信号也是序列）
         cmd.sequence.clear();
         cmd.sequence.timestamp = currentTime;
-        cmd.sequence.addSignal(signal, 0);
+        cmd.sequence.addSignal(signal, 0, false);
     }
     
     // 重复信号检测
@@ -499,130 +508,79 @@ void IRLearner::freeLearnedDevice() {
     }
 }
 
-String IRLearner::convertToBase64Format() {
-    if (learnedDevice == nullptr || !learnedDevice->valid || learnedDevice->commandCount == 0) {
-        return "{}";
+// 辅助函数：将信号序列转换为字符串序列格式
+static String sequenceToStringFormat(const SignalSequence& sequence) {
+    String result;
+    result.reserve(256);
+    
+    bool firstSignal = true;
+    bool hasFirstInterval = (sequence.getIntervalCount() == sequence.signalCount);
+    
+    // 如果有第一个信号前的间隔
+    if (hasFirstInterval && sequence.intervals[0] > 0) {
+        result += "@";
+        result += String(sequence.intervals[0]);
+        result += ";";
     }
     
-    // 检查内存：如果内存不足，提前返回错误
-    size_t freeHeap = ESP.getFreeHeap();
-    size_t maxBlock = ESP.getMaxFreeBlockSize();
-    
-    // 动态计算所需内存：基础JSON结构 + 每个命令的Base64字符串
-    // 基础结构约200字节，每个命令的Base64字符串平均200-400字节
-    size_t estimatedSize = 512 + (learnedDevice->commandCount * 512);
-    if (estimatedSize > 3072) estimatedSize = 3072;  // 限制最大3KB
-    if (estimatedSize < 1024) estimatedSize = 1024;  // 至少1KB
-    
-    // 需要至少：估算大小 + 1KB安全余量，但不超过可用内存的80%
-    size_t requiredMemory = estimatedSize + 1024;
-    size_t maxAllowedMemory = (freeHeap * 80) / 100;  // 最多使用80%的可用内存
-    if (requiredMemory > maxAllowedMemory) {
-        requiredMemory = maxAllowedMemory;
-    }
-    
-    // 检查最大连续块是否足够
-    if (freeHeap < 2048 || maxBlock < estimatedSize) {
-        Serial.printf("[IRLearner] convertToBase64Format: Insufficient memory (free: %d bytes, max block: %d bytes, required: %d bytes)\n", 
-                     freeHeap, maxBlock, estimatedSize);
-        return "{}";
-    }
-    
-    DynamicJsonDocument doc(estimatedSize);
-    
-    // SmartIR JSON配置文件格式
-    doc["manufacturer"] = "Learned";
-    JsonArray models = doc.createNestedArray("supportedModels");
-    models.add("Learned Device");
-    doc["commandsEncoding"] = "Raw";
-    doc["supportedController"] = "MQTT";
-    
-    // 创建commands对象
-    JsonObject commands = doc.createNestedObject("commands");
-    
-    // 遍历所有命令，转换为Base64
-    for (int i = 0; i < learnedDevice->commandCount && i < MAX_LEARN_COMMANDS; i++) {
-        const LearnedCommand& cmd = learnedDevice->commands[i];
-        if (!cmd.valid) {
+    // 遍历序列中的每个信号
+    for (uint8_t j = 0; j < sequence.signalCount; j++) {
+        const UnifiedSignal& signal = sequence.signals[j];
+        
+        if (!firstSignal) {
+            result += ";";
+        }
+        firstSignal = false;
+        
+        // 转换信号为字符串格式
+        if (signal.useTiming && signal.hasTiming()) {
+            // 时序码信号：Base64格式
+            result += signal.timingBase64;
+        } else if (signal.isProtocol()) {
+            // 协议信号：protocol,data格式
+            result += String(signal.protocol);
+            result += ",0x";
+            char hexStr[9];
+            snprintf(hexStr, sizeof(hexStr), "%08X", signal.data);
+            result += hexStr;
+        } else {
+            // 无法转换，跳过
             continue;
         }
         
-        // 检查内存：如果内存不足，停止处理
-        if (ESP.getFreeHeap() < 2048) {
-            Serial.println("[IRLearner] convertToBase64Format: Memory low during processing, stopping");
-            break;
-        }
-        
-        // 编码Base64
-        String base64 = encodeTimingToBase64(cmd.timing, cmd.timingCount);
-        if (base64.length() == 0) {
-            continue;  // 编码失败，跳过
-        }
-        
-        // 添加到JSON对象（直接是Base64字符串，不是JSON包装）
-        const char* cmdName = (cmd.name[0] != '\0') ? cmd.name : "";
-        commands[cmdName] = base64;
-    }
-    
-    // 检查文档是否溢出
-    if (doc.overflowed()) {
-        char buffer[192];
-        snprintf(buffer, sizeof(buffer), "[IRLearner: convertToBase64Format] JSON文档溢出，尝试使用更大的文档 (当前大小: %d bytes, 命令数: %d)", estimatedSize, learnedDevice->commandCount);
-        logger.log("warning", buffer);
-        
-        // 尝试使用更大的文档重新构建
-        size_t largerSize = estimatedSize * 2;
-        if (largerSize <= 6144) {  // 限制最大6KB
-            DynamicJsonDocument largerDoc(largerSize);
-            largerDoc["manufacturer"] = "Learned";
-            JsonArray largerModels = largerDoc.createNestedArray("supportedModels");
-            largerModels.add("Learned Device");
-            largerDoc["commandsEncoding"] = "Raw";
-            largerDoc["supportedController"] = "MQTT";
-            JsonObject largerCommands = largerDoc.createNestedObject("commands");
-            
-            for (int i = 0; i < learnedDevice->commandCount && i < MAX_LEARN_COMMANDS; i++) {
-                const LearnedCommand& cmd = learnedDevice->commands[i];
-                if (!cmd.valid) continue;
-                if (ESP.getFreeHeap() < 2048) break;
-                
-                String base64 = encodeTimingToBase64(cmd.timing, cmd.timingCount);
-                if (base64.length() == 0) continue;
-                
-                const char* cmdName = (cmd.name[0] != '\0') ? cmd.name : "";
-                largerCommands[cmdName] = base64;
-            }
-            
-            if (!largerDoc.overflowed()) {
-                doc = largerDoc;
-            } else {
-                char errorBuffer[192];
-                snprintf(errorBuffer, sizeof(errorBuffer), "[IRLearner: convertToBase64Format] 更大的文档仍然溢出 (大小: %d bytes, 命令数: %d)", largerSize, learnedDevice->commandCount);
-                logger.log("error", errorBuffer);
+        // 添加间隔（如果有）
+        uint16_t interval = 0;
+        if (hasFirstInterval) {
+            if (j < sequence.signalCount - 1) {
+                interval = sequence.intervals[j + 1];
             }
         } else {
-            char errorBuffer[192];
-            snprintf(errorBuffer, sizeof(errorBuffer), "[IRLearner: convertToBase64Format] JSON文档过大，无法重试 (需要: %d bytes, 命令数: %d)", largerSize, learnedDevice->commandCount);
-            logger.log("error", errorBuffer);
+            if (j < sequence.signalCount - 1) {
+                interval = sequence.intervals[j];
+            }
+        }
+        
+        if (interval > 0) {
+            result += "@";
+            result += String(interval);
         }
     }
     
-    // 序列化为字符串
-    String output;
-    output.reserve(estimatedSize);  // 预分配内存
-    serializeJson(doc, output);
-    
-    // 如果仍然溢出，记录错误
-    if (doc.overflowed()) {
-        char buffer[192];
-        snprintf(buffer, sizeof(buffer), "[IRLearner: convertToBase64Format] JSON文档溢出，无法序列化 (大小: %d bytes, 命令数: %d)", estimatedSize, learnedDevice->commandCount);
-        logger.log("error", buffer);
+    // 添加序列级别的repeatCount（如果>1）
+    uint8_t seqRepeatCount = 1;
+    if (sequence.signalCount > 0 && sequence.signals[0].repeatCount > 1) {
+        seqRepeatCount = sequence.signals[0].repeatCount;
     }
     
-    return output;
+    if (seqRepeatCount > 1) {
+        result += "|";
+        result += String(seqRepeatCount);
+    }
+    
+    return result;
 }
 
-String IRLearner::convertToSignalIDFormat() {
+String IRLearner::convertToStringFormat() {
     if (learnedDevice == nullptr || !learnedDevice->valid || learnedDevice->commandCount == 0) {
         return "{}";
     }
@@ -631,16 +589,16 @@ String IRLearner::convertToSignalIDFormat() {
     size_t freeHeap = ESP.getFreeHeap();
     size_t maxBlock = ESP.getMaxFreeBlockSize();
     
-    // 估算JSON大小：基础结构 + 每个命令的平均大小
-    // 基础结构约200字节，每个命令平均50-100字节（协议格式字符串较短）
-    size_t estimatedSize = 256 + (learnedDevice->commandCount * 128);
+    // 估算JSON大小：基础结构 + 每个命令的字符串序列
+    // 基础结构约200字节，每个命令的字符串序列平均100-200字节
+    size_t estimatedSize = 256 + (learnedDevice->commandCount * 256);
     if (estimatedSize > 2048) estimatedSize = 2048;  // 限制最大2KB
     if (estimatedSize < 512) estimatedSize = 512;  // 至少512字节
     
-    // 检查最大连续块是否足够（需要额外空间用于字符串操作）
+    // 检查最大连续块是否足够
     size_t requiredMemory = estimatedSize + 512;  // 额外512字节用于字符串操作
     if (freeHeap < 1500 || maxBlock < requiredMemory) {
-        Serial.printf("[IRLearner] convertToSignalIDFormat: Insufficient memory (free: %d bytes, max block: %d bytes, required: %d bytes)\n", 
+        Serial.printf("[IRLearner] convertToStringFormat: Insufficient memory (free: %d bytes, max block: %d bytes, required: %d bytes)\n", 
                      freeHeap, maxBlock, requiredMemory);
         return "{}";
     }
@@ -657,60 +615,30 @@ String IRLearner::convertToSignalIDFormat() {
     // 创建commands对象
     JsonObject commands = doc.createNestedObject("commands");
     
-    int protocolCount = 0;
-    int base64Count = 0;
-    
-    // 复用单个JSON文档用于SignalID对象（避免在循环中创建多个文档）
-    DynamicJsonDocument signalDoc(256);
-    
-    // 遍历所有命令
+    // 遍历所有命令，转换为字符串序列格式
     for (int i = 0; i < learnedDevice->commandCount && i < MAX_LEARN_COMMANDS; i++) {
         const LearnedCommand& cmd = learnedDevice->commands[i];
-        if (!cmd.valid) {
+        if (!cmd.valid || cmd.sequence.signalCount == 0) {
             continue;
         }
-        
-        const char* cmdName = (cmd.name[0] != '\0') ? cmd.name : "";
         
         // 检查内存：如果内存不足，停止处理
         if (ESP.getFreeHeap() < 1500) {
             break;
         }
         
-        // 使用序列格式输出（单个信号也是序列）
-        if (cmd.sequence.signalCount > 0 && cmd.sequence.valid) {
-            // 序列格式：输出为JSON对象
-            JsonObject seqObj = commands.createNestedObject(cmdName);
-            SignalUtils::sequenceToJSON(cmd.sequence, seqObj, true);
-            protocolCount++;
-        } else {
-            // 回退：如果序列无效，使用单个信号格式
-            if (cmd.hasProtocol && !cmd.signal.useTiming) {
-                // 协议格式字符串
-                char protocolStr[128];
-                snprintf(protocolStr, sizeof(protocolStr), "%u,0x%08X,%u", 
-                         cmd.signal.protocol, cmd.signal.data, cmd.signal.repeatCount);
-                commands[cmdName] = protocolStr;
-                protocolCount++;
-            } else if (cmd.signal.useTiming) {
-                // 时序码Base64格式
-                commands[cmdName] = cmd.signal.timingBase64;
-                base64Count++;
-            } else {
-                // 回退到Base64格式
-                String base64 = encodeTimingToBase64(cmd.timing, cmd.timingCount);
-                if (base64.length() > 0) {
-                    commands[cmdName] = base64;
-                    base64Count++;
-                }
-            }
+        // 转换序列为字符串格式
+        String sequenceStr = sequenceToStringFormat(cmd.sequence);
+        if (sequenceStr.length() > 0) {
+            const char* cmdName = (cmd.name[0] != '\0') ? cmd.name : "";
+            commands[cmdName] = sequenceStr;
         }
     }
     
     // 检查文档是否溢出
     if (doc.overflowed()) {
         char buffer[192];
-        snprintf(buffer, sizeof(buffer), "[IRLearner: convertToSignalIDFormat] JSON文档溢出，尝试使用更大的文档 (当前大小: %d bytes, 命令数: %d)", estimatedSize, learnedDevice->commandCount);
+        snprintf(buffer, sizeof(buffer), "[IRLearner: convertToStringFormat] JSON文档溢出，尝试使用更大的文档 (当前大小: %d bytes, 命令数: %d)", estimatedSize, learnedDevice->commandCount);
         logger.log("warning", buffer);
         
         // 尝试使用更大的文档重新构建
@@ -726,30 +654,13 @@ String IRLearner::convertToSignalIDFormat() {
             
             for (int i = 0; i < learnedDevice->commandCount && i < MAX_LEARN_COMMANDS; i++) {
                 const LearnedCommand& cmd = learnedDevice->commands[i];
-                if (!cmd.valid) continue;
+                if (!cmd.valid || cmd.sequence.signalCount == 0) continue;
                 if (ESP.getFreeHeap() < 1500) break;
                 
-                const char* cmdName = (cmd.name[0] != '\0') ? cmd.name : "";
-                
-                // 使用序列格式输出
-                if (cmd.sequence.signalCount > 0 && cmd.sequence.valid) {
-                    JsonObject seqObj = largerCommands.createNestedObject(cmdName);
-                    SignalUtils::sequenceToJSON(cmd.sequence, seqObj, true);
-                } else {
-                    // 回退：单个信号格式
-                    if (cmd.hasProtocol && !cmd.signal.useTiming) {
-                        char protocolStr[128];
-                        snprintf(protocolStr, sizeof(protocolStr), "%u,0x%08X,%u", 
-                                 cmd.signal.protocol, cmd.signal.data, cmd.signal.repeatCount);
-                        largerCommands[cmdName] = protocolStr;
-                    } else if (cmd.signal.useTiming) {
-                        largerCommands[cmdName] = cmd.signal.timingBase64;
-                    } else {
-                        String base64 = encodeTimingToBase64(cmd.timing, cmd.timingCount);
-                        if (base64.length() > 0) {
-                            largerCommands[cmdName] = base64;
-                        }
-                    }
+                String sequenceStr = sequenceToStringFormat(cmd.sequence);
+                if (sequenceStr.length() > 0) {
+                    const char* cmdName = (cmd.name[0] != '\0') ? cmd.name : "";
+                    largerCommands[cmdName] = sequenceStr;
                 }
             }
             
@@ -757,12 +668,12 @@ String IRLearner::convertToSignalIDFormat() {
                 doc = largerDoc;
             } else {
                 char errorBuffer[192];
-                snprintf(errorBuffer, sizeof(errorBuffer), "[IRLearner: convertToSignalIDFormat] 更大的文档仍然溢出 (大小: %d bytes, 命令数: %d)", largerSize, learnedDevice->commandCount);
+                snprintf(errorBuffer, sizeof(errorBuffer), "[IRLearner: convertToStringFormat] 更大的文档仍然溢出 (大小: %d bytes, 命令数: %d)", largerSize, learnedDevice->commandCount);
                 logger.log("error", errorBuffer);
             }
         } else {
             char errorBuffer[192];
-            snprintf(errorBuffer, sizeof(errorBuffer), "[IRLearner: convertToSignalIDFormat] JSON文档过大，无法重试 (需要: %d bytes, 命令数: %d)", largerSize, learnedDevice->commandCount);
+            snprintf(errorBuffer, sizeof(errorBuffer), "[IRLearner: convertToStringFormat] JSON文档过大，无法重试 (需要: %d bytes, 命令数: %d)", largerSize, learnedDevice->commandCount);
             logger.log("error", errorBuffer);
         }
     }
@@ -775,14 +686,14 @@ String IRLearner::convertToSignalIDFormat() {
     // 如果仍然溢出，记录错误
     if (doc.overflowed()) {
         char buffer[192];
-        snprintf(buffer, sizeof(buffer), "[IRLearner: convertToSignalIDFormat] JSON文档溢出，无法序列化 (大小: %d bytes, 命令数: %d)", estimatedSize, learnedDevice->commandCount);
+        snprintf(buffer, sizeof(buffer), "[IRLearner: convertToStringFormat] JSON文档溢出，无法序列化 (大小: %d bytes, 命令数: %d)", estimatedSize, learnedDevice->commandCount);
         logger.log("error", buffer);
     }
     
     return output;
 }
 
-String IRLearner::convertToArrayFormat() {
+String IRLearner::convertToJSONFormat() {
     if (learnedDevice == nullptr || !learnedDevice->valid || learnedDevice->commandCount == 0) {
         return "{}";
     }
@@ -791,22 +702,23 @@ String IRLearner::convertToArrayFormat() {
     size_t freeHeap = ESP.getFreeHeap();
     size_t maxBlock = ESP.getMaxFreeBlockSize();
     
-    // 估算JSON大小：基础结构 + 每个命令的数组字符串
-    // 基础结构约200字节，每个命令的数组字符串平均200-400字节
+    // 估算JSON大小：基础结构 + 每个命令的序列JSON对象
+    // 基础结构约200字节，每个命令的序列JSON对象平均200-400字节
     size_t estimatedSize = 512 + (learnedDevice->commandCount * 512);
-    if (estimatedSize > 3072) estimatedSize = 3072;  // 限制最大3KB
+    if (estimatedSize > 2048) estimatedSize = 2048;  // 限制最大2KB
     if (estimatedSize < 1024) estimatedSize = 1024;  // 至少1KB
     
     // 检查最大连续块是否足够
-    if (freeHeap < 2048 || maxBlock < estimatedSize) {
-        Serial.printf("[IRLearner] convertToArrayFormat: Insufficient memory (free: %d bytes, max block: %d bytes, required: %d bytes)\n", 
-                     freeHeap, maxBlock, estimatedSize);
+    size_t requiredMemory = estimatedSize + 512;  // 额外512字节用于字符串操作
+    if (freeHeap < 1500 || maxBlock < requiredMemory) {
+        Serial.printf("[IRLearner] convertToJSONFormat: Insufficient memory (free: %d bytes, max block: %d bytes, required: %d bytes)\n", 
+                     freeHeap, maxBlock, requiredMemory);
         return "{}";
     }
     
     DynamicJsonDocument doc(estimatedSize);
     
-    // SmartIR JSON配置文件格式
+    // JSON格式（与SmartIR不兼容）
     doc["manufacturer"] = "Learned";
     JsonArray models = doc.createNestedArray("supportedModels");
     models.add("Learned Device");
@@ -816,50 +728,33 @@ String IRLearner::convertToArrayFormat() {
     // 创建commands对象
     JsonObject commands = doc.createNestedObject("commands");
     
-    // 遍历所有命令，转换为数组格式
+    // 遍历所有命令，转换为JSON对象（序列格式）
     for (int i = 0; i < learnedDevice->commandCount && i < MAX_LEARN_COMMANDS; i++) {
         const LearnedCommand& cmd = learnedDevice->commands[i];
-        if (!cmd.valid) {
+        if (!cmd.valid || cmd.sequence.signalCount == 0) {
             continue;
         }
         
         // 检查内存：如果内存不足，停止处理
-        if (ESP.getFreeHeap() < 2048) {
-            Serial.println("[IRLearner] convertToArrayFormat: Memory low during processing, stopping");
+        if (ESP.getFreeHeap() < 1500) {
             break;
         }
         
-        // 使用预分配的String，减少内存碎片
-        String arrayStr;
-        // 估算数组字符串大小：每个数字平均8字节（包括逗号）
-        arrayStr.reserve(cmd.timingCount * 10 + 2);  // +2 for brackets
-        
-        arrayStr = "[";
-        for (int j = 0; j < cmd.timingCount; j++) {
-            if (j > 0) arrayStr += ",";
-            // 正数表示高电平，负数表示低电平
-            long duration = cmd.timing[j].duration;
-            if (!cmd.timing[j].level) {
-                duration = -duration;
-            }
-            arrayStr += String(duration);
-        }
-        arrayStr += "]";
-        
-        // 添加到JSON对象（直接是数组字符串）
+        // 输出为JSON对象（序列格式）
         const char* cmdName = (cmd.name[0] != '\0') ? cmd.name : "";
-        commands[cmdName] = arrayStr;
+        JsonObject seqObj = commands.createNestedObject(cmdName);
+        SignalUtils::sequenceToJSON(cmd.sequence, seqObj, true);
     }
     
     // 检查文档是否溢出
     if (doc.overflowed()) {
         char buffer[192];
-        snprintf(buffer, sizeof(buffer), "[IRLearner: convertToArrayFormat] JSON文档溢出，尝试使用更大的文档 (当前大小: %d bytes, 命令数: %d)", estimatedSize, learnedDevice->commandCount);
+        snprintf(buffer, sizeof(buffer), "[IRLearner: convertToJSONFormat] JSON文档溢出，尝试使用更大的文档 (当前大小: %d bytes, 命令数: %d)", estimatedSize, learnedDevice->commandCount);
         logger.log("warning", buffer);
         
         // 尝试使用更大的文档重新构建
         size_t largerSize = estimatedSize * 2;
-        if (largerSize <= 6144) {  // 限制最大6KB
+        if (largerSize <= 4096) {  // 限制最大4KB
             DynamicJsonDocument largerDoc(largerSize);
             largerDoc["manufacturer"] = "Learned";
             JsonArray largerModels = largerDoc.createNestedArray("supportedModels");
@@ -870,36 +765,24 @@ String IRLearner::convertToArrayFormat() {
             
             for (int i = 0; i < learnedDevice->commandCount && i < MAX_LEARN_COMMANDS; i++) {
                 const LearnedCommand& cmd = learnedDevice->commands[i];
-                if (!cmd.valid) continue;
-                if (ESP.getFreeHeap() < 2048) break;
-                
-                String arrayStr;
-                arrayStr.reserve(cmd.timingCount * 10 + 2);
-                arrayStr = "[";
-                for (int j = 0; j < cmd.timingCount; j++) {
-                    if (j > 0) arrayStr += ",";
-                    long duration = cmd.timing[j].duration;
-                    if (!cmd.timing[j].level) {
-                        duration = -duration;
-                    }
-                    arrayStr += String(duration);
-                }
-                arrayStr += "]";
+                if (!cmd.valid || cmd.sequence.signalCount == 0) continue;
+                if (ESP.getFreeHeap() < 1500) break;
                 
                 const char* cmdName = (cmd.name[0] != '\0') ? cmd.name : "";
-                largerCommands[cmdName] = arrayStr;
+                JsonObject seqObj = largerCommands.createNestedObject(cmdName);
+                SignalUtils::sequenceToJSON(cmd.sequence, seqObj, true);
             }
             
             if (!largerDoc.overflowed()) {
                 doc = largerDoc;
             } else {
                 char errorBuffer[192];
-                snprintf(errorBuffer, sizeof(errorBuffer), "[IRLearner: convertToArrayFormat] 更大的文档仍然溢出 (大小: %d bytes, 命令数: %d)", largerSize, learnedDevice->commandCount);
+                snprintf(errorBuffer, sizeof(errorBuffer), "[IRLearner: convertToJSONFormat] 更大的文档仍然溢出 (大小: %d bytes, 命令数: %d)", largerSize, learnedDevice->commandCount);
                 logger.log("error", errorBuffer);
             }
         } else {
             char errorBuffer[192];
-            snprintf(errorBuffer, sizeof(errorBuffer), "[IRLearner: convertToArrayFormat] JSON文档过大，无法重试 (需要: %d bytes, 命令数: %d)", largerSize, learnedDevice->commandCount);
+            snprintf(errorBuffer, sizeof(errorBuffer), "[IRLearner: convertToJSONFormat] JSON文档过大，无法重试 (需要: %d bytes, 命令数: %d)", largerSize, learnedDevice->commandCount);
             logger.log("error", errorBuffer);
         }
     }
@@ -912,12 +795,13 @@ String IRLearner::convertToArrayFormat() {
     // 如果仍然溢出，记录错误
     if (doc.overflowed()) {
         char buffer[192];
-        snprintf(buffer, sizeof(buffer), "[IRLearner: convertToArrayFormat] JSON文档溢出，无法序列化 (大小: %d bytes, 命令数: %d)", estimatedSize, learnedDevice->commandCount);
+        snprintf(buffer, sizeof(buffer), "[IRLearner: convertToJSONFormat] JSON文档溢出，无法序列化 (大小: %d bytes, 命令数: %d)", estimatedSize, learnedDevice->commandCount);
         logger.log("error", buffer);
     }
     
     return output;
 }
+
 
 String IRLearner::encodeTimingToBase64(const IRTiming* timing, int count) {
     if (timing == nullptr || count == 0) {
@@ -1431,4 +1315,187 @@ bool IRLearner::parseSignalPayload(const String& payload, UnifiedSignal& signal,
         default:
             return false;
     }
+}
+
+bool IRLearner::parseStringSequence(const String& payload, SignalSequence& sequence, IRTiming* timingBuffer, int maxTimingCount) {
+    if (payload.length() == 0 || timingBuffer == nullptr || maxTimingCount <= 0) {
+        return false;
+    }
+    
+    String trimmed = payload;
+    trimmed.trim();
+    
+    if (trimmed.length() == 0) {
+        return false;
+    }
+    
+    sequence.clear();
+    
+    // 1. 先提取最后的|repeatCount（如果存在）
+    uint8_t sequenceRepeatCount = 1;
+    int pipePos = trimmed.lastIndexOf('|');
+    if (pipePos > 0 && pipePos < trimmed.length() - 1) {
+        // 有|后缀，解析repeatCount
+        sequenceRepeatCount = atoi(trimmed.c_str() + pipePos + 1);
+        if (sequenceRepeatCount == 0) sequenceRepeatCount = 1;
+        if (sequenceRepeatCount > SIGNAL_REPEAT_MAX) sequenceRepeatCount = SIGNAL_REPEAT_MAX;
+        
+        // 移除|repeatCount部分
+        trimmed = trimmed.substring(0, pipePos);
+        trimmed.trim();
+    }
+    
+    if (trimmed.length() == 0) {
+        return false;
+    }
+    
+    // 2. 检查第一个信号前是否有间隔（格式：@50;signal1@30;signal2）
+    bool hasFirstInterval = false;
+    uint16_t firstInterval = 0;
+    int startPos = 0;
+    
+    if (trimmed.startsWith("@")) {
+        // 第一个信号前有间隔
+        hasFirstInterval = true;
+        int firstSemicolon = trimmed.indexOf(';');
+        if (firstSemicolon > 0) {
+            // 提取@后面的数字（直到分号）
+            String intervalStr = trimmed.substring(1, firstSemicolon);
+            intervalStr.trim();
+            firstInterval = intervalStr.toInt();
+            
+            // 从分号后开始解析信号
+            startPos = firstSemicolon + 1;
+        } else {
+            // 格式错误：@50后面没有分号
+            return false;
+        }
+    }
+    
+    // 3. 解析每个信号段
+    int signalIndex = 0;
+    int semicolonPos = trimmed.indexOf(';', startPos);
+    
+    while (startPos < trimmed.length() && signalIndex < MAX_B_SIGNALS_PER_RULE) {
+        // 获取当前信号段
+        String segment;
+        if (semicolonPos >= 0) {
+            segment = trimmed.substring(startPos, semicolonPos);
+        } else {
+            segment = trimmed.substring(startPos);
+        }
+        segment.trim();
+        
+        if (segment.length() == 0) {
+            // 空段，跳过
+            startPos = semicolonPos + 1;
+            semicolonPos = trimmed.indexOf(';', startPos);
+            continue;
+        }
+        
+        // 提取@间隔（如果存在）
+        uint16_t interval = 0;
+        int atPos = segment.indexOf('@');
+        String signalPart = segment;
+        
+        if (atPos > 0) {
+            // 有@间隔
+            String intervalStr = segment.substring(atPos + 1);
+            intervalStr.trim();
+            interval = intervalStr.toInt();
+            signalPart = segment.substring(0, atPos);
+            signalPart.trim();
+        }
+        
+        if (signalPart.length() == 0) {
+            // 只有间隔，没有信号，跳过
+            startPos = semicolonPos + 1;
+            semicolonPos = trimmed.indexOf(';', startPos);
+            continue;
+        }
+        
+        // 4. 解析信号部分（Base64/数组/协议格式）
+        UnifiedSignal signal;
+        signal.clear();
+        signal.repeatCount = sequenceRepeatCount;  // 使用序列级别的repeatCount
+        
+        SignalFormat format = detectSignalFormat(signalPart);
+        int timingCount = 0;
+        uint8_t signalRepeatCount = 1;
+        
+        bool parseSuccess = false;
+        
+        switch (format) {
+            case FORMAT_ARRAY: {
+                // 数组格式
+                if (parseArrayString(signalPart, timingBuffer, timingCount, maxTimingCount)) {
+                    signal.useTiming = true;
+                    signal.timingBase64 = SignalUtils::timingToBase64(timingBuffer, timingCount);
+                    signal.timingCount = timingCount;
+                    parseSuccess = true;
+                }
+                break;
+            }
+            
+            case FORMAT_PROTOCOL: {
+                // 协议格式
+                if (parseProtocolString(signalPart, signal, signalRepeatCount)) {
+                    signal.repeatCount = signalRepeatCount;  // 使用信号自身的repeatCount
+                    parseSuccess = true;
+                }
+                break;
+            }
+            
+            case FORMAT_BASE64: {
+                // Base64格式
+                if (decodeBase64ToTiming(signalPart, timingBuffer, timingCount, maxTimingCount)) {
+                    signal.useTiming = true;
+                    signal.timingBase64 = SignalUtils::timingToBase64(timingBuffer, timingCount);
+                    signal.timingCount = timingCount;
+                    parseSuccess = true;
+                }
+                break;
+            }
+            
+            default:
+                parseSuccess = false;
+                break;
+        }
+        
+        if (!parseSuccess) {
+            // 解析失败，跳过这个信号
+            startPos = semicolonPos + 1;
+            semicolonPos = trimmed.indexOf(';', startPos);
+            continue;
+        }
+        
+        // 5. 添加到序列
+        bool isFirstInterval = (hasFirstInterval && signalIndex == 0);
+        if (!sequence.addSignal(signal, interval, isFirstInterval)) {
+            // 序列已满
+            break;
+        }
+        
+        // 如果是第一个信号且有第一个信号前的间隔，设置间隔
+        if (hasFirstInterval && signalIndex == 0) {
+            sequence.intervals[0] = firstInterval;
+        }
+        
+        signalIndex++;
+        
+        // 移动到下一个信号段
+        if (semicolonPos >= 0) {
+            startPos = semicolonPos + 1;
+            semicolonPos = trimmed.indexOf(';', startPos);
+        } else {
+            break;
+        }
+    }
+    
+    if (sequence.signalCount == 0) {
+        return false;
+    }
+    
+    sequence.valid = true;
+    return true;
 }

@@ -76,7 +76,6 @@ bool IRMapper::initDefaultMappings() {
     rule.aSignal.repeatCount = 1;
     
     rule.bSequence.clear();
-    rule.bSequence.repeatCount = 1;
     rule.valid = true;
     
     // 批量添加规则，不立即保存（节省内存）
@@ -98,7 +97,7 @@ bool IRMapper::initDefaultMappings() {
             bSignal1.useTiming = false;
             bSignal1.data = TARGET_POWER;  // 0xFDB04F
             bSignal1.repeatCount = 1;
-            rule.bSequence.addSignal(bSignal1, 0);
+            rule.bSequence.addSignal(bSignal1, 0, false);
             
             // 第二个B信号：第一次重复码 0xFFFFFFFF，间隔30ms
             UnifiedSignal bSignal2;
@@ -106,7 +105,7 @@ bool IRMapper::initDefaultMappings() {
             bSignal2.useTiming = false;
             bSignal2.data = 0xFFFFFFFF;
             bSignal2.repeatCount = 1;
-            rule.bSequence.addSignal(bSignal2, 30);
+            rule.bSequence.addSignal(bSignal2, 30, false);
             
             // 第三个B信号：第二次重复码 0xFFFFFFFF，间隔70ms
             UnifiedSignal bSignal3;
@@ -114,7 +113,7 @@ bool IRMapper::initDefaultMappings() {
             bSignal3.useTiming = false;
             bSignal3.data = 0xFFFFFFFF;
             bSignal3.repeatCount = 1;
-            rule.bSequence.addSignal(bSignal3, 70);
+            rule.bSequence.addSignal(bSignal3, 70, false);
         } else {
             // 其他规则：单个B信号
             UnifiedSignal bSignal;
@@ -125,7 +124,7 @@ bool IRMapper::initDefaultMappings() {
             rule.bSequence.addSignal(bSignal, 0);
         }
         
-        rule.bSequence.repeatCount = defaultRules[i].repeatCount;
+        // 注意：序列不再包含repeatCount，重复次数由外部控制
         
         if (addRule(rule, false)) {
             successCount++;
@@ -808,10 +807,7 @@ bool IRMapper::jsonObjectToRule(JsonObject& obj, IR_MapRule& rule) {
             return false;
         }
         
-        rule.bSequence.repeatCount = obj["repeatCount"] | 1;
-        if (rule.bSequence.repeatCount == 0) {
-            rule.bSequence.repeatCount = 1;
-        }
+        // 注意：序列不再包含repeatCount，重复次数由外部控制
     } else {
         return false;  // 缺少bSequence或bSignals字段
     }

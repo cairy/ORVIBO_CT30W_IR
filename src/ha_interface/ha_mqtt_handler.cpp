@@ -690,12 +690,13 @@ void HAMQTTHandler::handleSendSignal(const String& payload) {
     String trimmed = payload;
     trimmed.trim();
     
-    // 如果payload是JSON格式（包含action字段），提取实际的信号数据
+    // 统一使用parseAndSendSignal，支持JSON和字符串两种格式
+    // 不再需要特殊处理repeatCount，统一由parseAndSendSignal处理
     if (trimmed.startsWith("{") && trimmed.indexOf("\"action\"") >= 0) {
+        // JSON格式，可能包含action字段，尝试提取信号数据
         size_t jsonSize = trimmed.length() + 256;
         if (jsonSize > 1024) jsonSize = 1024;
         
-        // 加强内存检查：确保有足够的内存
         if (!MemoryMonitor::checkMemory(jsonSize + 512)) {
             DEBUG_PRINTLN("[HA MQTT] 内存不足，跳过信号处理");
             return;
@@ -703,42 +704,30 @@ void HAMQTTHandler::handleSendSignal(const String& payload) {
         
         DynamicJsonDocument doc(jsonSize);
         DeserializationError err = deserializeJson(doc, trimmed);
-        if (!err && doc.containsKey("signal")) {
-            // 提取signal字段，构建完整的UnifiedSignal格式JSON
+        if (!err && doc.containsKey("signals")) {
+            // 序列格式，直接使用
+            forwarder->parseAndSendSignal(trimmed);
+            return;
+        } else if (!err && doc.containsKey("signal")) {
+            // 单个信号格式，转换为序列格式
             JsonObject signalObj = doc["signal"];
-            uint8_t repeatCount = doc["repeatCount"] | 1;
-            
-            // 构建完整的UnifiedSignal格式JSON（包含signal和repeatCount）
-            // 加强内存检查
-            if (!MemoryMonitor::checkMemory(1024)) {
-                DEBUG_PRINTLN("[HA MQTT] 内存不足，跳过信号处理");
-                return;
+            if (!signalObj.isNull()) {
+                DynamicJsonDocument signalDoc(512);
+                JsonArray signalsArray = signalDoc.createNestedArray("signals");
+                signalsArray.add(signalObj);
+                String signalJson;
+                serializeJson(signalDoc, signalJson);
+                forwarder->parseAndSendSignal(signalJson);
             }
-            
-            DynamicJsonDocument signalDoc(512);
-            signalDoc["signal"] = signalObj;
-            signalDoc["repeatCount"] = repeatCount;
-            
-            String signalJson;
-            serializeJson(signalDoc, signalJson);
-            trimmed = signalJson;
+            return;
         } else if (!err && doc.containsKey("action") && doc["action"] == "send_signal") {
             // 如果payload本身就是完整的send_signal命令，提取signal字段
             JsonObject signalObj = doc["signal"];
             if (!signalObj.isNull()) {
-                uint8_t repeatCount = doc["repeatCount"] | 1;
-                
-                // 加强内存检查
-                if (!MemoryMonitor::checkMemory(1024)) {
-                    DEBUG_PRINTLN("[HA MQTT] 内存不足，跳过信号处理");
-                    return;
-                }
-                
-                // 构建完整的UnifiedSignal格式JSON
+                // 转换为序列格式
                 DynamicJsonDocument signalDoc(512);
-                signalDoc["signal"] = signalObj;
-                signalDoc["repeatCount"] = repeatCount;
-                
+                JsonArray signalsArray = signalDoc.createNestedArray("signals");
+                signalsArray.add(signalObj);
                 String signalJson;
                 serializeJson(signalDoc, signalJson);
                 trimmed = signalJson;
@@ -746,14 +735,11 @@ void HAMQTTHandler::handleSendSignal(const String& payload) {
         }
     }
     
-    // 使用公共函数（支持JSON和字符串格式）
-    bool success = false;
-    String message = APIHandlers::handleSendSignal(forwarder, trimmed, success);
-    
-    if (success) {
-        publishState("executing", message);
+    // 统一使用parseAndSendSignal，支持JSON和字符串两种格式
+    if (forwarder->parseAndSendSignal(trimmed)) {
+        publishState("executing", "Signal sent");
     } else {
-        publishState("error", message);
+        publishState("error", "Failed to send signal");
     }
 }
 

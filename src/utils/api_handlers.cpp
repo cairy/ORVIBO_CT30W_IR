@@ -318,28 +318,30 @@ String APIHandlers::handleQueryLearnResult(IRLearner& learner, const String& for
     String formatLower = format;
     formatLower.toLowerCase();
     
-    String resultJson;
-    if (formatLower == "signalid") {
-        resultJson = learner.convertToSignalIDFormat();
-    } else if (formatLower == "array") {
-        resultJson = learner.convertToArrayFormat();
+    String result;
+    // 默认返回字符串格式
+    if (formatLower.length() == 0 || formatLower == "string") {
+        result = learner.convertToStringFormat();
+    } else if (formatLower == "json") {
+        result = learner.convertToJSONFormat();
     } else {
-        // 默认使用base64格式
-        resultJson = learner.convertToBase64Format();
+        // 默认字符串格式
+        result = learner.convertToStringFormat();
     }
     
-    if (resultJson.length() == 0 || resultJson == "{}") {
+    if (result.length() == 0) {
         return "";  // 转换失败
     }
     
-    // 解析resultJson为JSON对象，然后返回（只返回data部分）
-    size_t resultSize = resultJson.length() + 256;
+    // 所有格式都返回JSON（包括字符串格式）
+    // JSON格式：解析为JSON对象，然后返回（只返回data部分）
+    size_t resultSize = result.length() + 256;
     DynamicJsonDocument resultDoc(resultSize);
-    DeserializationError err = deserializeJson(resultDoc, resultJson);
+    DeserializationError err = deserializeJson(resultDoc, result);
     
     if (err) {
-        // 如果不是JSON，直接返回字符串
-        return resultJson;
+        // 如果不是JSON，直接返回字符串（向后兼容）
+        return result;
     } else {
         // 如果是JSON，返回序列化后的JSON字符串
         String output;
@@ -389,78 +391,11 @@ String APIHandlers::handleSendSignal(IRForwarder& forwarder, const String& paylo
         return "Empty payload";
     }
     
-    // 检测格式
-    IRLearner::SignalFormat format = IRLearner::detectSignalFormat(trimmed);
-    
-    // 如果检测到JSON格式（FORMAT_SIGNALID），按JSON格式解析
-    if (format == IRLearner::FORMAT_SIGNALID) {
-        // JSON格式：可能是单个信号或序列
-        size_t jsonSize = trimmed.length() + 256;
-        if (jsonSize > 2048) jsonSize = 2048;
-        if (jsonSize < 256) jsonSize = 256;
-        
-        if (!MemoryMonitor::checkMemory(jsonSize + 512)) {
-            return "Low Memory";
-        }
-        
-        DynamicJsonDocument doc(jsonSize);
-        DeserializationError error = deserializeJson(doc, trimmed);
-        
-        if (error) {
-            return "Invalid JSON";
-        }
-        
-        // 检查是否为序列格式（包含 signals 数组）
-        if (doc.containsKey("signals")) {
-            // 序列格式
-            SignalSequence sequence;
-            JsonObject docObj = doc.as<JsonObject>();
-            if (!SignalUtils::sequenceFromJSON(docObj, sequence)) {
-                return "Invalid sequence format";
-            }
-            if (forwarder.sendSequence(sequence)) {
-                success = true;
-                return "Sequence sent";
-            } else {
-                return "Failed to send sequence";
-            }
-        } else if (doc.containsKey("signal")) {
-            // 单个信号格式（兼容旧格式）
-            JsonObject signalObj = doc["signal"];
-            if (signalObj.isNull()) {
-                return "Missing 'signal' field";
-            }
-            
-            uint8_t repeatCount = doc["repeatCount"] | 1;
-            
-            UnifiedSignal signal;
-            if (!SignalUtils::signalFromJSON(signalObj, signal)) {
-                return "Invalid signal format";
-            }
-            signal.repeatCount = repeatCount;
-            
-            // 转换为序列格式发送
-            SignalSequence sequence;
-            sequence.clear();
-            sequence.addSignal(signal, 0);
-            sequence.repeatCount = repeatCount;
-            
-            if (forwarder.sendSequence(sequence)) {
-                success = true;
-                return "Signal sent";
-            } else {
-                return "Failed to send signal";
-            }
-        } else {
-            return "Missing 'signals' or 'signal' field";
-        }
+    // 统一使用parseAndSendSignal，支持JSON和字符串两种格式
+    if (forwarder.parseAndSendSignal(trimmed)) {
+        success = true;
+        return "Signal sent";
     } else {
-        // 使用统一的解析和发送方法（字符串格式，内部已支持序列格式）
-        if (forwarder.parseAndSendSignal(trimmed)) {
-            success = true;
-            return "Signal sent";
-        } else {
-            return "Failed to send signal";
-        }
+        return "Failed to send signal";
     }
 }

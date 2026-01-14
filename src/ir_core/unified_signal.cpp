@@ -320,13 +320,14 @@ void SignalUtils::sequenceToJSON(const SignalSequence& seq, JsonObject& obj, boo
     }
     
     // 间隔数组
+    // 根据实际使用的间隔数量序列化（可能是 signalCount 或 signalCount-1）
     JsonArray intervalsArray = obj.createNestedArray("intervals");
-    for (int i = 0; i < seq.signalCount - 1; i++) {
+    uint8_t intervalCount = seq.getIntervalCount();
+    for (int i = 0; i < intervalCount; i++) {
         intervalsArray.add(seq.intervals[i]);
     }
     
-    // 重复次数
-    obj["repeatCount"] = seq.repeatCount;
+    // 注意：序列不包含repeatCount，重复次数由外部控制
     
     // 辅助字段（如果有效）
     if (seq.timestamp > 0) {
@@ -366,25 +367,29 @@ bool SignalUtils::sequenceFromJSON(JsonObject& obj, SignalSequence& seq) {
     seq.signalCount = signalCount;
     
     // 解析间隔数组
+    // 支持两种模式：intervals 数量等于 signalCount 或 signalCount-1
     if (obj.containsKey("intervals")) {
         JsonArray intervalsArray = obj["intervals"];
         int intervalCount = 0;
         for (uint16_t interval : intervalsArray) {
-            if (intervalCount >= MAX_B_SIGNALS_PER_RULE - 1) {
+            if (intervalCount >= MAX_B_SIGNALS_PER_RULE) {
                 break;
             }
-            if (intervalCount < seq.signalCount - 1) {
+            // 根据数量判断语义：
+            // - 如果数量等于 signalCount：intervals[0] 是第一个信号前的间隔
+            // - 如果数量等于 signalCount-1：intervals[i] 是 signals[i] 和 signals[i+1] 之间的间隔
+            if (intervalCount < MAX_B_SIGNALS_PER_RULE) {
                 seq.intervals[intervalCount] = interval;
             }
             intervalCount++;
         }
+        // 如果间隔数量超过 signalCount，截断到 signalCount
+        if (intervalCount > signalCount) {
+            intervalCount = signalCount;
+        }
     }
     
-    // 解析重复次数
-    seq.repeatCount = obj["repeatCount"] | 1;
-    if (seq.repeatCount == 0) {
-        seq.repeatCount = 1;
-    }
+    // 注意：序列不包含repeatCount，重复次数由外部控制
     
     // 解析辅助字段（可选）
     seq.timestamp = obj["timestamp"] | 0;
@@ -405,13 +410,13 @@ bool SignalUtils::copySequence(const SignalSequence& src, SignalSequence& dst) {
     }
     dst.signalCount = src.signalCount;
     
-    // 拷贝间隔数组
-    for (int i = 0; i < src.signalCount - 1; i++) {
+    // 拷贝间隔数组（拷贝所有有效的间隔，最多 MAX_B_SIGNALS_PER_RULE 个）
+    uint8_t intervalCount = src.getIntervalCount();
+    for (int i = 0; i < intervalCount && i < MAX_B_SIGNALS_PER_RULE; i++) {
         dst.intervals[i] = src.intervals[i];
     }
     
     // 拷贝其他字段
-    dst.repeatCount = src.repeatCount;
     dst.timestamp = src.timestamp;
     dst.matched = src.matched;
     dst.valid = src.valid;
@@ -431,8 +436,14 @@ bool SignalUtils::sequencesEqual(const SignalSequence& a, const SignalSequence& 
         }
     }
     
-    // 比较间隔
-    for (int i = 0; i < a.signalCount - 1; i++) {
+    // 比较间隔（比较所有有效的间隔）
+    uint8_t intervalCountA = a.getIntervalCount();
+    uint8_t intervalCountB = b.getIntervalCount();
+    if (intervalCountA != intervalCountB) {
+        return false;
+    }
+    
+    for (int i = 0; i < intervalCountA; i++) {
         if (a.intervals[i] != b.intervals[i]) {
             return false;
         }

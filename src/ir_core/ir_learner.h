@@ -17,10 +17,6 @@ enum LearnMode {
 // 学习的指令结构
 struct LearnedCommand {
     char name[MAX_COMMAND_NAME_LEN];  // 指令名称
-    IRTiming timing[MAX_LEARN_TIMING_COUNT];  // 时序数据（总是保存，用于单个信号）
-    int timingCount;                  // 时序数量
-    UnifiedSignal signal;             // 统一信号（如果解析成功，包含协议信息；否则使用时序码，用于单个信号）
-    bool hasProtocol;                 // 是否成功解析了协议
     SignalSequence sequence;          // 信号序列（支持多个信号+间隔，单个信号时signalCount=1）
     bool valid;                       // 是否有效
 };
@@ -49,9 +45,8 @@ public:
     bool getLearnedDevice(LearnedDevice& device);  // 获取学习结果
     
     // 输出格式转换方法
-    String convertToBase64Format();      // 转换为Base64格式JSON（默认格式）
-    String convertToSignalIDFormat();    // 转换为SignalID格式JSON（如果解析成功）
-    String convertToArrayFormat();       // 转换为数组格式JSON
+    String convertToStringFormat();      // 转换为字符串序列格式（默认格式）
+    String convertToJSONFormat();        // 转换为JSON格式（commands字段的值是信号序列JSON对象）
     
     // Base64解码（用于发送学习到的信号）
     static bool decodeBase64ToTiming(const String& base64, IRTiming* timing, int& count, int maxCount);
@@ -68,6 +63,9 @@ public:
     static bool parseArrayString(const String& arrayStr, IRTiming* timing, int& count, int maxCount);
     static bool parseProtocolString(const String& protocolStr, UnifiedSignal& signal, uint8_t& repeatCount);
     static bool parseSignalPayload(const String& payload, UnifiedSignal& signal, IRTiming* timing, int& timingCount, int maxTimingCount, uint8_t& repeatCount, SignalFormat& format);
+    
+    // 字符串序列格式解析（支持序列）
+    static bool parseStringSequence(const String& payload, SignalSequence& sequence, IRTiming* timingBuffer, int maxTimingCount);
     
     // 学习状态查询方法
     String getCurrentCommandName() const;  // 获取当前正在学习的指令名称

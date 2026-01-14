@@ -114,7 +114,8 @@ struct UnifiedSignal {
 };
 
 // 统一信号序列结构（用于最近接收、学习、规则表、发送）
-// 单个信号也是序列（signalCount=1，intervals=[]）
+// 单个信号也是序列（signalCount=1，intervals=[] 或 intervals=[delay]）
+// 注意：序列不包含repeatCount，重复次数由外部参数控制
 struct SignalSequence {
     // 信号数组（最多5个信号）
     UnifiedSignal signals[MAX_B_SIGNALS_PER_RULE];
@@ -122,11 +123,11 @@ struct SignalSequence {
     // 信号数量（1-5）
     uint8_t signalCount;
     
-    // 间隔数组（signalCount-1个间隔，对应signalCount个信号）
-    uint16_t intervals[MAX_B_SIGNALS_PER_RULE - 1];
-    
-    // 重复发送次数（默认1）
-    uint8_t repeatCount;
+    // 间隔数组（最多MAX_B_SIGNALS_PER_RULE个间隔）
+    // 语义：
+    // - 如果 intervals 数量等于 signalCount：intervals[0] 表示第一个信号前的间隔，intervals[i] (i>0) 表示 signals[i-1] 和 signals[i] 之间的间隔
+    // - 如果 intervals 数量等于 signalCount-1：intervals[i] 表示 signals[i] 和 signals[i+1] 之间的间隔（向后兼容）
+    uint16_t intervals[MAX_B_SIGNALS_PER_RULE];
     
     // 辅助字段（仅用于最近接收的信号）
     unsigned long timestamp;  // 时间戳（仅用于最近接收）
@@ -134,14 +135,14 @@ struct SignalSequence {
     bool valid;               // 是否有效
     
     // 构造函数
-    SignalSequence() : signalCount(0), repeatCount(1), 
+    SignalSequence() : signalCount(0), 
                       timestamp(0), matched(false), valid(false) {
         // 初始化信号数组
         for (int i = 0; i < MAX_B_SIGNALS_PER_RULE; i++) {
             signals[i].clear();
         }
         // 初始化间隔数组
-        for (int i = 0; i < MAX_B_SIGNALS_PER_RULE - 1; i++) {
+        for (int i = 0; i < MAX_B_SIGNALS_PER_RULE; i++) {
             intervals[i] = 0;
         }
     }
@@ -152,10 +153,9 @@ struct SignalSequence {
             signals[i].clear();
         }
         signalCount = 0;
-        for (int i = 0; i < MAX_B_SIGNALS_PER_RULE - 1; i++) {
+        for (int i = 0; i < MAX_B_SIGNALS_PER_RULE; i++) {
             intervals[i] = 0;
         }
-        repeatCount = 1;
         timestamp = 0;
         matched = false;
         valid = false;
@@ -171,19 +171,61 @@ struct SignalSequence {
         return signalCount == 1;
     }
     
+    // 获取第一个信号（辅助方法）
+    const UnifiedSignal& getFirstSignal() const {
+        return signals[0];
+    }
+    
+    // 获取实际使用的间隔数量
+    // 返回 signalCount 或 signalCount-1，取决于是否有第一个信号前的间隔
+    // 判断逻辑：如果 intervals[signalCount-1] 有值，说明使用了 signalCount 个间隔（包括第一个信号前的间隔）
+    uint8_t getIntervalCount() const {
+        if (signalCount == 0) return 0;
+        if (signalCount == 1) {
+            // 单个信号：如果有间隔，说明是第一个信号前的间隔
+            return (intervals[0] > 0) ? 1 : 0;
+        }
+        // 多个信号：检查最后一个间隔是否被使用
+        // 如果 intervals[signalCount-1] 有值，说明使用了 signalCount 个间隔（包括第一个信号前的间隔）
+        if (signalCount > 1 && intervals[signalCount - 1] > 0) {
+            return signalCount;  // 有第一个信号前的间隔
+        }
+        return signalCount - 1;  // 标准模式：signalCount-1
+    }
+    
     // 添加信号到序列（返回是否成功）
-    bool addSignal(const UnifiedSignal& signal, uint16_t interval = 0) {
+    // interval: 间隔时间（毫秒）
+    // isFirstInterval: 如果为true且signalCount==0，则interval表示第一个信号前的间隔
+    bool addSignal(const UnifiedSignal& signal, uint16_t interval = 0, bool isFirstInterval = false) {
         if (signalCount >= MAX_B_SIGNALS_PER_RULE) {
             return false;  // 序列已满
+        }
+        
+        // 如果是第一个信号且isFirstInterval=true，设置第一个信号前的间隔
+        if (signalCount == 0 && isFirstInterval) {
+            intervals[0] = interval;
         }
         
         // 添加信号（使用赋值运算符，UnifiedSignal 有深拷贝）
         signals[signalCount] = signal;
         signalCount++;
         
-        // 添加间隔（如果有前一个信号）
-        if (signalCount > 1) {
-            intervals[signalCount - 2] = interval;
+        // 添加间隔
+        if (signalCount == 0) {
+            // 不应该到达这里（signalCount已经++）
+        } else if (signalCount == 1) {
+            // 第一个信号：如果isFirstInterval=true，intervals[0]已设置；否则不设置间隔
+            // 如果isFirstInterval=false，不设置间隔（第一个信号后没有间隔）
+        } else {
+            // 第二个及以后的信号
+            if (isFirstInterval && signalCount > 1) {
+                // 有第一个信号前的间隔模式：intervals[0]是第一个信号前的间隔
+                // intervals[i] (i>0) 是 signals[i-1] 和 signals[i] 之间的间隔
+                intervals[signalCount - 1] = interval;
+            } else {
+                // 标准模式：intervals[i] 是 signals[i] 和 signals[i+1] 之间的间隔
+                intervals[signalCount - 2] = interval;
+            }
         }
         
         return true;
