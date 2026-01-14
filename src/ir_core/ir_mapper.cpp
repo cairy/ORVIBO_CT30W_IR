@@ -90,14 +90,15 @@ bool IRMapper::initDefaultMappings() {
         
         // 特殊处理电源规则：包含三个B信号（完整信号 + 2次重复码）
         // 参考 ir-converter-finally.ino：完整信号 + 延时30ms + 重复码 + 延时70ms + 重复码
+        // 修改：在第一个信号前添加40ms间隔
         if (defaultRules[i].sourceData == SOURCE_POWER) {
-            // 第一个B信号：完整信号 0xFDB04F
+            // 第一个B信号：完整信号 0xFDB04F，第一个信号前间隔40ms
             UnifiedSignal bSignal1;
             bSignal1.protocol = NEC_PROTOCOL;
             bSignal1.useTiming = false;
             bSignal1.data = TARGET_POWER;  // 0xFDB04F
             bSignal1.repeatCount = 1;
-            rule.bSequence.addSignal(bSignal1, 0, false);
+            rule.bSequence.addSignal(bSignal1, 40, true);
             
             // 第二个B信号：第一次重复码 0xFFFFFFFF，间隔30ms
             UnifiedSignal bSignal2;
@@ -105,7 +106,7 @@ bool IRMapper::initDefaultMappings() {
             bSignal2.useTiming = false;
             bSignal2.data = 0xFFFFFFFF;
             bSignal2.repeatCount = 1;
-            rule.bSequence.addSignal(bSignal2, 30, false);
+            rule.bSequence.addSignal(bSignal2, 30, true);
             
             // 第三个B信号：第二次重复码 0xFFFFFFFF，间隔70ms
             UnifiedSignal bSignal3;
@@ -113,7 +114,7 @@ bool IRMapper::initDefaultMappings() {
             bSignal3.useTiming = false;
             bSignal3.data = 0xFFFFFFFF;
             bSignal3.repeatCount = 1;
-            rule.bSequence.addSignal(bSignal3, 70, false);
+            rule.bSequence.addSignal(bSignal3, 70, true);
         } else {
             // 其他规则：单个B信号
             UnifiedSignal bSignal;
