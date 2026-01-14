@@ -57,7 +57,7 @@
 #define MQTT_TOPIC_LOG "homeassistant/orvibo-ct30w/log"
 
 // MQTT 配置（优化：减少内存占用）
-#define MQTT_BUFFER_SIZE 1024  // MQTT 消息缓冲区大小（从1536减少到1024，节省512字节）
+#define MQTT_BUFFER_SIZE 2048  // MQTT 消息缓冲区大小（增加到2048，支持更大的响应消息）
 
 // Home Assistant Discovery 配置
 #define MQTT_DISCOVERY_PREFIX "homeassistant"

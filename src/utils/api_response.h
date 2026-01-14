@@ -31,4 +31,33 @@ public:
     static bool parseResponse(const String& json, bool& success, String& data, String& error);
 };
 
+// 统一的响应处理器抽象类
+// 用于统一 Web API 和 MQTT 的响应处理逻辑
+class APIResponseHandler {
+public:
+    virtual ~APIResponseHandler() {}
+    
+    // 发送成功响应（纯虚函数，由子类实现）
+    virtual bool sendSuccess(const String& json, const char* context = nullptr) = 0;
+    
+    // 发送错误响应（纯虚函数，由子类实现）
+    virtual bool sendError(const String& error, int code = 0, const char* context = nullptr) = 0;
+    
+    // 获取日志记录器（可选）
+    virtual Logger* getLogger() = 0;
+    
+    // 统一的 JSON 解析和响应发送流程
+    // dataJson: APIHandlers 返回的 JSON 字符串（data 部分）
+    // context: 上下文信息（如接口名称）
+    // isArray: true 表示 JsonArray，false 表示 JsonObject
+    // maxDocSize: 最大文档大小限制
+    bool processAndSendResponse(const String& dataJson, const char* context, bool isArray, size_t maxDocSize = 16384);
+    
+    // 处理 JsonArray 响应
+    bool processJsonArrayResponse(const String& dataJson, const char* context, size_t maxDocSize = 16384);
+    
+    // 处理 JsonObject 响应
+    bool processJsonObjectResponse(const String& dataJson, const char* context, size_t maxDocSize = 16384);
+};
+
 #endif // API_RESPONSE_H

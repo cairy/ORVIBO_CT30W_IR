@@ -5,6 +5,7 @@
 #include <ESP8266WebServer.h>
 #include "network_config.h"
 #include "config/constants.h"
+#include "utils/api_response.h"
 
 // 前向声明
 class IRMapper;
@@ -13,7 +14,7 @@ class IRLearner;
 class Logger;
 
 // Web 服务器（AP 配网界面 + HTTP REST API）
-class WebServer {
+class WebServer : public APIResponseHandler {
 public:
     WebServer(NetworkConfigManager& config);
     bool init();
@@ -64,6 +65,11 @@ private:
     
     // 内存检查辅助方法
     bool checkMemoryBeforeAPI(size_t requiredBytes = 2048);
+    
+    // APIResponseHandler 接口实现
+    bool sendSuccess(const String& json, const char* context = nullptr) override;
+    bool sendError(const String& error, int code = 0, const char* context = nullptr) override;
+    Logger* getLogger() override { return logger; }
 };
 
 #endif // WEB_SERVER_H

@@ -191,6 +191,19 @@ void WebServer::sendErrorResponse(int code, const String& error) {
     sendJSONResponse(code, output);
 }
 
+// APIResponseHandler 接口实现
+bool WebServer::sendSuccess(const String& json, const char* context) {
+    sendJSONResponse(200, json);
+    return true;
+}
+
+bool WebServer::sendError(const String& error, int code, const char* context) {
+    // Web API 使用 HTTP 状态码，code 参数作为 HTTP 状态码
+    if (code == 0) code = 500;  // 默认 500
+    sendErrorResponse(code, error);
+    return false;
+}
+
 // 内存检查辅助函数：在API处理前检查内存是否充足
 // requiredBytes: 所需的最小连续内存块大小（字节）
 // 返回true表示内存充足，false表示内存不足
@@ -229,65 +242,9 @@ void WebServer::handleAPIMaps() {
     
     // 使用公共函数，传递 logger
     String dataJson = APIHandlers::handleQueryMaps(*mapper, logger);
-    if (dataJson.length() == 0) {
-        sendErrorResponse(503, "Insufficient memory");
-        return;
-    }
     
-    // 解析为JsonArray并包装为统一响应
-    // 动态计算JSON大小：解析JSON需要的内存通常是字符串长度的1.5-2倍
-    // 加上响应包装开销（success, status, timestamp, data字段）
-    size_t docSize = (dataJson.length() * 2) + 1024;  // 2倍 + 1KB包装开销
-    if (docSize < 2048) docSize = 2048;  // 最小2KB
-    if (docSize > 16384) docSize = 16384;  // 限制最大16KB，避免内存不足
-    
-    DynamicJsonDocument dataDoc(docSize);
-    DeserializationError err = deserializeJson(dataDoc, dataJson);
-    if (err) {
-        char errorMsg[128];
-        snprintf(errorMsg, sizeof(errorMsg), "Failed to parse rules: %s", err.c_str());
-        if (logger != nullptr) {
-            logger->log("error", errorMsg);
-        }
-        sendErrorResponse(500, errorMsg);
-        return;
-    }
-    
-    // 检查文档是否溢出
-    if (dataDoc.overflowed()) {
-        char buffer[192];
-        snprintf(buffer, sizeof(buffer), "[接口: /api/maps] JSON文档溢出，尝试使用更大的文档 (当前大小: %d bytes, 数据长度: %d)", docSize, dataJson.length());
-        if (logger != nullptr) {
-            logger->log("warning", buffer);
-        }
-        
-        // 尝试使用更大的文档重新解析
-        size_t largerSize = dataJson.length() * 2 + 2048;
-        if (largerSize <= 16384) {  // 限制最大16KB
-            DynamicJsonDocument largerDoc(largerSize);
-            DeserializationError largerErr = deserializeJson(largerDoc, dataJson);
-            if (!largerErr && !largerDoc.overflowed()) {
-                dataDoc = largerDoc;
-            } else {
-                if (logger != nullptr) {
-                    logger->log("error", "[接口: /api/maps] 更大的文档仍然溢出或解析失败");
-                }
-                sendErrorResponse(500, "JSON document overflowed");
-                return;
-            }
-        } else {
-            if (logger != nullptr) {
-                logger->log("error", "[接口: /api/maps] JSON文档过大，无法重试");
-            }
-            sendErrorResponse(500, "JSON too large");
-            return;
-        }
-    }
-    
-    JsonArray rulesArray = dataDoc.as<JsonArray>();
-    String output = APIResponse::success(rulesArray, logger, "/api/maps");
-    
-    sendJSONResponse(200, output);
+    // 使用统一的响应处理
+    processJsonArrayResponse(dataJson, "/api/maps", 16384);
 }
 
 void WebServer::handleAPIUpdateMap() {
@@ -321,22 +278,9 @@ void WebServer::handleAPILogs() {
     
     // 使用公共函数（返回所有日志，系统只保留3条）
     String dataJson = APIHandlers::handleGetLogs(*logger);
-    if (dataJson.length() == 0) {
-        sendErrorResponse(503, "Insufficient memory");
-        return;
-    }
     
-    // 解析为JsonArray并包装为统一响应
-    DynamicJsonDocument dataDoc(1024);
-    DeserializationError err = deserializeJson(dataDoc, dataJson);
-    if (err) {
-        sendErrorResponse(500, "Failed to parse logs");
-        return;
-    }
-    
-    JsonArray logArray = dataDoc.as<JsonArray>();
-    String output = APIResponse::success(logArray, logger);
-    sendJSONResponse(200, output);
+    // 使用统一的响应处理
+    processJsonArrayResponse(dataJson, "/api/logs", 4096);
 }
 
 void WebServer::handleAPILearnStart() {
@@ -370,22 +314,9 @@ void WebServer::handleAPILearnStatus() {
     
     // 使用公共函数（简化版）
     String dataJson = APIHandlers::handleQueryLearnStatus(*learner);
-    if (dataJson.length() == 0) {
-        sendErrorResponse(503, "Insufficient memory");
-        return;
-    }
     
-    // 解析为JsonObject并包装为统一响应
-    DynamicJsonDocument dataDoc(512);
-    DeserializationError err = deserializeJson(dataDoc, dataJson);
-    if (err) {
-        sendErrorResponse(500, "Failed to parse learn status");
-        return;
-    }
-    
-    JsonObject dataObj = dataDoc.as<JsonObject>();
-    String output = APIResponse::success(dataObj, logger);
-    sendJSONResponse(200, output);
+    // 使用统一的响应处理
+    processJsonObjectResponse(dataJson, "/api/learn/status", 1024);
 }
 
 void WebServer::handleAPILearnStop() {
@@ -458,22 +389,9 @@ void WebServer::handleAPIRecentSignals() {
     
     // 使用公共函数
     String dataJson = APIHandlers::handleGetRecentSignals(*logger);
-    if (dataJson.length() == 0) {
-        sendErrorResponse(503, "Insufficient memory");
-        return;
-    }
     
-    // 解析为JsonArray并包装为统一响应
-    DynamicJsonDocument dataDoc(1536);
-    DeserializationError err = deserializeJson(dataDoc, dataJson);
-    if (err) {
-        sendErrorResponse(500, "Failed to parse signals");
-        return;
-    }
-    
-    JsonArray signalsArray = dataDoc.as<JsonArray>();
-    String output = APIResponse::success(signalsArray, logger);
-    sendJSONResponse(200, output);
+    // 使用统一的响应处理
+    processJsonArrayResponse(dataJson, "/api/signals/recent", 2048);
 }
 
 void WebServer::handleAPISendSignal() {

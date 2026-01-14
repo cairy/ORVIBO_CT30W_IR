@@ -150,6 +150,56 @@ void HAMQTTHandler::handleCommand(const char* topic, const char* payload, size_t
     }
 }
 
+// APIResponseHandler 接口实现
+bool HAMQTTHandler::sendSuccess(const String& json, const char* context) {
+    if (!mqtt.isConnected()) {
+        char errorMsg[128];
+        snprintf(errorMsg, sizeof(errorMsg), "[MQTT%s] MQTT not connected, failed to publish", context ? context : "");
+        logger.log("error", errorMsg);
+        Serial.printf("[MQTT%s] MQTT not connected, failed to publish\n", context ? context : "");
+        return false;
+    }
+    
+    // 检查消息大小
+    size_t messageSize = strlen(MQTT_TOPIC_STATE) + json.length();
+    if (messageSize > MQTT_BUFFER_SIZE) {
+        char errorMsg[192];
+        snprintf(errorMsg, sizeof(errorMsg), "[MQTT%s] Message too large: %d bytes (max: %d bytes)", 
+                 context ? context : "", messageSize, MQTT_BUFFER_SIZE);
+        logger.log("error", errorMsg);
+        Serial.printf("[MQTT%s] Message too large: %d bytes (max: %d bytes)\n", 
+                      context ? context : "", messageSize, MQTT_BUFFER_SIZE);
+        return false;
+    }
+    
+    // 检查内存
+    size_t freeHeap = ESP.getFreeHeap();
+    if (freeHeap < messageSize + 512) {
+        char errorMsg[192];
+        snprintf(errorMsg, sizeof(errorMsg), "[MQTT%s] Insufficient memory: %d bytes free (need: %d bytes)", 
+                 context ? context : "", freeHeap, messageSize + 512);
+        logger.log("error", errorMsg);
+        Serial.printf("[MQTT%s] Insufficient memory: %d bytes free (need: %d bytes)\n", 
+                      context ? context : "", freeHeap, messageSize + 512);
+        return false;
+    }
+    
+    bool result = mqtt.publish(MQTT_TOPIC_STATE, json);
+    if (!result) {
+        char errorMsg[128];
+        snprintf(errorMsg, sizeof(errorMsg), "[MQTT%s] Failed to publish message", context ? context : "");
+        logger.log("error", errorMsg);
+        Serial.printf("[MQTT%s] Failed to publish message\n", context ? context : "");
+    }
+    return result;
+}
+
+bool HAMQTTHandler::sendError(const String& error, int code, const char* context) {
+    // MQTT 不使用 HTTP 状态码，code 参数忽略
+    String output = UnifiedAPI::createErrorResponse(error, code);
+    return sendSuccess(output, context);  // 使用 sendSuccess 发送错误响应（已包含错误格式）
+}
+
 void HAMQTTHandler::publishState(const String& state, const String& message) {
     // 优化：避免在MQTT回调中直接调用publishEnhancedState()，可能导致栈溢出
     // 如果内存充足，直接发布简单状态；否则延迟到下次update()
@@ -171,7 +221,7 @@ void HAMQTTHandler::publishState(const String& state, const String& message) {
             UnifiedAPI::addTimestamp(doc);
             serializeJson(doc, output);
         }
-        mqtt.publish(MQTT_TOPIC_STATE, output);
+        sendSuccess(output, nullptr);  // 使用统一的发送方法，包含错误检查
     }
     // 如果内存不足，跳过发布（状态将在下次update()时通过publishEnhancedState()发布）
 }
@@ -495,62 +545,16 @@ void HAMQTTHandler::processCommand(const String& payload) {
     } else if (action == "get_status") {
         handleGetStatus();
     } else {
-        publishState("error", "Unknown action: " + action);
+        sendError("Unknown action: " + action, 400, "MQTT: processCommand");
     }
 }
 
 void HAMQTTHandler::handleQueryMaps() {
     // 使用公共函数，传递 logger
     String dataJson = APIHandlers::handleQueryMaps(mapper, &logger);
-    if (dataJson.length() == 0) {
-        publishState("error", "Low Memory");
-        return;
-    }
     
-    // 解析为JsonArray并包装为统一响应
-    // 动态计算JSON大小
-    size_t docSize = dataJson.length() + 1024;
-    if (docSize < 2048) docSize = 2048;
-    if (docSize > 8192) docSize = 8192;
-    
-    DynamicJsonDocument dataDoc(docSize);
-    DeserializationError err = deserializeJson(dataDoc, dataJson);
-    if (err) {
-        char errorMsg[128];
-        snprintf(errorMsg, sizeof(errorMsg), "Failed to parse rules: %s", err.c_str());
-        logger.log("error", errorMsg);
-        publishState("error", "Failed to parse rules");
-        return;
-    }
-    
-    // 检查文档是否溢出
-    if (dataDoc.overflowed()) {
-        char buffer[128];
-        snprintf(buffer, sizeof(buffer), "JSON文档溢出，尝试使用更大的文档 (当前大小: %d bytes)", docSize);
-        logger.log("warning", buffer);
-        
-        // 尝试使用更大的文档重新解析
-        size_t largerSize = dataJson.length() * 2 + 2048;
-        if (largerSize <= 16384) {
-            DynamicJsonDocument largerDoc(largerSize);
-            DeserializationError largerErr = deserializeJson(largerDoc, dataJson);
-            if (!largerErr && !largerDoc.overflowed()) {
-                dataDoc = largerDoc;
-            } else {
-                logger.log("error", "更大的文档仍然溢出或解析失败");
-                publishState("error", "JSON document overflowed");
-                return;
-            }
-        } else {
-            logger.log("error", "JSON文档过大，无法重试");
-            publishState("error", "JSON too large");
-            return;
-        }
-    }
-    
-    JsonArray rulesArray = dataDoc.as<JsonArray>();
-    String output = UnifiedAPI::createSuccessResponse(rulesArray, "success", &logger, "MQTT: /maps");
-    mqtt.publish(MQTT_TOPIC_STATE, output);
+    // 使用统一的响应处理
+    processJsonArrayResponse(dataJson, "MQTT: query_maps", 8192);
 }
 
 void HAMQTTHandler::handleUpdateMap(const String& json) {
@@ -569,55 +573,9 @@ void HAMQTTHandler::handleUpdateMap(const String& json) {
 void HAMQTTHandler::handleGetLogs() {
     // 使用公共函数（返回所有日志，系统只保留3条）
     String dataJson = APIHandlers::handleGetLogs(logger);
-    if (dataJson.length() == 0) {
-        publishState("error", "Low Memory");
-        return;
-    }
     
-    // 解析为JsonArray并包装为统一响应
-    // 动态计算JSON大小
-    size_t docSize = dataJson.length() + 512;
-    if (docSize < 1024) docSize = 1024;
-    if (docSize > 4096) docSize = 4096;
-    
-    DynamicJsonDocument dataDoc(docSize);
-    DeserializationError err = deserializeJson(dataDoc, dataJson);
-    if (err) {
-        char errorMsg[128];
-        snprintf(errorMsg, sizeof(errorMsg), "Failed to parse logs: %s", err.c_str());
-        logger.log("error", errorMsg);
-        publishState("error", "Failed to parse logs");
-        return;
-    }
-    
-    // 检查文档是否溢出
-    if (dataDoc.overflowed()) {
-        char buffer[128];
-        snprintf(buffer, sizeof(buffer), "JSON文档溢出，尝试使用更大的文档 (当前大小: %d bytes)", docSize);
-        logger.log("warning", buffer);
-        
-        // 尝试使用更大的文档重新解析
-        size_t largerSize = dataJson.length() * 2 + 1024;
-        if (largerSize <= 8192) {
-            DynamicJsonDocument largerDoc(largerSize);
-            DeserializationError largerErr = deserializeJson(largerDoc, dataJson);
-            if (!largerErr && !largerDoc.overflowed()) {
-                dataDoc = largerDoc;
-            } else {
-                logger.log("error", "更大的文档仍然溢出或解析失败");
-                publishState("error", "JSON document overflowed");
-                return;
-            }
-        } else {
-            logger.log("error", "JSON文档过大，无法重试");
-            publishState("error", "JSON too large");
-            return;
-        }
-    }
-    
-    JsonArray logArray = dataDoc.as<JsonArray>();
-    String output = UnifiedAPI::createSuccessResponse(logArray, "success", &logger);
-    mqtt.publish(MQTT_TOPIC_STATE, output);
+    // 使用统一的响应处理
+    processJsonArrayResponse(dataJson, "MQTT: get_logs", 4096);
 }
 
 void HAMQTTHandler::handleStartLearn(const String& json) {
@@ -640,28 +598,15 @@ void HAMQTTHandler::handleStartLearn(const String& json) {
 
 void HAMQTTHandler::handleQueryLearnStatus(const String& json) {
     if (learner == nullptr) {
-        publishState("error", "Learner service not initialized");
+        sendError("Service not initialized", 500, "MQTT: query_learn_status");
         return;
     }
     
     // 使用公共函数（简化版）
     String dataJson = APIHandlers::handleQueryLearnStatus(*learner);
-    if (dataJson.length() == 0) {
-        publishState("error", "Low Memory");
-        return;
-    }
     
-    // 解析为JsonObject并包装为统一响应
-    DynamicJsonDocument dataDoc(512);
-    DeserializationError err = deserializeJson(dataDoc, dataJson);
-    if (err) {
-        publishState("error", "Failed to parse learn status");
-        return;
-    }
-    
-    JsonObject dataObj = dataDoc.as<JsonObject>();
-    String output = UnifiedAPI::createSuccessResponse(dataObj, "success");
-    mqtt.publish(MQTT_TOPIC_STATE, output);
+    // 使用统一的响应处理
+    processJsonObjectResponse(dataJson, "MQTT: query_learn_status", 1024);
 }
 
 void HAMQTTHandler::handleStopLearn(const String& json) {
@@ -684,7 +629,7 @@ void HAMQTTHandler::handleStopLearn(const String& json) {
 
 void HAMQTTHandler::handleQueryLearnResult(const String& json) {
     if (learner == nullptr) {
-        publishState("error", "Learner service not initialized");
+        sendError("Service not initialized", 500, "MQTT: query_learn_result");
         return;
     }
     
@@ -703,7 +648,7 @@ void HAMQTTHandler::handleQueryLearnResult(const String& json) {
     // 使用公共函数
     String dataJson = APIHandlers::handleQueryLearnResult(*learner, format);
     if (dataJson.length() == 0) {
-        publishState("error", "No learned device found");
+        sendError("No learned device found", 404, "MQTT: query_learn_result");
         return;
     }
     
@@ -713,22 +658,22 @@ void HAMQTTHandler::handleQueryLearnResult(const String& json) {
     
     if (err) {
         // 如果不是JSON，直接作为字符串返回
-        String output = UnifiedAPI::createSuccessResponse(dataJson, "success");
-        mqtt.publish(MQTT_TOPIC_STATE, output);
+        String output = UnifiedAPI::createSuccessResponse(dataJson, "success", &logger, "MQTT: query_learn_result");
+        sendSuccess(output, "MQTT: query_learn_result");
     } else {
         // 如果是JSON，提取为JsonObject或JsonArray
         if (dataDoc.is<JsonObject>()) {
             JsonObject obj = dataDoc.as<JsonObject>();
-            String output = UnifiedAPI::createSuccessResponse(obj, "success");
-            mqtt.publish(MQTT_TOPIC_STATE, output);
+            String output = UnifiedAPI::createSuccessResponse(obj, "success", &logger, "MQTT: query_learn_result");
+            sendSuccess(output, "MQTT: query_learn_result");
         } else if (dataDoc.is<JsonArray>()) {
             JsonArray arr = dataDoc.as<JsonArray>();
-            String output = UnifiedAPI::createSuccessResponse(arr, "success");
-            mqtt.publish(MQTT_TOPIC_STATE, output);
+            String output = UnifiedAPI::createSuccessResponse(arr, "success", &logger, "MQTT: query_learn_result");
+            sendSuccess(output, "MQTT: query_learn_result");
         } else {
             // 其他情况，作为字符串返回
-            String output = UnifiedAPI::createSuccessResponse(dataJson, "success");
-            mqtt.publish(MQTT_TOPIC_STATE, output);
+            String output = UnifiedAPI::createSuccessResponse(dataJson, "success", &logger, "MQTT: query_learn_result");
+            sendSuccess(output, "MQTT: query_learn_result");
         }
     }
 }
@@ -736,22 +681,9 @@ void HAMQTTHandler::handleQueryLearnResult(const String& json) {
 void HAMQTTHandler::handleGetRecentSignals(const String& json) {
     // 使用公共函数
     String dataJson = APIHandlers::handleGetRecentSignals(logger);
-    if (dataJson.length() == 0) {
-        publishState("error", "Low Memory");
-        return;
-    }
     
-    // 解析为JsonArray并包装为统一响应
-    DynamicJsonDocument dataDoc(1536);
-    DeserializationError err = deserializeJson(dataDoc, dataJson);
-    if (err) {
-        publishState("error", "Failed to parse signals");
-        return;
-    }
-    
-    JsonArray signalsArray = dataDoc.as<JsonArray>();
-    String output = UnifiedAPI::createSuccessResponse(signalsArray, "success");
-    mqtt.publish(MQTT_TOPIC_STATE, output);
+    // 使用统一的响应处理
+    processJsonArrayResponse(dataJson, "MQTT: get_recent_signals", 2048);
 }
 
 void HAMQTTHandler::handleSendSignal(const String& payload) {
@@ -871,7 +803,7 @@ void HAMQTTHandler::handleSmartIRSignal(const String& payload) {
 void HAMQTTHandler::handleGetStatus() {
     // 使用统一的内存检查
     if (!MemoryMonitor::checkMemory(2048)) {
-        publishState("error", "Low Memory");
+        sendError("Insufficient memory", 503, "MQTT: get_status");
         return;
     }
     
@@ -930,7 +862,7 @@ void HAMQTTHandler::handleGetStatus() {
     
     String output;
     serializeJson(doc, output);
-    mqtt.publish(MQTT_TOPIC_STATE, output);
+    sendSuccess(output, "MQTT: get_status");
     
     // 注意：查询接口不更新状态缓存，因为这不是状态变化事件
     // 发布完成后再次喂看门狗
@@ -1021,7 +953,7 @@ void HAMQTTHandler::publishEnhancedState() {
     
     String output;
     serializeJson(doc, output);
-    mqtt.publish(MQTT_TOPIC_STATE, output);
+    sendSuccess(output, "MQTT: publishEnhancedState");  // 使用统一的发送方法，包含错误检查
     
     // 更新状态缓存
     strncpy(lastPublishedStatus, currentStatus, sizeof(lastPublishedStatus) - 1);

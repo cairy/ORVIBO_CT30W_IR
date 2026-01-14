@@ -7,10 +7,11 @@
 #include "ir_core/ir_forwarder.h"
 #include "ir_core/ir_learner.h"
 #include "utils/logger.h"
+#include "utils/api_response.h"
 #include "config/constants.h"
 
 // HA MQTT 指令处理器
-class HAMQTTHandler {
+class HAMQTTHandler : public APIResponseHandler {
 public:
     HAMQTTHandler(MQTTClient& mqtt, IRMapper& mapper, 
                   IRForwarder& forwarder, Logger& logger);
@@ -23,6 +24,11 @@ public:
     void setIRLearner(IRLearner* learner) { this->learner = learner; }
     bool isDiscoveryPublished() const { return discoveryPublished; }
     void publishEnhancedState();  // 发布增强的状态信息
+    
+    // APIResponseHandler 接口实现
+    bool sendSuccess(const String& json, const char* context = nullptr) override;
+    bool sendError(const String& error, int code = 0, const char* context = nullptr) override;
+    Logger* getLogger() override { return &logger; }
 
 private:
     MQTTClient& mqtt;
