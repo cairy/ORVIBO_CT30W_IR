@@ -50,7 +50,7 @@ void IRForwarder::update() {
         // 从pendingTask构建规则并执行转发
         IR_MapRule rule;
         
-        // 解析A信号（虽然不需要，但保留用于调试）
+        // 解析A信号
         rule.aSignal.clear();
         rule.aSignal.protocol = pendingTask.signal_data[0] & 0xFF;
         rule.aSignal.data = pendingTask.signal_data[1];
@@ -59,6 +59,12 @@ void IRForwarder::update() {
         
         // 构建B信号序列
         rule.bSequence.clear();
+        
+        // 判断是否有第一个信号前的间隔：检查最后一个间隔是否有值
+        // 如果有第一个信号前的间隔，intervals[signalCount-1]会有值（因为总共有signalCount个间隔）
+        bool hasFirstInterval = (pendingTask.signal_count > 1 && pendingTask.intervals[pendingTask.signal_count - 1] > 0) ||
+                                (pendingTask.signal_count == 1 && pendingTask.intervals[0] > 0);
+        
         for (int i = 0; i < pendingTask.signal_count && i < MAX_B_SIGNALS_PER_RULE; i++) {
             UnifiedSignal bSignal;
             bSignal.clear();
@@ -68,12 +74,27 @@ void IRForwarder::update() {
             bSignal.repeatCount = 1;
             
             uint16_t interval = 0;
-            if (i > 0 && i - 1 < MAX_B_SIGNALS_PER_RULE - 1) {
-                interval = pendingTask.intervals[i - 1];
+            bool isFirstInterval = false;
+            
+            if (hasFirstInterval) {
+                // 有第一个信号前的间隔模式：intervals[0]是第一个信号前的间隔，intervals[i]是signals[i-1]和signals[i]之间的间隔
+                isFirstInterval = true;  // 所有信号都使用isFirstInterval=true模式
+                if (i == 0) {
+                    interval = pendingTask.intervals[0];  // 第一个信号前的间隔
+                } else if (i < 4) {
+                    interval = pendingTask.intervals[i];  // 信号之间的间隔
+                }
+            } else {
+                // 标准模式：intervals[i]是signals[i]和signals[i+1]之间的间隔
+                if (i > 0 && i - 1 < MAX_B_SIGNALS_PER_RULE - 1) {
+                    interval = pendingTask.intervals[i - 1];
+                }
             }
-            rule.bSequence.addSignal(bSignal, interval, false);
+            
+            rule.bSequence.addSignal(bSignal, interval, isFirstInterval);
         }
         // 注意：序列不再包含repeatCount，由外部参数控制
+        rule.bSequence.valid = true;  // 设置序列为有效
         rule.valid = true;
         
         // 执行转发
@@ -97,7 +118,7 @@ void IRForwarder::update() {
             // 队列中已经包含了所有需要的信息（B信号数据、重复次数等）
             IR_MapRule rule;
             
-            // 解析A信号（虽然不需要，但保留用于调试）
+            // 解析A信号
             rule.aSignal.clear();
             rule.aSignal.protocol = task.signal_data[0] & 0xFF;
             rule.aSignal.data = task.signal_data[1];
@@ -106,6 +127,12 @@ void IRForwarder::update() {
             
             // 构建B信号序列
             rule.bSequence.clear();
+            
+            // 判断是否有第一个信号前的间隔：检查最后一个间隔是否有值
+            // 如果有第一个信号前的间隔，intervals[signalCount-1]会有值（因为总共有signalCount个间隔）
+            bool hasFirstInterval = (task.signal_count > 1 && task.intervals[task.signal_count - 1] > 0) ||
+                                    (task.signal_count == 1 && task.intervals[0] > 0);
+            
             for (int i = 0; i < task.signal_count && i < MAX_B_SIGNALS_PER_RULE; i++) {
                 UnifiedSignal bSignal;
                 bSignal.clear();
@@ -115,12 +142,27 @@ void IRForwarder::update() {
                 bSignal.repeatCount = 1;
                 
                 uint16_t interval = 0;
-                if (i > 0 && i - 1 < MAX_B_SIGNALS_PER_RULE - 1) {
-                    interval = task.intervals[i - 1];
+                bool isFirstInterval = false;
+                
+                if (hasFirstInterval) {
+                    // 有第一个信号前的间隔模式：intervals[0]是第一个信号前的间隔，intervals[i]是signals[i-1]和signals[i]之间的间隔
+                    isFirstInterval = true;  // 所有信号都使用isFirstInterval=true模式
+                    if (i == 0) {
+                        interval = task.intervals[0];  // 第一个信号前的间隔
+                    } else if (i < 4) {
+                        interval = task.intervals[i];  // 信号之间的间隔
+                    }
+                } else {
+                    // 标准模式：intervals[i]是signals[i]和signals[i+1]之间的间隔
+                    if (i > 0 && i - 1 < MAX_B_SIGNALS_PER_RULE - 1) {
+                        interval = task.intervals[i - 1];
+                    }
                 }
-                rule.bSequence.addSignal(bSignal, interval, false);
+                
+                rule.bSequence.addSignal(bSignal, interval, isFirstInterval);
             }
             // 注意：序列不再包含repeatCount，由外部参数控制
+            rule.bSequence.valid = true;  // 设置序列为有效
             rule.valid = true;
             
             // 直接执行转发，使用队列中的数据
@@ -146,7 +188,7 @@ bool IRForwarder::forwardSignal(const UnifiedSignal& aSignal) {
         return false;
     }
     
-    // 开始非阻塞延时1ms
+    // 开始非阻塞延时
     if (delayTimer.startDelay(FORWARD_DELAY_BEFORE_SEND_MS)) {
         delayState = FORWARD_DELAY_WAITING;
         pendingTask = task;
@@ -262,6 +304,46 @@ bool IRForwarder::sendSequence(const SignalSequence& sequence) {
                 }
             }
         }
+    } else if (isNEC && sequence.signalCount > 1) {
+        // NEC协议多信号序列：需要特殊处理重复码
+        for (uint8_t repeat = 0; repeat < repeatCount; repeat++) {
+            // 如果有第一个信号前的间隔，先等待
+            if (hasFirstInterval && sequence.intervals[0] > 0) {
+                delayPrecise(sequence.intervals[0]);
+            }
+            
+            // 发射每个信号
+            for (uint8_t i = 0; i < sequence.signalCount; i++) {
+                const UnifiedSignal& signal = sequence.signals[i];
+                
+                // 检查是否为NEC重复码
+                if (signal.data == NEC_REPEAT_CODE) {
+                    // 发送NEC重复码
+                    transmitter.sendNECRepeat();
+                } else {
+                    // 发送完整NEC信号
+                    transmitter.sendNEC(signal.data, 32);
+                }
+                
+                // 信号间隔
+                if (hasFirstInterval) {
+                    // intervals[0] 是第一个信号前的间隔，intervals[i+1] 是 signals[i] 和 signals[i+1] 之间的间隔
+                    if (i < sequence.signalCount - 1) {
+                        delayPrecise(sequence.intervals[i + 1]);
+                    }
+                } else {
+                    // 标准模式：intervals[i] 是 signals[i] 和 signals[i+1] 之间的间隔
+                    if (i < sequence.signalCount - 1) {
+                        delayPrecise(sequence.intervals[i]);
+                    }
+                }
+            }
+            
+            // 重复间隔（最后一次重复后不需要间隔）
+            if (repeat < repeatCount - 1) {
+                delayPrecise(100);  // 默认100ms重复间隔
+            }
+        }
     } else {
         // 其他协议或序列：使用自定义时序生成
         for (uint8_t repeat = 0; repeat < repeatCount; repeat++) {
@@ -373,17 +455,9 @@ bool IRForwarder::compileSignal(const UnifiedSignal& signal, IRTiming* timing, i
 
 bool IRForwarder::executeForward(const IR_MapRule& rule) {
     forwarding = true;
-    unsigned long startTime = millis();
     
     // 使用 sendSequence() 统一处理，使用序列中信号的repeatCount
     bool result = sendSequence(rule.bSequence);
-    
-    // 优化：延迟检查移到循环外，减少不必要的检查
-    // 只在最后检查一次总延迟
-    unsigned long elapsed = millis() - startTime;
-    if (elapsed > FORWARD_DELAY_MAX_MS) {
-        // 延迟超限，记录警告（可通过Logger记录）
-    }
     
     forwarding = false;
     logger.resetSignalInterval();  // 发送完成后重置信号间隔
@@ -475,8 +549,20 @@ bool IRForwarder::createForwardTask(const IR_MapRule& rule, ForwardTask& task) {
         task.b_protocols[i] = rule.bSequence.signals[i].protocol;  // 存储B信号协议
     }
     
-    for (int i = 0; i < signalCount - 1 && i < 2; i++) {
-        task.intervals[i] = rule.bSequence.intervals[i];
+    // 存储间隔：检查是否有第一个信号前的间隔
+    uint8_t intervalCount = rule.bSequence.getIntervalCount();
+    bool hasFirstInterval = (intervalCount == rule.bSequence.signalCount);
+    
+    if (hasFirstInterval) {
+        // 有第一个信号前的间隔：存储所有间隔（包括第一个信号前的间隔）
+        for (int i = 0; i < intervalCount && i < 4; i++) {
+            task.intervals[i] = rule.bSequence.intervals[i];
+        }
+    } else {
+        // 标准模式：只存储信号之间的间隔
+        for (int i = 0; i < signalCount - 1 && i < 2; i++) {
+            task.intervals[i] = rule.bSequence.intervals[i];
+        }
     }
     
     // 注意：序列不再包含repeatCount，使用默认值1

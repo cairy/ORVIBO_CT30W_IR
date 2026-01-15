@@ -41,7 +41,7 @@
 #define INTERRUPT_DISABLE_MAX_MS 10   // 发射时关闭中断最大时长（10ms）
 
 // 重复信号转发优化配置
-#define FORWARD_DELAY_BEFORE_SEND_MS 1       // 转发前延时（AB信号隔离）
+#define FORWARD_DELAY_BEFORE_SEND_MS 1      // 转发前延时（AB信号隔离）
 #define NEC_REPEAT_CODE 0xFFFFFFFF           // NEC重复码标识（32位）
 #define REPEAT_RULE_TIMEOUT_MS 500           // 重复码规则超时时间（500ms未收到重复码则清除规则）
 

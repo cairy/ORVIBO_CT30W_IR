@@ -436,7 +436,7 @@ void HAMQTTHandler::publishDiscoveryConfig() {
         snprintf(uniqueIdBuf, sizeof(uniqueIdBuf), "%s_forwarding_enabled", deviceId);
         forwardingSwitchConfig["unique_id"] = uniqueIdBuf;
         forwardingSwitchConfig["state_topic"] = MQTT_TOPIC_STATE;
-        forwardingSwitchConfig["value_template"] = "{{ 'true' if value_json.data.forwarding_enabled else 'false' }}";
+        forwardingSwitchConfig["value_template"] = "{{ 'true' if (value_json.data is mapping and value_json.data.forwarding_enabled is defined and value_json.data.forwarding_enabled) else 'false' }}";
         forwardingSwitchConfig["command_topic"] = MQTT_TOPIC_COMMAND;
         forwardingSwitchConfig["payload_on"] = "true";
         forwardingSwitchConfig["payload_off"] = "false";
@@ -706,7 +706,7 @@ void HAMQTTHandler::handleSendSignal(const String& payload) {
         DeserializationError err = deserializeJson(doc, trimmed);
         if (!err && doc.containsKey("signals")) {
             // 序列格式，直接使用
-            forwarder->parseAndSendSignal(trimmed);
+            forwarder.parseAndSendSignal(trimmed);
             return;
         } else if (!err && doc.containsKey("signal")) {
             // 单个信号格式，转换为序列格式
@@ -717,7 +717,7 @@ void HAMQTTHandler::handleSendSignal(const String& payload) {
                 signalsArray.add(signalObj);
                 String signalJson;
                 serializeJson(signalDoc, signalJson);
-                forwarder->parseAndSendSignal(signalJson);
+                forwarder.parseAndSendSignal(signalJson);
             }
             return;
         } else if (!err && doc.containsKey("action") && doc["action"] == "send_signal") {
@@ -736,7 +736,7 @@ void HAMQTTHandler::handleSendSignal(const String& payload) {
     }
     
     // 统一使用parseAndSendSignal，支持JSON和字符串两种格式
-    if (forwarder->parseAndSendSignal(trimmed)) {
+    if (forwarder.parseAndSendSignal(trimmed)) {
         publishState("executing", "Signal sent");
     } else {
         publishState("error", "Failed to send signal");
