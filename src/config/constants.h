@@ -9,17 +9,17 @@
 // ============================================================================
 // 映射规则配置（A信号→B信号转发规则）
 // ============================================================================
-#define MAX_MAP_RULES 20             // 最大映射规则数（每条规则约65字节，共约1.3KB）
-#define MAX_B_SIGNALS_PER_RULE 5     // 每条规则最多触发的连续B信号数
+#define MAX_MAP_RULES 20             // 最大映射规则数（优化后每条规则约180字节）
+#define MAX_B_SIGNALS_PER_RULE 6     // 每条规则最多触发的连续B信号数
 
 // ============================================================================
 // 学习功能配置（红外信号学习与存储）
 // ============================================================================
-#define MAX_LEARN_COMMANDS 5         // 最大可学习指令数（每个指令约2.4KB，受ESP8266内存限制）
+#define MAX_LEARN_COMMANDS 8         // 最大可学习指令数（优化后每个指令约1.8KB）
 #define MAX_LEARN_TIMING_COUNT 200   // 每个指令最大时序点数（高/低电平切换次数）
 #define MAX_COMMAND_NAME_LEN 32      // 指令名称最大长度
 #define MAX_DEVICE_NAME_LEN 64       // 设备名称最大长度
-#define MAX_RECENT_SIGNALS 3         // 最近接收信号记录数（用于学习时显示候选信号）
+#define MAX_RECENT_SIGNALS 5         // 最近接收信号记录数（用于学习时显示候选信号）
 #define DEFAULT_LEARN_TIMEOUT_SEC 30 // 学习模式超时时间（秒）
 
 // ============================================================================
@@ -76,6 +76,16 @@
 #define CONFIG_FILE_NETWORK "/network_config.json"  // WiFi/MQTT配置文件
 #define CONFIG_FILE_MAPS "/ir_maps.json"            // 映射规则配置文件
 #define LOG_FILE "/ir_logs.json"                    // 日志存储文件
+
+// ============================================================================
+// 内存管理阈值
+// ============================================================================
+#define MEMORY_MIN_FREE_HEAP 1024        // 最小空闲堆内存（字节）
+#define MEMORY_MIN_FOR_JSON 2048         // JSON操作最小内存（字节）
+#define MEMORY_MIN_FOR_MQTT 2048         // MQTT操作最小内存（字节）
+#define MEMORY_MIN_FOR_WEBSERVER 4096    // Web服务器最小内存（字节）
+#define MEMORY_MIN_FOR_FLASH_WRITE 4096  // Flash写入最小内存（字节）
+#define MEMORY_WEBSERVER_STOP_PERCENT 92.0f  // Web服务器停止阈值（内存使用率）
 
 // ============================================================================
 // 调试宏（取消下行注释以启用串口调试输出）

@@ -80,6 +80,49 @@ const unsigned long MEMORY_CHECK_INTERVAL = 30000; // 30秒检查一次内存（
 const unsigned long WEB_SERVER_START_DELAY = 8000; // 8秒延迟
 unsigned long systemStartTime = 0;
 
+// Web服务器启动条件判断（抽取为独立函数，简化主循环）
+bool shouldWebServerRun(unsigned long now, bool wifiConnected, bool mqttConnected, bool mqttConfigured) {
+    float usagePercent = MemoryMonitor::getUsagePercent();
+    unsigned long elapsedSinceStart = now - systemStartTime;
+    
+    // 内存不足时强制停止Web服务器
+    if (usagePercent > MEMORY_WEBSERVER_STOP_PERCENT || !MemoryMonitor::checkMemory(MEMORY_MIN_FREE_HEAP)) {
+        return false;
+    }
+    
+    // AP模式：内存充足时运行
+    if (wifiManager.getStatus() == WIFI_AP_MODE) {
+        return true;
+    }
+    
+    // WiFi未连接
+    if (!wifiConnected) {
+        return false;
+    }
+    
+    // WiFi已连接
+    // 延迟期间：等待MQTT连接
+    if (elapsedSinceStart < WEB_SERVER_START_DELAY && mqttConfigured) {
+        if (mqttConnected && haHandler.isDiscoveryPublished()) {
+            return false;  // MQTT已就绪，不需要Web服务器
+        }
+        return false;  // 延迟期间暂不启动
+    }
+    
+    // 延迟时间已过
+    if (!mqttConfigured) {
+        return true;  // MQTT未配置：运行Web服务器
+    }
+    if (!mqttConnected) {
+        return true;  // MQTT已配置但连接失败：运行Web服务器
+    }
+    if (!haHandler.isDiscoveryPublished()) {
+        return true;  // MQTT已连接但Discovery发布失败：运行Web服务器
+    }
+    
+    return false;  // MQTT已连接且Discovery成功：不运行Web服务器
+}
+
 void setup() {
     Serial.begin(115200);
     Serial.println("\n\n=== ORVIBO-CT30W 红外转发器启动 ===");
@@ -242,17 +285,8 @@ void loop() {
                 // LED闪烁
                 ledControl.blink(1);
                 
-                // 查找映射并转发
-                // 完整信号：只有作为A信号时才转发（避免循环转发）
-                // 重复码：通过时间间隔和协议匹配判断是否转发（在forwardSignal内部处理）
-                if (rule != nullptr) {
-                    irForwarder.forwardSignal(signal);
-                } else {
-                    // 即使找不到规则，也尝试转发（可能是重复码，需要在forwardSignal内部判断）
-                    // 重复码会通过时间间隔和协议匹配来判断是否转发
-                    // 注意：B信号也会进入这里，但会在forwardSignal内部被正确丢弃
-                    irForwarder.forwardSignal(signal);
-                }
+                // 查找映射并转发（forwardSignal内部会处理规则查找和重复码判断）
+                irForwarder.forwardSignal(signal);
             }
         }
         
@@ -299,55 +333,14 @@ void loop() {
         bool mqttConfigured = networkConfig.isMQTTConfigured();
         ledControl.setNetworkStateWithMQTTConfig(wifiConnected, mqttConnected, mqttConfigured);
         
-        // Web服务器条件启动/停止逻辑（优化：延迟启动，避免MQTT快速连接时不必要的启动）
-        // 内存保护：内存不足时停止Web服务器
-        bool shouldRunWebServer = false;
-        unsigned long elapsedSinceStart = now - systemStartTime;
-        float usagePercent = MemoryMonitor::getUsagePercent();
+        // Web服务器条件启动/停止逻辑
+        bool shouldRunWebServer = shouldWebServerRun(now, wifiConnected, mqttConnected, mqttConfigured);
         
-        // 内存不足时强制停止Web服务器
-        // 检查条件：内存使用率超过92% 或 空闲内存小于1KB 或 最大连续块小于512字节
-        // 调整阈值，在真正内存紧张时才停止Web服务器
-        if (usagePercent > 92.0f || !MemoryMonitor::checkMemory(1024)) {
-            if (webServer.isRunning()) {
+        // 内存不足时停止Web服务器
+        if (!shouldRunWebServer && webServer.isRunning()) {
+            float usagePercent = MemoryMonitor::getUsagePercent();
+            if (usagePercent > MEMORY_WEBSERVER_STOP_PERCENT || !MemoryMonitor::checkMemory(MEMORY_MIN_FREE_HEAP)) {
                 DEBUG_PRINTF("[Web服务器] 内存不足，停止Web服务器 (使用率: %.1f%%)\n", usagePercent);
-                webServer.stop();
-            }
-            shouldRunWebServer = false;
-        } else if (wifiManager.getStatus() == WIFI_AP_MODE) {
-            // AP模式：内存充足时运行
-            shouldRunWebServer = true;
-        } else if (wifiConnected) {
-            // WiFi已连接
-            // 如果启动时间不足延迟时间，且MQTT已配置，等待MQTT连接成功
-            if (elapsedSinceStart < WEB_SERVER_START_DELAY && mqttConfigured) {
-                // 延迟期间：如果MQTT已连接且Discovery成功，则不启动Web服务器
-                if (mqttConnected && haHandler.isDiscoveryPublished()) {
-                    shouldRunWebServer = false;
-                } else {
-                    // 延迟期间：MQTT未就绪，暂时不启动（等待延迟结束）
-                    shouldRunWebServer = false;
-                }
-            } else {
-                // 延迟时间已过，按正常逻辑判断
-                if (!mqttConfigured) {
-                    // MQTT未配置：运行Web服务器
-                    shouldRunWebServer = true;
-                } else if (mqttConfigured && !mqttConnected) {
-                    // MQTT已配置但连接失败：运行Web服务器
-                    shouldRunWebServer = true;
-                } else {
-                    // MQTT已配置且已连接
-                    // 检查 Discovery 是否成功发布，如果失败也启用 Web 服务器
-                    bool discoverySuccess = haHandler.isDiscoveryPublished();
-                    if (!discoverySuccess) {
-                        // MQTT已连接但Discovery发布失败：运行Web服务器（用于排查问题）
-                        shouldRunWebServer = true;
-                    } else {
-                        // MQTT已连接且Discovery成功：不运行Web服务器
-                        shouldRunWebServer = false;
-                    }
-                }
             }
         }
         

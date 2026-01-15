@@ -27,7 +27,10 @@ private:
     PubSubClient client;
     NetworkConfigManager& configManager;
     unsigned long lastReconnectAttempt;
+    uint8_t reconnectAttempts;           // 重连尝试次数（用于指数退避）
+    static const uint8_t MAX_RECONNECT_ATTEMPTS = 10;  // 最大重连尝试次数
     bool attemptReconnect();
+    unsigned long getReconnectInterval() const;  // 获取当前重连间隔（指数退避）
 };
 
 #endif // MQTT_CLIENT_H

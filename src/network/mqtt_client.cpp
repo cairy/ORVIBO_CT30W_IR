@@ -1,7 +1,7 @@
 #include "mqtt_client.h"
 
 MQTTClient::MQTTClient(NetworkConfigManager& config, WiFiClient& wifiClient)
-    : client(wifiClient), configManager(config), lastReconnectAttempt(0) {
+    : client(wifiClient), configManager(config), lastReconnectAttempt(0), reconnectAttempts(0) {
 }
 
 bool MQTTClient::init() {
@@ -23,17 +23,34 @@ void MQTTClient::update() {
     
     if (!client.connected()) {
         unsigned long now = millis();
-        if (now - lastReconnectAttempt > 5000) {
+        unsigned long reconnectInterval = getReconnectInterval();
+        if (now - lastReconnectAttempt > reconnectInterval) {
             lastReconnectAttempt = now;
             // 喂看门狗，避免连接过程中超时
             ESP.wdtFeed();
-            attemptReconnect();
+            if (attemptReconnect()) {
+                reconnectAttempts = 0;  // 连接成功，重置计数
+            } else {
+                if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                    reconnectAttempts++;  // 连接失败，增加计数
+                }
+            }
         }
     } else {
+        reconnectAttempts = 0;  // 已连接，重置计数
         // 喂看门狗，避免loop()处理消息时超时
         ESP.wdtFeed();
         client.loop();
     }
+}
+
+// 指数退避重连间隔：5s, 10s, 20s, 40s, 60s（最大）
+unsigned long MQTTClient::getReconnectInterval() const {
+    if (reconnectAttempts == 0) return 5000;
+    if (reconnectAttempts == 1) return 10000;
+    if (reconnectAttempts == 2) return 20000;
+    if (reconnectAttempts == 3) return 40000;
+    return 60000;  // 最大60秒
 }
 
 bool MQTTClient::isConnected() {

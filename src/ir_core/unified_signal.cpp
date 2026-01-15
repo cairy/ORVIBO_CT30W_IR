@@ -28,25 +28,35 @@ bool UnifiedSignal::loadTiming() {
         return false;
     }
     
-    // 从Base64解码
-    return SignalUtils::base64ToTiming(timingBase64, timing, timingCount, timingCount);
+    // 从Base64解码（使用临时变量接收count，因为timingCount是int16_t）
+    int decodedCount = timingCount;
+    bool result = SignalUtils::base64ToTiming(timingBase64, timing, decodedCount, timingCount);
+    if (result) {
+        timingCount = (int16_t)decodedCount;
+    }
+    return result;
 }
 
 void SignalUtils::signalToJSON(const UnifiedSignal& signal, JsonObject& obj, bool hexFormat) {
-    obj["protocol"] = signal.protocol;
-    if (hexFormat) {
-        obj["data"] = uint32ToHexString(signal.data);
-    } else {
-        obj["data"] = signal.data;
-    }
-    // 不再序列化 isProtocol，因为可以通过 useTiming 推导：isProtocol = !useTiming
+    // 根据信号类型序列化不同字段
     obj["useTiming"] = signal.useTiming;
-    obj["timingCount"] = signal.timingCount;
     obj["repeatCount"] = signal.repeatCount;
     
-    if (signal.useTiming && signal.timingBase64.length() > 0) {
+    if (signal.useTiming) {
+        // 时序码信号
+        obj["protocol"] = 0;
+        obj["data"] = hexFormat ? "0x00000000" : (uint32_t)0;
+        obj["timingCount"] = (int)signal.timingCount;
         obj["timingBase64"] = signal.timingBase64;
     } else {
+        // 协议信号
+        obj["protocol"] = signal.protocol;
+        if (hexFormat) {
+            obj["data"] = uint32ToHexString(signal.data);
+        } else {
+            obj["data"] = signal.data;
+        }
+        obj["timingCount"] = 0;
         obj["timingBase64"] = "";
     }
 }
@@ -54,12 +64,6 @@ void SignalUtils::signalToJSON(const UnifiedSignal& signal, JsonObject& obj, boo
 bool SignalUtils::signalFromJSON(JsonObject& obj, UnifiedSignal& signal) {
     signal.clear();
     
-    signal.protocol = obj["protocol"] | 0;
-    if (obj["data"].is<const char*>()) {
-        signal.data = parseUint32FromHexString(obj["data"].as<const char*>());
-    } else {
-        signal.data = obj["data"] | 0;
-    }
     // 兼容旧格式：如果存在 isProtocol 字段，根据它设置 useTiming
     // 新格式只使用 useTiming 字段
     if (obj.containsKey("isProtocol")) {
@@ -68,14 +72,23 @@ bool SignalUtils::signalFromJSON(JsonObject& obj, UnifiedSignal& signal) {
     } else {
         signal.useTiming = obj["useTiming"] | false;
     }
-    signal.timingCount = obj["timingCount"] | 0;
     signal.repeatCount = obj["repeatCount"] | 1;
     
     if (signal.useTiming) {
+        // 时序码信号
+        signal.timingCount = (int16_t)(obj["timingCount"] | 0);
         if (obj["timingBase64"].is<const char*>()) {
             signal.timingBase64 = obj["timingBase64"].as<const char*>();
         } else {
             signal.timingBase64 = "";
+        }
+    } else {
+        // 协议信号
+        signal.protocol = obj["protocol"] | 0;
+        if (obj["data"].is<const char*>()) {
+            signal.data = parseUint32FromHexString(obj["data"].as<const char*>());
+        } else {
+            signal.data = obj["data"] | 0;
         }
     }
     
@@ -85,20 +98,26 @@ bool SignalUtils::signalFromJSON(JsonObject& obj, UnifiedSignal& signal) {
 bool SignalUtils::copySignal(const UnifiedSignal& src, UnifiedSignal& dst) {
     dst.clear();
     
-    dst.protocol = src.protocol;
-    dst.data = src.data;
     dst.useTiming = src.useTiming;
-    dst.timingBase64 = src.timingBase64;
-    dst.timingCount = src.timingCount;
     dst.repeatCount = src.repeatCount;
     
-    // 深拷贝时序码（如果已加载）
-    if (src.timing != nullptr && src.timingCount > 0) {
-        dst.timing = new IRTiming[src.timingCount];
-        if (dst.timing == nullptr) {
-            return false;
+    if (src.useTiming) {
+        // 时序码信号
+        dst.timingCount = src.timingCount;
+        dst.timingBase64 = src.timingBase64;
+        
+        // 深拷贝时序码（如果已加载）
+        if (src.timing != nullptr && src.timingCount > 0) {
+            dst.timing = new IRTiming[src.timingCount];
+            if (dst.timing == nullptr) {
+                return false;
+            }
+            memcpy(dst.timing, src.timing, src.timingCount * sizeof(IRTiming));
         }
-        memcpy(dst.timing, src.timing, src.timingCount * sizeof(IRTiming));
+    } else {
+        // 协议信号
+        dst.protocol = src.protocol;
+        dst.data = src.data;
     }
     
     return true;
@@ -114,9 +133,7 @@ bool SignalUtils::signalsEqual(const UnifiedSignal& a, const UnifiedSignal& b) {
         return a.timingBase64 == b.timingBase64 && a.timingCount == b.timingCount;
     } else {
         // 使用协议：比较protocol和data
-        return a.isProtocol() == b.isProtocol() &&
-               a.protocol == b.protocol &&
-               a.data == b.data;
+        return a.protocol == b.protocol && a.data == b.data;
     }
 }
 

@@ -8,33 +8,46 @@
 
 // 统一信号结构（替代SignalID和BSignal）
 // 支持协议信号和时序码信号两种格式
+// 使用联合体优化内存：协议信号和时序码信号共享存储空间
 struct UnifiedSignal {
-    // 协议信息（仅当 useTiming=false 时有效）
-    uint32_t protocol;          // 协议类型（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung, 0=未知），仅当 useTiming=false 时有效
-    uint32_t data;              // 协议数据（32位），仅当 useTiming=false 时有效
-    
-    // 时序码信息（仅当 useTiming=true 时有效）
+    // 信号类型标志
     bool useTiming;              // 是否使用时序码（true=时序码信号，false=协议信号）
-    String timingBase64;         // 时序码Base64字符串（存储用，Flash中），仅当 useTiming=true 时有效
-    int timingCount;            // 时序码数量（时序点的个数），仅当 useTiming=true 时有效
+    uint8_t repeatCount;         // 重复发送次数（默认1）
+    
+    // 使用联合体节省内存：协议信号和时序码信号不会同时使用
+    union {
+        // 协议信息（仅当 useTiming=false 时有效）
+        struct {
+            uint32_t protocol;   // 协议类型（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung, 0=未知）
+            uint32_t data;       // 协议数据（32位）
+        };
+        // 时序码信息（仅当 useTiming=true 时有效）
+        struct {
+            int16_t timingCount; // 时序码数量（时序点的个数，最大32767足够）
+            uint16_t _reserved;  // 保留字段，对齐用
+        };
+    };
+    
+    // 时序码Base64字符串（仅当 useTiming=true 时使用）
+    // 注意：这个字段在协议信号时不使用，但由于String有默认构造函数，不会占用额外堆内存
+    String timingBase64;
     
     // 运行时数据（不存储，仅运行时使用）
-    IRTiming* timing;           // 时序码数据指针（运行时分配，转发时使用）
-    
-    // 辅助字段
-    uint8_t repeatCount;        // 重复发送次数（默认1），用于控制信号发送的重复次数
+    IRTiming* timing;            // 时序码数据指针（运行时分配，转发时使用）
     
     // 构造函数
-    UnifiedSignal() : protocol(0), data(0),
-                      useTiming(false), timingCount(0), timing(nullptr), repeatCount(1) {}
+    UnifiedSignal() : useTiming(false), repeatCount(1), protocol(0), data(0), timing(nullptr) {}
     
     // 清理函数
     void clear() {
-        protocol = 0;
-        data = 0;
+        if (useTiming) {
+            timingBase64 = "";
+            timingCount = 0;
+        } else {
+            protocol = 0;
+            data = 0;
+        }
         useTiming = false;
-        timingBase64 = "";
-        timingCount = 0;
         freeTiming();
         repeatCount = 1;
     }
@@ -49,7 +62,7 @@ struct UnifiedSignal {
         if (useTiming) {
             return timingCount > 0 && timingBase64.length() > 0;
         } else {
-            return isProtocol() && protocol > 0 && protocol <= 5;
+            return protocol > 0 && protocol <= 5;
         }
     }
     
@@ -75,18 +88,20 @@ struct UnifiedSignal {
     }
     
     // 拷贝构造函数（深拷贝）
-    UnifiedSignal(const UnifiedSignal& other) {
-        protocol = other.protocol;
-        data = other.data;
+    UnifiedSignal(const UnifiedSignal& other) : timing(nullptr) {
         useTiming = other.useTiming;
-        timingBase64 = other.timingBase64;
-        timingCount = other.timingCount;
         repeatCount = other.repeatCount;
-        timing = nullptr;
-        if (other.timing != nullptr && timingCount > 0) {
-            timing = new IRTiming[timingCount];
+        if (useTiming) {
+            timingCount = other.timingCount;
+            timingBase64 = other.timingBase64;
+        } else {
+            protocol = other.protocol;
+            data = other.data;
+        }
+        if (other.timing != nullptr && other.useTiming && other.timingCount > 0) {
+            timing = new IRTiming[other.timingCount];
             if (timing != nullptr) {
-                memcpy(timing, other.timing, timingCount * sizeof(IRTiming));
+                memcpy(timing, other.timing, other.timingCount * sizeof(IRTiming));
             }
         }
     }
@@ -95,17 +110,20 @@ struct UnifiedSignal {
     UnifiedSignal& operator=(const UnifiedSignal& other) {
         if (this != &other) {
             freeTiming();
-            protocol = other.protocol;
-            data = other.data;
             useTiming = other.useTiming;
-            timingBase64 = other.timingBase64;
-            timingCount = other.timingCount;
             repeatCount = other.repeatCount;
-            timing = nullptr;
-            if (other.timing != nullptr && timingCount > 0) {
-                timing = new IRTiming[timingCount];
+            if (useTiming) {
+                timingCount = other.timingCount;
+                timingBase64 = other.timingBase64;
+            } else {
+                protocol = other.protocol;
+                data = other.data;
+                timingBase64 = "";  // 清空时序码字符串
+            }
+            if (other.timing != nullptr && other.useTiming && other.timingCount > 0) {
+                timing = new IRTiming[other.timingCount];
                 if (timing != nullptr) {
-                    memcpy(timing, other.timing, timingCount * sizeof(IRTiming));
+                    memcpy(timing, other.timing, other.timingCount * sizeof(IRTiming));
                 }
             }
         }
@@ -201,33 +219,29 @@ struct SignalSequence {
             return false;  // 序列已满
         }
         
-        // 如果是第一个信号且isFirstInterval=true，设置第一个信号前的间隔
-        if (signalCount == 0 && isFirstInterval) {
-            intervals[0] = interval;
-        }
-        
         // 添加信号（使用赋值运算符，UnifiedSignal 有深拷贝）
         signals[signalCount] = signal;
-        signalCount++;
         
-        // 添加间隔
+        // 处理间隔
         if (signalCount == 0) {
-            // 不应该到达这里（signalCount已经++）
-        } else if (signalCount == 1) {
-            // 第一个信号：如果isFirstInterval=true，intervals[0]已设置；否则不设置间隔
-            // 如果isFirstInterval=false，不设置间隔（第一个信号后没有间隔）
+            // 第一个信号
+            if (isFirstInterval) {
+                // 有第一个信号前的间隔模式：intervals[0]是第一个信号前的间隔
+                intervals[0] = interval;
+            }
+            // 如果isFirstInterval=false，不设置间隔
         } else {
             // 第二个及以后的信号
-            if (isFirstInterval && signalCount > 1) {
-                // 有第一个信号前的间隔模式：intervals[0]是第一个信号前的间隔
-                // intervals[i] (i>0) 是 signals[i-1] 和 signals[i] 之间的间隔
-                intervals[signalCount - 1] = interval;
+            if (isFirstInterval) {
+                // 有第一个信号前的间隔模式：intervals[i] (i>0) 是 signals[i-1] 和 signals[i] 之间的间隔
+                intervals[signalCount] = interval;
             } else {
                 // 标准模式：intervals[i] 是 signals[i] 和 signals[i+1] 之间的间隔
-                intervals[signalCount - 2] = interval;
+                intervals[signalCount - 1] = interval;
             }
         }
         
+        signalCount++;
         return true;
     }
 };

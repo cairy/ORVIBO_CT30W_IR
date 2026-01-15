@@ -48,7 +48,8 @@ public:
     String convertToStringFormat();      // 转换为字符串序列格式（默认格式）
     String convertToJSONFormat();        // 转换为JSON格式（commands字段的值是信号序列JSON对象）
     
-    // Base64解码（用于发送学习到的信号）
+    // Base64解码（用于发送学习到的信号）- 使用 SignalUtils::base64ToTiming()
+    // 保留此声明以保持API兼容性，内部调用 SignalUtils::base64ToTiming()
     static bool decodeBase64ToTiming(const String& base64, IRTiming* timing, int& count, int maxCount);
     
     // 统一信号格式解析函数（用于HTTP API和MQTT接口）
@@ -97,7 +98,6 @@ private:
     
     void processDeviceLearnSignal(const IRTiming* timing, int count);
     void checkLearnTimeout();
-    String encodeTimingToBase64(const IRTiming* timing, int count);
     void parseCommandNames(const String& commandNamesStr);
     void freeLearnedDevice();  // 释放学习设备内存
 };
