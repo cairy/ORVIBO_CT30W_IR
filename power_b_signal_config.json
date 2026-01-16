@@ -11,6 +11,16 @@
     "volumeUp": "1,0xFD22DD",
     "volumeDown": "1,0xFDC23D",
     "mute": "1,0xFD708F",
-    "source": "1,0xFD48B7"
+    "sources": {
+      "Input": "1,0xFD48B7",
+      "Home": "1,0xFD3AC5",
+      "Back": "1,0xFD12ED",
+      "Settings": "1,0xFD28D7",
+      "OK": "1,0xFDA857",
+      "Up Arrow": "1,0xFD6897",
+      "Down Arrow": "1,0xFDE817",
+      "Right Arrow": "1,0xFD18E7",
+      "Left Arrow": "1,0xFD9867"
+    }
   }
 }
