@@ -1111,6 +1111,10 @@ data:
 响应会在 `homeassistant/orvibo-ct30w/state` 主题中发布，格式与设备状态发布一致。
 
 **3. 发送红外信号：**
+
+支持多种 payload 格式，主题均为 `homeassistant/orvibo-ct30w/command`。
+
+方式一：`action: send_signal` + 单个 `signal`
 ```yaml
 service: mqtt.publish
 data:
@@ -1125,6 +1129,65 @@ data:
       },
       "repeatCount": 1
     }
+```
+
+方式二：`action: send_signal` + 序列 `signals`
+```yaml
+service: mqtt.publish
+data:
+  topic: homeassistant/orvibo-ct30w/command
+  payload: |
+    {
+      "action": "send_signal",
+      "signals": [
+        { "protocol": 1, "data": "0x00003039", "useTiming": false, "repeatCount": 1 },
+        { "protocol": 1, "data": "0x0000303A", "useTiming": false, "repeatCount": 1 }
+      ],
+      "intervals": [0, 30]
+    }
+```
+
+方式三：直接 JSON 序列（无 `action`）
+```yaml
+service: mqtt.publish
+data:
+  topic: homeassistant/orvibo-ct30w/command
+  payload: |
+    {
+      "signals": [
+        { "protocol": 1, "data": "0x00003039", "useTiming": false, "repeatCount": 1 }
+      ],
+      "intervals": []
+    }
+```
+
+方式四：直接字符串（推荐，与 HTTP API 一致）
+```yaml
+# 协议格式：protocol,data 或 protocol,data,repeatCount（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung）
+service: mqtt.publish
+data:
+  topic: homeassistant/orvibo-ct30w/command
+  payload: "1,0xFF00FF00,2"
+
+# Base64 时序码：Base64 或 Base64|repeatCount
+# payload: "ABC123=="
+# payload: "ABC123==|2"
+
+# 原始数组：[...] 或 [...]|repeatCount
+# payload: "[8991,-4546,553,-578]"
+# payload: "[8991,-4546]|3"
+
+# 序列格式：信号@间隔;信号@间隔;...|repeatCount，或 @首间隔;信号@间隔;...
+# payload: "ABC123==@30;DEF456==|2"
+# payload: "@50;ABC123==@30;DEF456==|1"
+```
+
+方式五：SmartIR 主题（设备已订阅 `smartir/climate/+/send`、`smartir/media_player/+/send` 等，payload 为纯字符串，`your_tv` 换成 SmartIR 配置中的设备 ID）
+```yaml
+service: mqtt.publish
+data:
+  topic: smartir/media_player/your_tv/send
+  payload: "1,0xFF00FF00,2"
 ```
 
 **4. 控制转发开关：**
