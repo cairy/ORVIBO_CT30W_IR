@@ -518,7 +518,7 @@ GET http://设备IP/api/learn/result?format=json      # JSON格式（信号序�
 - 字符串格式支持序列，可直接用于API发送
 - JSON格式可直接复制到SmartIR JSON配置文件使用
 - SmartIR发送MQTT消息时，会直接发送`commands`字段中的值（字符串），设备会自动解析这些格式，支持序列格式
-- HTTP API和MQTT接口使用完全统一的格式，支持JSON和字符串两种格式，都统一转换为Sequence格式发送
+- HTTP API 支持 JSON 与字符串；MQTT 的 command 主题仅接受 JSON（须含 `action`），字符串格式须发往 SmartIR 主题
 
 **获取最近接收的信号：**
 ```bash
@@ -717,7 +717,7 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 | `stop_learn` | 停止设备学习 | 无 | POST `/api/learn/stop` |
 | `query_learn_result` | 查询学习结果 | 无 | GET `/api/learn/result` |
 | `get_recent_signals` | 获取最近接收的信号 | 无 | GET `/api/signals/recent` |
-| `send_signal` | 发送红外信号 | 支持JSON和字符串两种格式 | POST `/api/signals/send` |
+| `send_signal` | 发送红外信号 | JSON（须含 `action`、`signal` 或 `signals`）；直接字符串仅限 SmartIR 主题 | POST `/api/signals/send` |
 | `set_forwarding_enabled` | 设置转发启用状态 | `enabled` | - |
 | `get_status` | 获取设备状态 | 无 | GET `/api/status` |
 
@@ -958,38 +958,18 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 
 **10. 发送红外信号：**
 
-MQTT接口支持两种方式：
+**方式1：command 主题** — 必须为合法 JSON，且带 `action: "send_signal"`。直接发 `1,0xFD18E7`、`ABC123==` 等纯字符串会报 `Invalid JSON`，不支持。主题：`homeassistant/orvibo-ct30w/command`。
 
-**方式1：直接发送字符串**（推荐，支持序列格式）
-```
-主题：homeassistant/orvibo-ct30w/command
-Payload：字符串序列格式（详见2.3节）
-
-示例：
-- 单个信号：ABC123==|2 或 [8991,-4546]|3 或 1,0xFF00FF00,2
-- 序列格式：ABC123==@30;DEF456==|2
-- 第一个信号前间隔：@50;ABC123==@30;DEF456==|1
-```
-
-**方式2：JSON格式**
+单信号示例：
 ```json
-{
-  "action": "send_signal",
-  "signals": [
-    {
-      "protocol": 1,
-      "data": "0x00003039",
-      "useTiming": false,
-      "timingBase64": "",
-      "timingCount": 0,
-      "repeatCount": 1
-    }
-  ],
-  "intervals": [0, 30]
-}
+{"action": "send_signal", "signal": {"protocol": 1, "data": "0x00003039", "useTiming": false}, "repeatCount": 1}
+```
+序列示例：
+```json
+{"action": "send_signal", "signals": [{"protocol": 1, "data": "0x00003039", "useTiming": false, "repeatCount": 1}], "intervals": [0, 30]}
 ```
 
-**说明**：支持的格式与HTTP API完全一致，详见 [HTTP REST API - 发送红外信号](#发送红外信号)。
+**方式2：SmartIR 主题** — 支持直接字符串（协议、Base64、数组、序列，格式见 2.3 节）。主题：`smartir/climate/设备ID/send`、`smartir/media_player/设备ID/send` 等。Payload 示例：`1,0xFF00FF00,2`、`ABC123==|2`、`[8991,-4546]|3`、`ABC123==@30;DEF456==|2`。
 
 **11. 设置转发启用状态：**
 ```json
@@ -1112,7 +1092,7 @@ data:
 
 **3. 发送红外信号：**
 
-支持多种 payload 格式，主题均为 `homeassistant/orvibo-ct30w/command`。
+**`homeassistant/orvibo-ct30w/command` 主题仅接受合法 JSON**（或 `true`/`false` 用于转发开关）。直接发送 `1,0xFD18E7` 等纯字符串会报 `Invalid JSON`。
 
 方式一：`action: send_signal` + 单个 `signal`
 ```yaml
@@ -1147,48 +1127,14 @@ data:
     }
 ```
 
-方式三：直接 JSON 序列（无 `action`）
-```yaml
-service: mqtt.publish
-data:
-  topic: homeassistant/orvibo-ct30w/command
-  payload: |
-    {
-      "signals": [
-        { "protocol": 1, "data": "0x00003039", "useTiming": false, "repeatCount": 1 }
-      ],
-      "intervals": []
-    }
-```
-
-方式四：直接字符串（推荐，与 HTTP API 一致）
-```yaml
-# 协议格式：protocol,data 或 protocol,data,repeatCount（1=NEC, 2=RC5, 3=RC6, 4=Sony, 5=Samsung）
-service: mqtt.publish
-data:
-  topic: homeassistant/orvibo-ct30w/command
-  payload: "1,0xFF00FF00,2"
-
-# Base64 时序码：Base64 或 Base64|repeatCount
-# payload: "ABC123=="
-# payload: "ABC123==|2"
-
-# 原始数组：[...] 或 [...]|repeatCount
-# payload: "[8991,-4546,553,-578]"
-# payload: "[8991,-4546]|3"
-
-# 序列格式：信号@间隔;信号@间隔;...|repeatCount，或 @首间隔;信号@间隔;...
-# payload: "ABC123==@30;DEF456==|2"
-# payload: "@50;ABC123==@30;DEF456==|1"
-```
-
-方式五：SmartIR 主题（设备已订阅 `smartir/climate/+/send`、`smartir/media_player/+/send` 等，payload 为纯字符串，`your_tv` 换成 SmartIR 配置中的设备 ID）
+方式三：**直接字符串**（协议、Base64、数组、序列等）须发到 **SmartIR 主题**，不能发到 `command`。主题示例：`smartir/media_player/你的设备ID/send`，`你的设备ID` 改为 SmartIR 配置中的 ID。
 ```yaml
 service: mqtt.publish
 data:
   topic: smartir/media_player/your_tv/send
   payload: "1,0xFF00FF00,2"
 ```
+其它字符串示例：`ABC123==|2`、`[8991,-4546]|3`、`ABC123==@30;DEF456==|2`，格式见 2.3 节。
 
 **4. 控制转发开关：**
 转发开关实体可以直接在 Home Assistant 界面中操作，也可以通过服务调用：
