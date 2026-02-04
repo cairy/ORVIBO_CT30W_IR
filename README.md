@@ -299,7 +299,7 @@ signal1[@interval1];signal2[@interval2];signal3[@interval3]|repeatCount
 
 ### 4.2 接口映射关系
 
-设备提供两种接口：**HTTP REST API** 和 **MQTT**，功能完全一致，使用统一的数据结构。
+设备提供两种接口：**HTTP REST API** 和 **MQTT**，功能完全一致。MQTT 的 `state` 主题响应做了结构增强：`data` 始终为对象且包含 `forwarding_enabled`；当接口本身返回的 `data` 不是对象（如数组/字符串）时，返回值放在 `data.result`。
 
 | 功能 | HTTP REST API | MQTT Action | 说明 |
 |------|---------------|-------------|------|
@@ -689,6 +689,10 @@ Content-Type: application/json
 - 状态：`homeassistant/orvibo-ct30w/state`（设备发布状态信息）
 - 日志：`homeassistant/orvibo-ct30w/log`（设备发布日志信息）
 
+**state 主题响应结构：**
+- `data` 始终为对象，且必含 `forwarding_enabled`
+- 若接口原始返回不是对象（例如数组/字符串），则放入 `data.result`
+
 **SmartIR 支持：**
 设备自动订阅 SmartIR 主题，支持SmartIR发送的所有格式：
 - `smartir/climate/+/send` - 气候设备（空调、暖气等）
@@ -735,7 +739,10 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 {
   "success": true,
   "status": "success",
-  "data": [{"id":1,"aSignal":{...},"bSequence":{...},...}],
+  "data": {
+    "forwarding_enabled": true,
+    "result": [{"id":1,"aSignal":{...},"bSequence":{...},...}]
+  },
   "timestamp": 1234567890
 }
 ```
@@ -821,8 +828,12 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 **响应**（发布到 state 主题）：
 ```json
 {
+  "success": true,
   "status": "success",
-  "message": "学习已启动",
+  "data": {
+    "forwarding_enabled": true,
+    "result": "学习已启动"
+  },
   "timestamp": 1234567890
 }
 ```
@@ -840,6 +851,7 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
   "success": true,
   "status": "success",
   "data": {
+    "forwarding_enabled": true,
     "isLearning": true,
     "progress": "2/5",
     "currentCommand": "温度+"
@@ -875,6 +887,7 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
   "success": true,
   "status": "success",
   "data": {
+    "forwarding_enabled": true,
     "manufacturer": "Learned",
     "supportedModels": ["Learned Device"],
     "commandsEncoding": "Raw",
@@ -895,6 +908,7 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
   "success": true,
   "status": "success",
   "data": {
+    "forwarding_enabled": true,
     "manufacturer": "Learned",
     "supportedModels": ["Learned Device"],
     "commandsEncoding": "Raw",

@@ -159,9 +159,66 @@ bool HAMQTTHandler::sendSuccess(const String& json, const char* context) {
         Serial.printf("[MQTT%s] MQTT not connected, failed to publish\n", context ? context : "");
         return false;
     }
-    
-    // 检查消息大小
-    size_t messageSize = strlen(MQTT_TOPIC_STATE) + json.length();
+
+    // MQTT state 主题统一结构：
+    // - data 始终为对象
+    // - data.forwarding_enabled 始终存在
+    // - 若原 data 不是对象，则放入 data.result
+    String publishJson = json;
+    const bool forwardingEnabled = forwarder.isEnabled();
+
+    // 快速判断：已是 data 对象且包含 forwarding_enabled 则跳过解析（节省资源）
+    bool likelyOk = false;
+    int dataObjPos = publishJson.indexOf("\"data\":{");
+    if (dataObjPos < 0) {
+        dataObjPos = publishJson.indexOf("\"data\" : {");
+    }
+    if (dataObjPos >= 0 && publishJson.indexOf("\"forwarding_enabled\"") >= 0) {
+        likelyOk = true;
+    }
+
+    // 仅在需要时解析并规范化（兼顾内存）
+    size_t freeHeap = ESP.getFreeHeap();
+    if (!likelyOk) {
+        // 规范化会产生额外内存开销（解析 + 可能复制 data），预留更多空间
+        size_t docSize = (publishJson.length() * 4) + 1024;
+        if (docSize < 2048) docSize = 2048;
+        if (docSize > 12288) docSize = 12288;
+
+        // 若内存不足以完成规范化，则先按原样发布，随后尝试发布一次增强状态以纠正 HA 开关显示
+        if (freeHeap >= docSize + 2048) {
+            DynamicJsonDocument doc(docSize);
+            DeserializationError err = deserializeJson(doc, publishJson);
+            if (!err && doc.is<JsonObject>()) {
+                JsonObject root = doc.as<JsonObject>();
+                JsonVariant dataVar = root["data"];
+
+                if (!dataVar || dataVar.isNull()) {
+                    JsonObject dataObj = root.createNestedObject("data");
+                    dataObj["forwarding_enabled"] = forwardingEnabled;
+                } else if (dataVar.is<JsonObject>()) {
+                    JsonObject dataObj = dataVar.as<JsonObject>();
+                    dataObj["forwarding_enabled"] = forwardingEnabled;
+                } else {
+                    // 将原 data 复制到临时字段，再改造 data 为对象并放回 result
+                    root["_result_tmp"] = dataVar;
+                    JsonObject dataObj = root["data"].to<JsonObject>();
+                    dataObj["forwarding_enabled"] = forwardingEnabled;
+                    dataObj["result"] = root["_result_tmp"];
+                    root.remove("_result_tmp");
+                }
+
+                String normalized;
+                serializeJson(doc, normalized);
+                if (normalized.length() > 0) {
+                    publishJson = normalized;
+                }
+            }
+        }
+    }
+
+    // 检查消息大小（以最终发布的 payload 为准）
+    size_t messageSize = strlen(MQTT_TOPIC_STATE) + publishJson.length();
     if (messageSize > MQTT_BUFFER_SIZE) {
         char errorMsg[192];
         snprintf(errorMsg, sizeof(errorMsg), "[MQTT%s] Message too large: %d bytes (max: %d bytes)", 
@@ -169,11 +226,17 @@ bool HAMQTTHandler::sendSuccess(const String& json, const char* context) {
         logger.log("error", errorMsg);
         Serial.printf("[MQTT%s] Message too large: %d bytes (max: %d bytes)\n", 
                       context ? context : "", messageSize, MQTT_BUFFER_SIZE);
+        // 尝试按原样发布（若原消息更小），并发布一次增强状态避免 HA 开关显示错误
+        size_t originalMessageSize = strlen(MQTT_TOPIC_STATE) + json.length();
+        if (originalMessageSize <= MQTT_BUFFER_SIZE) {
+            bool fallbackResult = mqtt.publish(MQTT_TOPIC_STATE, json);
+            publishEnhancedState();
+            return fallbackResult;
+        }
         return false;
     }
     
     // 检查内存
-    size_t freeHeap = ESP.getFreeHeap();
     if (freeHeap < messageSize + 512) {
         char errorMsg[192];
         snprintf(errorMsg, sizeof(errorMsg), "[MQTT%s] Insufficient memory: %d bytes free (need: %d bytes)", 
@@ -184,7 +247,7 @@ bool HAMQTTHandler::sendSuccess(const String& json, const char* context) {
         return false;
     }
     
-    bool result = mqtt.publish(MQTT_TOPIC_STATE, json);
+    bool result = mqtt.publish(MQTT_TOPIC_STATE, publishJson);
     if (!result) {
         char errorMsg[128];
         snprintf(errorMsg, sizeof(errorMsg), "[MQTT%s] Failed to publish message", context ? context : "");
