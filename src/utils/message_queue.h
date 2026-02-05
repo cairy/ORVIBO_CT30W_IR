@@ -11,6 +11,7 @@ struct ForwardTask {
     uint8_t b_protocols[3];           // B信号协议（最多3个B信号）
     uint16_t intervals[4];            // 信号间隔（4个间隔对应5个信号）
     uint8_t repeat_count;             // 重复次数
+    uint8_t rule_id;                  // 规则ID（用于调试）
     bool valid;                        // 消息是否有效
 };
 

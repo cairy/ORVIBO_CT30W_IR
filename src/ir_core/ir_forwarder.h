@@ -73,6 +73,7 @@ private:
     // 转发相关方法
     void processDelayState();  // 处理延时状态机
     bool createForwardTask(const IR_MapRule& rule, ForwardTask& task);  // 创建转发任务
+    bool buildRuleFromTask(const ForwardTask& task, IR_MapRule& rule);  // 从 ForwardTask 恢复规则（统一边界与间隔）
 };
 
 #endif // IR_FORWARDER_H

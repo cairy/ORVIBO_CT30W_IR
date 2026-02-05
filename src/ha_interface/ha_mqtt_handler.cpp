@@ -617,7 +617,8 @@ void HAMQTTHandler::handleQueryMaps() {
     String dataJson = APIHandlers::handleQueryMaps(mapper, &logger);
     
     // 使用统一的响应处理
-    processJsonArrayResponse(dataJson, "MQTT: query_maps", 8192);
+    // 增加最大文档大小到16384以支持更多规则（ESP8266通常有足够内存）
+    processJsonArrayResponse(dataJson, "MQTT: query_maps", 16384);
 }
 
 void HAMQTTHandler::handleUpdateMap(const String& json) {
@@ -1024,7 +1025,7 @@ void HAMQTTHandler::mqttCallback(char* topic, byte* payload, unsigned int length
     // 优化：完全避免String对象，使用纯C字符串操作
     // 限制topic和payload的最大长度，避免栈溢出
     const size_t MAX_TOPIC_LEN = 128;
-    const size_t MAX_PAYLOAD_LEN = 512;
+    const size_t MAX_PAYLOAD_LEN = 1024;
     
     static char topicBuf[MAX_TOPIC_LEN];
     static char payloadBuf[MAX_PAYLOAD_LEN];

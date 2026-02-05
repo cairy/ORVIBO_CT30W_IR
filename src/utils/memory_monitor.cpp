@@ -160,7 +160,8 @@ size_t MemoryMonitor::calculateJsonSize(size_t baseSize, int itemCount, size_t i
     size_t size = baseSize + (itemCount * itemSize);
     
     // 限制最大大小（避免内存溢出）
-    if (size > 8192) size = 8192;
+    // 增加到16384以支持更多规则（ESP8266通常有足够内存）
+    if (size > 16384) size = 16384;
     
     // 确保最小大小
     if (size < 256) size = 256;
@@ -169,12 +170,21 @@ size_t MemoryMonitor::calculateJsonSize(size_t baseSize, int itemCount, size_t i
 }
 
 size_t MemoryMonitor::calculateRulesJsonSize(int ruleCount) {
-    // 每条规则约120字节基础开销 + 每个B信号约40字节
+    // 每条规则约200字节基础开销 + 每个B信号约100字节
     // 假设平均每条规则有2个B信号
     // 注意：使用hex格式时，字符串会更长，需要更多空间
-    size_t baseSize = 256;
-    size_t itemSize = 200 + (2 * 80);  // 平均每条规则360字节（考虑hex格式和对象开销）
-    return calculateJsonSize(baseSize, ruleCount, itemSize);
+    // 实际测试：5条规则（包含电源规则有3个B信号）需要约3000-4000字节
+    size_t baseSize = 512;  // 增加基础开销
+    size_t itemSize = 300 + (2 * 120);  // 平均每条规则540字节（考虑hex格式、对象开销和name字段）
+    size_t size = baseSize + (ruleCount * itemSize);
+    
+    // 限制最大大小（增加到16384以支持更多规则）
+    if (size > 16384) size = 16384;
+    
+    // 确保最小大小
+    if (size < 2048) size = 2048;
+    
+    return size;
 }
 
 size_t MemoryMonitor::calculateLogsJsonSize(int logCount) {

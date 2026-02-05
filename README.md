@@ -628,9 +628,27 @@ Content-Type: application/json
 
 **更新映射规则：**
 
-`PUT /api/maps` 接口支持两种更新方式：
+每条规则可包含可选字段 **name**（字符串，建议与按钮/指令名对应）；查询或导出时返回该字段，便于识别是哪一路。
 
-**方式1：单个更新**（使用 `id` 和 `rule`）
+`PUT /api/maps` 支持两种**更新方式**（单个 / 批量）和两种**规则书写格式**（对象格式 / 字符串格式）。若同时提供对象格式与字符串格式（如既有 `aSignal` 又有 `a`），以**对象格式为准**。
+
+**规则格式 1：完整对象**  
+`rule` 为对象，包含 `aSignal`（对象）、`bSequence`（对象），以及可选 `name`。
+
+**规则格式 2：字符串格式**  
+`rule` 可仅含 **a**（字符串）与 **b**（字符串），替代 `aSignal`/`bSequence`，载荷更短、可读性更好。  
+- **a**：单个 A 信号的字符串，与 send_signal 协议格式一致，例如 `1,0x011B7689`、`1,0x011B7689|2`。  
+- **b**：B 序列的字符串，与 2.3 节字符串序列格式一致：  
+  - 单信号：`1,0xFD48B7`  
+  - 带间隔：`1,0xFD48B7@40;1,0x00FD48B7`  
+  - 首信号前间隔：`@50;1,0xFD48B7`  
+- 可选：同一 `rule` 中可写 `name`。
+
+---
+
+**HTTP 示例**
+
+**示例 1：单个更新，完整对象格式，带 name**
 ```bash
 PUT http://设备IP/api/maps
 Content-Type: application/json
@@ -638,6 +656,7 @@ Content-Type: application/json
 {
   "id": 1,
   "rule": {
+    "name": "开机",
     "aSignal": {
       "protocol": 1,
       "data": "0x00003039",
@@ -661,7 +680,22 @@ Content-Type: application/json
 }
 ```
 
-**方式2：批量更新**（使用 `rules` 数组）
+**示例 2：单个更新，字符串格式（短载荷）**
+```bash
+PUT http://设备IP/api/maps
+Content-Type: application/json
+
+{
+  "id": 26,
+  "rule": {
+    "name": "音量+",
+    "a": "1,0x011B7689",
+    "b": "1,0xFD48B7@40;1,0x00FD48B7"
+  }
+}
+```
+
+**示例 3：批量更新（可混用对象格式与字符串格式）**
 ```bash
 PUT http://设备IP/api/maps
 Content-Type: application/json
@@ -669,18 +703,23 @@ Content-Type: application/json
 {
   "rules": [
     {
-      "aSignal": {...},
-      "bSequence": {...}
+      "name": "开机",
+      "aSignal": { "protocol": 1, "data": "0x00003039", "useTiming": false, "timingCount": 0, "timingBase64": "", "repeatCount": 1 },
+      "bSequence": { "signals": [{ "protocol": 1, "data": "0x00010932", "useTiming": false, "timingCount": 0, "timingBase64": "", "repeatCount": 1 }], "intervals": [] }
     },
-    ...
+    {
+      "name": "关机",
+      "a": "1,0x011B8877",
+      "b": "1,0x00FD48B7"
+    }
   ]
 }
 ```
 
 **说明**：
-- 单个更新：更新指定ID的映射规则
-- 批量更新：清空现有规则，添加新规则列表
-- 接口会自动识别是单个更新还是批量更新（检查是否包含 `rules` 数组）
+- 单个更新：请求体含 `id` 和 `rule`，更新指定 ID 的规则。
+- 批量更新：请求体含 `rules` 数组，清空现有规则后添加新规则列表。
+- 接口根据是否包含 `rules` 数组自动区分单个更新与批量更新。
 
 ### MQTT 接口（可选）
 
@@ -714,7 +753,7 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 | action | 说明 | 必需参数 | 对应 HTTP API |
 |--------|------|----------|---------------|
 | `query_maps` | 查询所有映射规则 | 无 | GET `/api/maps` |
-| `update_map` | 更新映射规则（支持单个和批量） | `id`, `rule` 或 `rules` | PUT `/api/maps` |
+| `update_map` | 更新映射规则（支持单个和批量） | `id`, `rule` 或 `rules`；可选 `name`；`rule` 可为对象或含 `a`/`b` 字符串 | PUT `/api/maps` |
 | `get_logs` | 获取日志 | 无 | GET `/api/logs` |
 | `start_learn` | 启动设备学习 | `deviceName`, `commandNames`, `timeoutSeconds` | POST `/api/learn/start` |
 | `query_learn_status` | 查询学习状态 | 无 | GET `/api/learn/status` |
@@ -741,18 +780,21 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
   "status": "success",
   "data": {
     "forwarding_enabled": true,
-    "result": [{"id":1,"aSignal":{...},"bSequence":{...},...}]
+    "result": [{"id":1,"name":"开机","aSignal":{...},"bSequence":{...},...}]
   },
   "timestamp": 1234567890
 }
 ```
+查询返回的每条规则可包含可选字段 `name`，便于识别对应按钮/指令。
 
-**2. 更新映射规则（单个更新）：**
+**2. 更新映射规则（单个更新，完整对象格式）：**  
+发布到主题 `homeassistant/orvibo-ct30w/command`，响应在 `homeassistant/orvibo-ct30w/state`。
 ```json
 {
   "action": "update_map",
   "id": 1,
   "rule": {
+    "name": "开机",
     "aSignal": {
       "protocol": 1,
       "data": "0x00003039",
@@ -776,46 +818,48 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 }
 ```
 
-**3. 批量更新映射规则（使用 `update_map`，包含 `rules` 数组）：**
+**3. 更新映射规则（单个更新，字符串格式，短载荷）：**
+```json
+{
+  "action": "update_map",
+  "id": 26,
+  "rule": {
+    "name": "音量+",
+    "a": "1,0x011B7689",
+    "b": "1,0xFD48B7@40;1,0x00FD48B7"
+  }
+}
+```
+
+**4. 批量更新映射规则（使用 `update_map`，可混用对象与字符串格式）：**
 ```json
 {
   "action": "update_map",
   "rules": [
     {
-      "aSignal": {
-        "protocol": 1,
-        "data": "0x00003039",
-        "useTiming": false,
-        "timingBase64": "",
-        "timingCount": 0,
-        "repeatCount": 1
-      },
-      "bSequence": {
-        "signals": [{
-          "protocol": 1,
-          "data": "0x00010932",
-          "useTiming": false,
-          "timingBase64": "",
-          "timingCount": 0,
-          "repeatCount": 1
-        }],
-        "intervals": []
-      }
+      "name": "开机",
+      "aSignal": { "protocol": 1, "data": "0x00003039", "useTiming": false, "timingCount": 0, "timingBase64": "", "repeatCount": 1 },
+      "bSequence": { "signals": [{ "protocol": 1, "data": "0x00010932", "useTiming": false, "timingCount": 0, "timingBase64": "", "repeatCount": 1 }], "intervals": [] }
+    },
+    {
+      "name": "关机",
+      "a": "1,0x011B8877",
+      "b": "1,0x00FD48B7"
     }
   ]
 }
 ```
 
-**说明**：`update_map` 接口同时支持单个更新（使用 `id` 和 `rule`）和批量更新（使用 `rules` 数组），与 HTTP API 保持一致。
+**说明**：`update_map` 同时支持单个更新（`id` + `rule`）和批量更新（`rules` 数组）；`rule` 可为完整对象（`aSignal`/`bSequence`）或字符串格式（`a`/`b`），与 HTTP API 一致。
 
-**4. 获取日志：**
+**5. 获取日志：**
 ```json
 {
   "action": "get_logs"
 }
 ```
 
-**5. 启动设备学习：**
+**6. 启动设备学习：**
 ```json
 {
   "action": "start_learn",
@@ -838,7 +882,7 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 }
 ```
 
-**6. 查询学习状态：**
+**7. 查询学习状态：**
 ```json
 {
   "action": "query_learn_status"
@@ -862,14 +906,14 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 
 **说明**：响应格式与HTTP API一致，学习流程详见 [HTTP REST API - 学习流程](#学习流程)。
 
-**7. 停止设备学习：**
+**8. 停止设备学习：**
 ```json
 {
   "action": "stop_learn"
 }
 ```
 
-**8. 查询学习结果：**
+**9. 查询学习结果：**
 ```json
 {
   "action": "query_learn_result",
@@ -963,14 +1007,14 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
   - `"开机"`：包含2个信号的序列，间隔30ms
   - `"关机"`：单个信号序列（`signalCount=1`，`intervals=[]`）
 
-**9. 获取最近接收的信号：**
+**10. 获取最近接收的信号：**
 ```json
 {
   "action": "get_recent_signals"
 }
 ```
 
-**10. 发送红外信号：**
+**11. 发送红外信号：**
 
 **方式1：command 主题** — 必须为合法 JSON，且带 `action: "send_signal"`。直接发 `1,0xFD18E7`、`ABC123==` 等纯字符串会报 `Invalid JSON`，不支持。主题：`homeassistant/orvibo-ct30w/command`。
 
@@ -985,7 +1029,7 @@ SmartIR发送的payload（就是JSON配置文件中commands字段的值）会被
 
 **方式2：SmartIR 主题** — 支持直接字符串（协议、Base64、数组、序列，格式见 2.3 节）。主题：`smartir/climate/设备ID/send`、`smartir/media_player/设备ID/send` 等。Payload 示例：`1,0xFF00FF00,2`、`ABC123==|2`、`[8991,-4546]|3`、`ABC123==@30;DEF456==|2`。
 
-**11. 设置转发启用状态：**
+**12. 设置转发启用状态：**
 ```json
 {
   "action": "set_forwarding_enabled",

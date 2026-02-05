@@ -1,5 +1,6 @@
 #include "api_handlers.h"
 #include "ir_core/unified_signal.h"
+#include <new>
 
 String APIHandlers::handleQueryMaps(IRMapper& mapper, Logger* logger) {
     int count = mapper.getRuleCount();
@@ -30,8 +31,9 @@ String APIHandlers::handleQueryMaps(IRMapper& mapper, Logger* logger) {
     // 构建JSON（只返回data部分）
     // 增加更大的缓冲：JSON文档内存需求通常是估算大小的1.5-2倍
     // 特别是使用hex格式时，字符串会更长
-    size_t totalSize = (jsonSize * 2) + 1024;  // 2倍 + 1KB缓冲
-    if (totalSize < 2048) totalSize = 2048;  // 最小2KB
+    // 实际测试：5条规则需要约4000-5000字节，加上包装开销需要更多
+    size_t totalSize = (jsonSize * 2) + 2048;  // 2倍 + 2KB缓冲（增加缓冲）
+    if (totalSize < 4096) totalSize = 4096;  // 最小4KB（增加最小大小）
     if (totalSize > 16384) totalSize = 16384;  // 限制最大16KB
     DynamicJsonDocument doc(totalSize);
     JsonArray rulesArray = doc.to<JsonArray>();
@@ -77,20 +79,17 @@ String APIHandlers::handleQueryMaps(IRMapper& mapper, Logger* logger) {
         }
     }
     
-    // 立即释放规则数组内存
-    delete[] rules;
-    
+    // 先序列化再释放 rules，避免 doc 中 name 等指针悬空（use-after-free）
     String output;
     serializeJson(doc, output);
-    
-    // 如果文档溢出，返回空字符串（表示失败）
+    delete[] rules;
+
     if (doc.overflowed()) {
         if (logger != nullptr) {
             logger->log("error", "[API: /api/maps] JSON文档溢出，无法序列化规则");
         }
         return "";
     }
-    
     return output;
 }
 
@@ -114,15 +113,19 @@ String APIHandlers::handleUpdateMap(IRMapper& mapper, const String& json, bool& 
     
     // 检查是否是批量更新（包含rules数组）
     if (doc.containsKey("rules")) {
-        // 批量更新：清空现有规则，添加新规则
+        // 批量更新：清空现有规则，添加新规则（堆分配避免栈溢出）
         JsonArray rulesArray = doc["rules"];
         
-        // 清空所有现有规则
-        IR_MapRule rules[MAX_MAP_RULES];
         int count = mapper.getRuleCount();
-        int actualCount = mapper.getAllRules(rules, count);
-        for (int i = 0; i < actualCount; i++) {
-            mapper.deleteRule(rules[i].id);
+        if (count > 0) {
+            IR_MapRule* rules = new (std::nothrow) IR_MapRule[count];
+            if (rules != nullptr) {
+                int actualCount = mapper.getAllRules(rules, count);
+                for (int i = 0; i < actualCount; i++) {
+                    mapper.deleteRule(rules[i].id);
+                }
+                delete[] rules;
+            }
         }
         
         // 添加新规则（使用统一的转换方法）

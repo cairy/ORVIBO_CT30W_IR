@@ -1,13 +1,19 @@
 #include "ir_mapper.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
+#include <string.h>
 #include "utils/hex_utils.h"
 #include "utils/logger.h"
 #include "unified_signal.h"
+#include "ir_core/ir_learner.h"
+
+// 用于 a/b 字符串格式解析的时序缓冲区（仅 jsonObjectToRule 使用）
+static IRTiming s_parseTimingBuffer[MAX_LEARN_TIMING_COUNT];
 
 IRMapper::IRMapper() : ruleCount(0), nextId(1), logger(nullptr) {
     for (int i = 0; i < MAX_MAP_RULES; i++) {
         rules[i].valid = false;
+        rules[i].name[0] = '\0';
     }
 }
 
@@ -62,12 +68,13 @@ bool IRMapper::initDefaultMappings() {
         const char* name;
     };
     
+    // 顺序：电源、AV/TV、音量+、音量-、静音（空表时 id 从 1 开始依次分配）
     DefaultRule defaultRules[] = {
+        {SOURCE_POWER, TARGET_POWER, 1, "电源"},
+        {SOURCE_AVTV, TARGET_AVTV, 1, "AV/TV"},
         {SOURCE_VOLUP, TARGET_VOLUP, 1, "音量+"},
         {SOURCE_VOLDOWN, TARGET_VOLDOWN, 1, "音量-"},
-        {SOURCE_MUTE, TARGET_MUTE, 1, "静音"},
-        {SOURCE_POWER, TARGET_POWER, 1, "电源"},  // repeatCount=1，因为序列中已经包含了3个信号
-        {SOURCE_AVTV, TARGET_AVTV, 1, "AV/TV"}
+        {SOURCE_MUTE, TARGET_MUTE, 1, "静音"}
     };
     
     // 初始化基础规则结构
@@ -84,7 +91,9 @@ bool IRMapper::initDefaultMappings() {
     
     for (int i = 0; i < totalRules; i++) {
         rule.aSignal.data = defaultRules[i].sourceData;
-        
+        strncpy(rule.name, defaultRules[i].name, MAX_COMMAND_NAME_LEN - 1);
+        rule.name[MAX_COMMAND_NAME_LEN - 1] = '\0';
+
         // 构建B信号序列
         rule.bSequence.clear();
         
@@ -115,6 +124,14 @@ bool IRMapper::initDefaultMappings() {
             bSignal3.data = 0xFFFFFFFF;
             bSignal3.repeatCount = 1;
             rule.bSequence.addSignal(bSignal3, 70, true);
+        } else if (defaultRules[i].sourceData == SOURCE_AVTV) {
+            // AV/TV规则：单个B信号，第一个信号前间隔30ms
+            UnifiedSignal bSignal;
+            bSignal.protocol = NEC_PROTOCOL;
+            bSignal.useTiming = false;  // 协议信号
+            bSignal.data = defaultRules[i].targetData;
+            bSignal.repeatCount = 1;
+            rule.bSequence.addSignal(bSignal, 30, true);
         } else {
             // 其他规则：单个B信号
             UnifiedSignal bSignal;
@@ -245,7 +262,8 @@ bool IRMapper::deleteRule(uint8_t id) {
     
     // 只标记为无效，不移动数组元素（避免数组碎片化，统一数据源）
     rules[index].valid = false;
-    
+    rules[index].name[0] = '\0';
+
     saveToFlash();
     return true;
 }
@@ -394,6 +412,37 @@ bool IRMapper::saveToFlash() {
     
     String output;
     serializeJson(doc, output);
+    
+    // 序列化后再次检查溢出（序列化过程可能触发溢出）
+    if (doc.overflowed()) {
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "JSON序列化时文档溢出 (需要保存 %d 条规则，文档大小: %d bytes)", validCount, jsonSize);
+        if (logger) {
+            logger->log("error", buffer);
+        } else {
+            Serial.printf("[IRMapper] %s\n", buffer);
+        }
+        // 尝试使用更大的文档重新保存
+        size_t largerSize = (validCount * 300) + 4096;
+        if (largerSize <= freeHeap - 1024 && largerSize <= 16384) {
+            DynamicJsonDocument largerDoc(largerSize);
+            JsonArray largerArray = largerDoc.to<JsonArray>();
+            for (int i = 0; i < MAX_MAP_RULES; i++) {
+                if (!rules[i].valid) continue;
+                JsonObject ruleObj = largerArray.createNestedObject();
+                ruleToJsonObject(rules[i], ruleObj, true);
+            }
+            serializeJson(largerDoc, output);
+            if (largerDoc.overflowed()) {
+                if (logger) {
+                    logger->log("error", "使用更大的文档序列化仍然溢出");
+                }
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
     
     // 验证保存的规则数量
     if (savedCount != validCount) {
@@ -741,11 +790,31 @@ bool IRMapper::findRuleIndexById(uint8_t id, int& index) {
 // 统一的规则转JSON方法
 void IRMapper::ruleToJsonObject(const IR_MapRule& rule, JsonObject& obj, bool hexFormat) {
     obj["id"] = rule.id;
-    
+    if (rule.name[0] != '\0') {
+        // 验证name字段是否有效，避免保存乱码
+        bool isValid = true;
+        const char* p = rule.name;
+        int len = 0;
+        while (*p != '\0' && len < MAX_COMMAND_NAME_LEN) {
+            // 检查明显的JSON结构片段（可能是之前保存时的错误）
+            if ((*p == ':' && (p[1] == '[' || p[1] == '{' || (p[1] >= '0' && p[1] <= '9'))) ||
+                (*p == ',' && p[1] == '"') ||
+                (*p == '"' && (p == rule.name || p[1] == ':' || p[1] == ',')) ||
+                (*p == '{' || *p == '}' || *p == '[' || *p == ']')) {
+                isValid = false;
+                break;
+            }
+            p++;
+            len++;
+        }
+        // 只保存有效的name字段
+        if (isValid && len > 0) {
+            obj["name"] = rule.name;
+        }
+    }
     // A信号（使用统一序列化方法）
     JsonObject aSignal = obj.createNestedObject("aSignal");
     SignalUtils::signalToJSON(rule.aSignal, aSignal, hexFormat);
-    
     // B信号序列（使用统一序列序列化方法）
     JsonObject bSequence = obj.createNestedObject("bSequence");
     SignalUtils::sequenceToJSON(rule.bSequence, bSequence, hexFormat);
@@ -754,18 +823,60 @@ void IRMapper::ruleToJsonObject(const IR_MapRule& rule, JsonObject& obj, bool he
 // 统一的JSON转规则方法
 bool IRMapper::jsonObjectToRule(JsonObject& obj, IR_MapRule& rule) {
     rule.id = obj["id"] | 0;
-    
-    // A信号（使用统一反序列化方法）
+    rule.name[0] = '\0';
+    if (obj.containsKey("name") && obj["name"].is<const char*>()) {
+        const char* s = obj["name"].as<const char*>();
+        if (s) {
+            // 验证字符串是否有效：检查是否包含明显的JSON结构片段（可能是解析错误导致的乱码）
+            // 检查常见的JSON结构片段，如 ":["、":{、":0、",\"等
+            bool isValid = true;
+            const char* p = s;
+            int len = 0;
+            while (*p != '\0' && len < MAX_COMMAND_NAME_LEN) {
+                // 检查明显的JSON结构片段
+                if ((*p == ':' && (p[1] == '[' || p[1] == '{' || (p[1] >= '0' && p[1] <= '9'))) ||
+                    (*p == ',' && p[1] == '"') ||
+                    (*p == '"' && (p == s || p[1] == ':' || p[1] == ',')) ||
+                    (*p == '{' || *p == '}' || *p == '[' || *p == ']')) {
+                    isValid = false;
+                    break;
+                }
+                p++;
+                len++;
+            }
+            
+            // 如果字符串有效且长度合理，才复制
+            if (isValid && len > 0 && len < MAX_COMMAND_NAME_LEN) {
+                strncpy(rule.name, s, MAX_COMMAND_NAME_LEN - 1);
+                rule.name[MAX_COMMAND_NAME_LEN - 1] = '\0';
+            }
+        }
+    }
+    // A信号：优先对象格式，否则支持字符串格式 "a"
     JsonObject aSignal = obj["aSignal"];
-    if (aSignal.isNull()) {
-        return false;
+    if (!aSignal.isNull()) {
+        if (!SignalUtils::signalFromJSON(aSignal, rule.aSignal)) {
+            return false;
+        }
+    } else if (obj.containsKey("a") && obj["a"].is<const char*>()) {
+        const char* aStr = obj["a"].as<const char*>();
+        if (!aStr || aStr[0] == '\0') {
+            return false;
+        }
+        SignalSequence tempSeq;
+        if (!IRLearner::parseStringSequence(String(aStr), tempSeq, s_parseTimingBuffer, MAX_LEARN_TIMING_COUNT)) {
+            return false;
+        }
+        if (tempSeq.signalCount != 1) {
+            return false;  // A 信号必须为单个信号
+        }
+        rule.aSignal = tempSeq.signals[0];
+    } else {
+        return false;  // 缺少 aSignal 或 a 字段
     }
-    if (!SignalUtils::signalFromJSON(aSignal, rule.aSignal)) {
-        return false;
-    }
-    
-    // B信号序列（使用统一序列反序列化方法）
-    // 兼容旧格式：如果存在 bSignals 数组，转换为新格式
+
+    // B信号序列：优先对象格式（bSequence / bSignals），否则支持字符串格式 "b"
+    rule.bSequence.clear();
     if (obj.containsKey("bSequence")) {
         JsonObject bSequence = obj["bSequence"];
         if (bSequence.isNull()) {
@@ -780,37 +891,36 @@ bool IRMapper::jsonObjectToRule(JsonObject& obj, IR_MapRule& rule) {
         if (bSignals.isNull() || bSignals.size() == 0) {
             return false;
         }
-        
-        rule.bSequence.clear();
         JsonArray intervals = obj["intervals"];
         int intervalIndex = 0;
-        
         for (JsonObject bSignal : bSignals) {
             if (rule.bSequence.signalCount >= MAX_B_SIGNALS_PER_RULE) break;
-            
             UnifiedSignal signal;
             if (!SignalUtils::signalFromJSON(bSignal, signal)) {
                 return false;
             }
-            
             uint16_t interval = 0;
             if (intervalIndex < intervals.size() && intervalIndex < rule.bSequence.signalCount) {
                 interval = intervals[intervalIndex];
             }
-            
             if (!rule.bSequence.addSignal(signal, interval)) {
                 return false;
             }
             intervalIndex++;
         }
-        
         if (rule.bSequence.signalCount == 0) {
             return false;
         }
-        
-        // 注意：序列不再包含repeatCount，重复次数由外部控制
+    } else if (obj.containsKey("b") && obj["b"].is<const char*>()) {
+        const char* bStr = obj["b"].as<const char*>();
+        if (!bStr || bStr[0] == '\0') {
+            return false;
+        }
+        if (!IRLearner::parseStringSequence(String(bStr), rule.bSequence, s_parseTimingBuffer, MAX_LEARN_TIMING_COUNT)) {
+            return false;
+        }
     } else {
-        return false;  // 缺少bSequence或bSignals字段
+        return false;  // 缺少 bSequence、bSignals 或 b 字段
     }
     
     rule.valid = true;

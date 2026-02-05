@@ -20,6 +20,7 @@ struct IR_MapRule {
     
     bool valid;
     uint8_t id;  // 规则ID
+    char name[MAX_COMMAND_NAME_LEN];  // 可选名称（与按钮/指令对应，查询时便于识别）
 };
 
 // 映射表管理器
