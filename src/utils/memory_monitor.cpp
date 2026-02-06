@@ -173,12 +173,13 @@ size_t MemoryMonitor::calculateRulesJsonSize(int ruleCount) {
     // 每条规则约200字节基础开销 + 每个B信号约100字节
     // 假设平均每条规则有2个B信号
     // 注意：使用hex格式时，字符串会更长，需要更多空间
-    // 实际测试：5条规则（包含电源规则有3个B信号）需要约3000-4000字节
-    size_t baseSize = 512;  // 增加基础开销
-    size_t itemSize = 300 + (2 * 120);  // 平均每条规则540字节（考虑hex格式、对象开销和name字段）
+    // 实际测试：5条规则（包含电源规则有3个B信号）序列化后约1628字节
+    // 考虑到JSON文档内存需求通常是序列化字符串的1.5-2倍，每条规则约300-400字节
+    size_t baseSize = 512;  // 基础开销
+    size_t itemSize = 350;  // 每条规则350字节（考虑hex格式、对象开销、name字段）
     size_t size = baseSize + (ruleCount * itemSize);
     
-    // 限制最大大小（增加到16384以支持更多规则）
+    // 限制最大大小（16384以支持更多规则）
     if (size > 16384) size = 16384;
     
     // 确保最小大小

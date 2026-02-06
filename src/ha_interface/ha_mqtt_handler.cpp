@@ -167,40 +167,44 @@ bool HAMQTTHandler::sendSuccess(const String& json, const char* context) {
     String publishJson = json;
     const bool forwardingEnabled = forwarder.isEnabled();
 
-    // 快速判断：已是 data 对象且包含 forwarding_enabled 则跳过解析（节省资源）
-    bool likelyOk = false;
-    int dataObjPos = publishJson.indexOf("\"data\":{");
-    if (dataObjPos < 0) {
-        dataObjPos = publishJson.indexOf("\"data\" : {");
-    }
-    if (dataObjPos >= 0 && publishJson.indexOf("\"forwarding_enabled\"") >= 0) {
-        likelyOk = true;
+    // 快速判断：如果已包含 forwarding_enabled 或 data 是数组，则跳过规范化
+    // 优化：避免不必要的JSON解析，节省内存和CPU
+    bool needsNormalization = true;
+    if (publishJson.indexOf("\"forwarding_enabled\"") >= 0) {
+        // 已包含 forwarding_enabled，无需规范化
+        needsNormalization = false;
+    } else if (publishJson.indexOf("\"data\":[") >= 0 || publishJson.indexOf("\"data\" : [") >= 0) {
+        // data 是数组（如 query_maps），无需规范化
+        needsNormalization = false;
     }
 
     // 仅在需要时解析并规范化（兼顾内存）
     size_t freeHeap = ESP.getFreeHeap();
-    if (!likelyOk) {
+    if (needsNormalization) {
         // 规范化会产生额外内存开销（解析 + 可能复制 data），预留更多空间
         size_t docSize = (publishJson.length() * 4) + 1024;
         if (docSize < 2048) docSize = 2048;
         if (docSize > 12288) docSize = 12288;
 
-        // 若内存不足以完成规范化，则先按原样发布，随后尝试发布一次增强状态以纠正 HA 开关显示
+        // 规范化：确保 data 是对象且包含 forwarding_enabled
         if (freeHeap >= docSize + 2048) {
             DynamicJsonDocument doc(docSize);
             DeserializationError err = deserializeJson(doc, publishJson);
+            
             if (!err && doc.is<JsonObject>()) {
                 JsonObject root = doc.as<JsonObject>();
                 JsonVariant dataVar = root["data"];
 
                 if (!dataVar || dataVar.isNull()) {
+                    // data 不存在，创建新对象
                     JsonObject dataObj = root.createNestedObject("data");
                     dataObj["forwarding_enabled"] = forwardingEnabled;
                 } else if (dataVar.is<JsonObject>()) {
+                    // data 是对象，直接添加 forwarding_enabled
                     JsonObject dataObj = dataVar.as<JsonObject>();
                     dataObj["forwarding_enabled"] = forwardingEnabled;
                 } else {
-                    // 将原 data 复制到临时字段，再改造 data 为对象并放回 result
+                    // data 不是对象（可能是数组或字符串），包装为对象
                     root["_result_tmp"] = dataVar;
                     JsonObject dataObj = root["data"].to<JsonObject>();
                     dataObj["forwarding_enabled"] = forwardingEnabled;
@@ -208,31 +212,56 @@ bool HAMQTTHandler::sendSuccess(const String& json, const char* context) {
                     root.remove("_result_tmp");
                 }
 
+                // 序列化规范化后的 JSON
                 String normalized;
                 serializeJson(doc, normalized);
-                if (normalized.length() > 0) {
+                if (normalized.length() > 0 && !doc.overflowed()) {
                     publishJson = normalized;
                 }
             }
+            // 如果解析或序列化失败，保持原样发布
         }
+        // 如果内存不足，保持原样发布
     }
 
     // 检查消息大小（以最终发布的 payload 为准）
-    size_t messageSize = strlen(MQTT_TOPIC_STATE) + publishJson.length();
+    size_t topicLen = strlen(MQTT_TOPIC_STATE);
+    size_t payloadLen = publishJson.length();
+    size_t messageSize = topicLen + payloadLen;
+    
+    // 如果消息接近缓冲区大小，记录警告
+    if (messageSize > MQTT_BUFFER_SIZE * 0.9 && messageSize <= MQTT_BUFFER_SIZE) {
+        char warnMsg[256];
+        snprintf(warnMsg, sizeof(warnMsg), "[MQTT%s] Message size warning: %d bytes (%.1f%% of buffer, max: %d bytes)", 
+                 context ? context : "", messageSize, (messageSize * 100.0f / MQTT_BUFFER_SIZE), MQTT_BUFFER_SIZE);
+        logger.log("warning", warnMsg);
+    }
+    
     if (messageSize > MQTT_BUFFER_SIZE) {
-        char errorMsg[192];
-        snprintf(errorMsg, sizeof(errorMsg), "[MQTT%s] Message too large: %d bytes (max: %d bytes)", 
-                 context ? context : "", messageSize, MQTT_BUFFER_SIZE);
+        char errorMsg[256];
+        snprintf(errorMsg, sizeof(errorMsg), "[MQTT%s] Message too large: %d bytes (topic: %d, payload: %d, max: %d bytes)", 
+                 context ? context : "", messageSize, topicLen, payloadLen, MQTT_BUFFER_SIZE);
         logger.log("error", errorMsg);
-        Serial.printf("[MQTT%s] Message too large: %d bytes (max: %d bytes)\n", 
-                      context ? context : "", messageSize, MQTT_BUFFER_SIZE);
-        // 尝试按原样发布（若原消息更小），并发布一次增强状态避免 HA 开关显示错误
-        size_t originalMessageSize = strlen(MQTT_TOPIC_STATE) + json.length();
+        Serial.printf("[MQTT%s] Message too large: %d bytes (topic: %d, payload: %d, max: %d bytes)\n", 
+                      context ? context : "", messageSize, topicLen, payloadLen, MQTT_BUFFER_SIZE);
+        // 尝试按原样发布（若原消息更小）
+        // 注意：对于 query_maps 等数据查询接口，不要发布状态信息，避免覆盖数据
+        size_t originalPayloadLen = json.length();
+        size_t originalMessageSize = topicLen + originalPayloadLen;
         if (originalMessageSize <= MQTT_BUFFER_SIZE) {
+            char fallbackMsg[192];
+            snprintf(fallbackMsg, sizeof(fallbackMsg), "[MQTT%s] Using original message (size: %d bytes)", 
+                     context ? context : "", originalMessageSize);
+            logger.log("warning", fallbackMsg);
             bool fallbackResult = mqtt.publish(MQTT_TOPIC_STATE, json);
             publishEnhancedState();
             return fallbackResult;
         }
+        // 如果原消息也太大，记录详细信息
+        char detailMsg[256];
+        snprintf(detailMsg, sizeof(detailMsg), "[MQTT%s] Original message also too large: %d bytes (payload: %d)", 
+                 context ? context : "", originalMessageSize, originalPayloadLen);
+        logger.log("error", detailMsg);
         return false;
     }
     
@@ -613,12 +642,44 @@ void HAMQTTHandler::processCommand(const String& payload) {
 }
 
 void HAMQTTHandler::handleQueryMaps() {
-    // 使用公共函数，传递 logger
+    // 获取映射表数据
     String dataJson = APIHandlers::handleQueryMaps(mapper, &logger);
     
-    // 使用统一的响应处理
-    // 增加最大文档大小到16384以支持更多规则（ESP8266通常有足够内存）
-    processJsonArrayResponse(dataJson, "MQTT: query_maps", 16384);
+    if (dataJson.length() == 0) {
+        logger.log("error", "[MQTT: query_maps] handleQueryMaps returned empty string");
+        sendError("Failed to get mapping rules", 500, "MQTT: query_maps");
+        return;
+    }
+    
+    // 构建响应：将数组包装为对象，添加 forwarding_enabled 字段
+    // 格式：{"success":true,"status":"success","data":{"forwarding_enabled":true,"rules":[...]},"timestamp":...}
+    bool forwardingEnabled = forwarder.isEnabled();
+    String output;
+    output.reserve(dataJson.length() + 300);  // 预分配内存
+    
+    output = "{\"success\":true,\"status\":\"success\",\"data\":{\"forwarding_enabled\":";
+    output += forwardingEnabled ? "true" : "false";
+    output += ",\"rules\":";
+    output += dataJson;
+    output += "},\"timestamp\":";
+    output += String(millis());
+    output += "}";
+    
+    // 直接发布，避免 sendSuccess() 的规范化逻辑
+    if (!mqtt.isConnected()) {
+        logger.log("error", "[MQTT: query_maps] MQTT not connected");
+        return;
+    }
+    
+    size_t messageSize = strlen(MQTT_TOPIC_STATE) + output.length();
+    if (messageSize > MQTT_BUFFER_SIZE) {
+        logger.log("error", "[MQTT: query_maps] Message too large");
+        return;
+    }
+    
+    if (!mqtt.publish(MQTT_TOPIC_STATE, output)) {
+        logger.log("error", "[MQTT: query_maps] Failed to publish message");
+    }
 }
 
 void HAMQTTHandler::handleUpdateMap(const String& json) {

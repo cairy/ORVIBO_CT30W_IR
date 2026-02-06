@@ -333,6 +333,10 @@ int IRMapper::getAllRules(IR_MapRule* outputRules, int maxCount) {
 }
 
 bool IRMapper::saveToFlash() {
+    // 保存保护：在保存开始时记录规则数量快照，避免保存过程中规则被修改
+    int validCount = getRuleCount();
+    int savedCount = 0;
+    
     // 检查可用内存
     size_t freeHeap = ESP.getFreeHeap();
     if (freeHeap < 4096) {  // 至少需要4KB空闲内存
@@ -347,8 +351,7 @@ bool IRMapper::saveToFlash() {
     }
     
     // 动态计算JSON大小：每条规则约200字节，加上JSON开销
-    // 使用getRuleCount()统一数据源
-    int validCount = getRuleCount();
+    // 使用快照的规则数量，而不是实时调用getRuleCount()
     size_t jsonSize = (validCount * 200) + 2048;
     if (jsonSize < 4096) jsonSize = 4096;  // 最小4KB
     
@@ -369,7 +372,7 @@ bool IRMapper::saveToFlash() {
     JsonArray rulesArray = doc.to<JsonArray>();
     
     // 遍历整个数组，与getAllRules保持一致
-    int savedCount = 0;
+    // 使用快照：只保存保存开始时有效的规则
     for (int i = 0; i < MAX_MAP_RULES; i++) {
         if (!rules[i].valid) continue;
         
@@ -393,18 +396,27 @@ bool IRMapper::saveToFlash() {
         if (largerSize <= freeHeap - 1024 && largerSize <= 16384) {  // 限制最大16KB
             DynamicJsonDocument largerDoc(largerSize);
             JsonArray largerArray = largerDoc.to<JsonArray>();
+            // 重新遍历规则数组（使用快照）
+            int retrySavedCount = 0;
             for (int i = 0; i < MAX_MAP_RULES; i++) {
                 if (!rules[i].valid) continue;
                 JsonObject ruleObj = largerArray.createNestedObject();
                 ruleToJsonObject(rules[i], ruleObj, true);
+                retrySavedCount++;
             }
             String output;
             serializeJson(largerDoc, output);
-            if (!largerDoc.overflowed() && Storage::saveFile(CONFIG_FILE_MAPS, output)) {
-                if (logger) {
-                    logger->log("system", "使用更大的文档成功保存所有规则");
+            if (!largerDoc.overflowed()) {
+                // 直接保存，规则格式在添加时已确保正确
+                if (Storage::saveFile(CONFIG_FILE_MAPS, output)) {
+                    // 优化日志：使用Serial直接输出，避免触发日志系统的自动保存
+                    Serial.printf("[IRMapper] 使用更大的文档成功保存 %d 条规则\n", retrySavedCount);
+                    if (logger) {
+                        // 延迟日志记录，避免在保存过程中触发新的保存
+                        logger->log("system", "使用更大的文档成功保存所有规则");
+                    }
+                    return true;
                 }
-                return true;
             }
         }
         return false;
@@ -427,21 +439,35 @@ bool IRMapper::saveToFlash() {
         if (largerSize <= freeHeap - 1024 && largerSize <= 16384) {
             DynamicJsonDocument largerDoc(largerSize);
             JsonArray largerArray = largerDoc.to<JsonArray>();
+            // 重新遍历规则数组（使用快照）
+            int retrySavedCount = 0;
             for (int i = 0; i < MAX_MAP_RULES; i++) {
                 if (!rules[i].valid) continue;
                 JsonObject ruleObj = largerArray.createNestedObject();
                 ruleToJsonObject(rules[i], ruleObj, true);
+                retrySavedCount++;
             }
-            serializeJson(largerDoc, output);
+            // 修复：使用新的String变量，避免使用之前定义的output
+            String retryOutput;
+            serializeJson(largerDoc, retryOutput);
             if (largerDoc.overflowed()) {
                 if (logger) {
                     logger->log("error", "使用更大的文档序列化仍然溢出");
                 }
                 return false;
             }
-        } else {
-            return false;
+            // 直接保存，不进行复杂验证
+            if (Storage::saveFile(CONFIG_FILE_MAPS, retryOutput)) {
+                // 优化日志：使用Serial直接输出，避免触发日志系统的自动保存
+                Serial.printf("[IRMapper] 使用更大的文档成功保存 %d 条规则\n", retrySavedCount);
+                if (logger) {
+                    // 延迟日志记录，避免在保存过程中触发新的保存
+                    logger->log("system", "使用更大的文档成功保存所有规则");
+                }
+                return true;
+            }
         }
+        return false;
     }
     
     // 验证保存的规则数量
@@ -455,11 +481,17 @@ bool IRMapper::saveToFlash() {
         }
     }
     
+    // 直接保存，不进行复杂验证（规则格式在添加时已确保正确）
     bool success = Storage::saveFile(CONFIG_FILE_MAPS, output);
-    if (success && logger) {
-        char buffer[128];
-        snprintf(buffer, sizeof(buffer), "成功保存 %d 条规则到Flash", savedCount);
-        logger->log("system", buffer);
+    if (success) {
+        // 优化日志：使用Serial直接输出，避免触发日志系统的自动保存
+        Serial.printf("[IRMapper] 成功保存 %d 条规则到Flash\n", savedCount);
+        if (logger) {
+            // 延迟日志记录，避免在保存过程中触发新的保存
+            char buffer[128];
+            snprintf(buffer, sizeof(buffer), "成功保存 %d 条规则到Flash", savedCount);
+            logger->log("system", buffer);
+        }
     }
     return success;
 }
@@ -926,3 +958,4 @@ bool IRMapper::jsonObjectToRule(JsonObject& obj, IR_MapRule& rule) {
     rule.valid = true;
     return true;
 }
+

@@ -63,7 +63,7 @@
 #define MQTT_TOPIC_LOG "homeassistant/orvibo-ct30w/log"          // 日志上报主题
 
 // 缓冲区
-#define MQTT_BUFFER_SIZE 2048        // MQTT消息缓冲区大小（支持较大的JSON响应）
+#define MQTT_BUFFER_SIZE 8192        // MQTT消息缓冲区大小（支持较大的JSON响应，如完整的映射表）
 
 // Home Assistant Discovery 配置
 #define MQTT_DISCOVERY_PREFIX "homeassistant"    // HA自动发现主题前缀

@@ -5,7 +5,7 @@ MQTTClient::MQTTClient(NetworkConfigManager& config, WiFiClient& wifiClient)
 }
 
 bool MQTTClient::init() {
-    // 设置 MQTT 缓冲区大小为 2048 字节（用于支持较大的 Discovery 消息）
+    // 设置 MQTT 缓冲区大小（用于支持较大的JSON响应，如完整的映射表）
     client.setBufferSize(MQTT_BUFFER_SIZE);
     
     if (configManager.isValid()) {
