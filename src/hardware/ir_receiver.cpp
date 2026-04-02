@@ -133,12 +133,14 @@ bool IRReceiver::getSignal(IRTiming* outputBuffer, int& count, int maxCount) {
 }
 
 void IRReceiver::clearBuffer() {
+    noInterrupts();
     readIndex = writeIndex;
     bufferCount = 0;
     receiving = false;
-    for (int i = 0; i < BUFFER_SIZE; i++) {
-        buffer[i].valid = false;
-    }
+    interrupts();
+
+    // 不需要清空整个缓冲区，只需重置索引和计数
+    // buffer[i].valid 会在下次写入时被覆盖
 }
 
 bool IRReceiver::isReceiving() const {
