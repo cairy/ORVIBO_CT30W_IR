@@ -104,11 +104,18 @@ void WebServer::handleSave() {
     
     // 使用F()宏将字符串存储在Flash中
     String response;
-    response.reserve(200);
+    response.reserve(600);
     response = F("<!DOCTYPE html><html><head><meta charset='UTF-8'>");
-    response += F("<title>配置成功</title></head><body>");
-    response += F("<h1>配置已保存</h1>");
-    response += F("<p>设备将重启并连接到WiFi...</p>");
+    response += F("<style>body{font-family:Arial;max-width:400px;margin:80px auto;text-align:center;}");
+    response += F(".ok{color:#4CAF50;font-size:48px;}");
+    response += F(".bar{width:100%;background:#eee;border-radius:4px;}");
+    response += F(".fill{height:8px;background:#4CAF50;border-radius:4px;animation:go 3s linear forwards;}");
+    response += F("@keyframes go{from{width:0}to{width:100%}}</style></head><body>");
+    response += F("<div class='ok'>&#10003;</div>");
+    response += F("<h2>配置已保存</h2>");
+    response += F("<p>设备将在 <b>3</b> 秒后重启...</p>");
+    response += F("<div class='bar'><div class='fill'></div></div>");
+    response += F("<script>var n=3;setInterval(function(){n--;document.querySelector('b').innerText=n;},1000);</script>");
     response += F("</body></html>");
     
     server.send(200, "text/html", response);
@@ -122,7 +129,7 @@ String WebServer::getHTML() {
     
     // 优化：预分配更小的固定大小，减少内存占用
     String html;
-    html.reserve(800);  // 从1500降至800，节省700字节
+    html.reserve(1100);
     
     // 使用F()宏将字符串存储在Flash中，减少RAM占用
     html = F("<!DOCTYPE html><html><head><meta charset='UTF-8'>");
@@ -163,7 +170,7 @@ String WebServer::getHTML() {
     html += F("'>");
     // MQTT密码字段不显示实际值，提高安全性
     html += F("<input type='password' name='mqtt_password' placeholder='MQTT 密码（可选）'>");
-    html += F("<button type='submit'>保存配置</button>");
+    html += F("<button type='submit' onclick=\"this.disabled=true;this.innerText='保存中...'\">保存配置</button>");
     html += F("</form></body></html>");
     
     return html;
