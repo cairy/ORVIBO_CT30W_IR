@@ -350,11 +350,11 @@ void loop() {
         } else if (!shouldRunWebServer && webServer.isRunning()) {
             webServer.stop();
         }
-        
-        // 如果Web服务器正在运行，处理客户端请求
-        if (webServer.isRunning()) {
-            webServer.handleClient();
-        }
+    }
+
+    // Web服务器请求处理（每次主循环均处理，降低响应延迟）
+    if (webServer.isRunning()) {
+        webServer.handleClient();
     }
     
     // 主循环处理学习模式和AT指令
@@ -370,7 +370,7 @@ void loop() {
     // LED更新
     ledControl.update();
     
-    // 内存监控和自动清理（每60秒检查一次）
+    // 内存监控和自动清理（每30秒检查一次）
     if (now - lastMemoryCheckTime >= MEMORY_CHECK_INTERVAL) {
         lastMemoryCheckTime = now;
         

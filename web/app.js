@@ -672,10 +672,12 @@
       cell.className = 'device-button';
       cell.innerHTML = '<span class="name">' + escapeHtml(btn.name) + '</span><span class="send-label">发送</span>';
       var longPressTimer;
-      cell.addEventListener('mousedown', function () {
+      var longPressActivated = false;
+
+      function startLongPress() {
         longPressTimer = setTimeout(function () {
           longPressTimer = null;
-          cell._longPressHandled = true;
+          longPressActivated = true;
           var newName = prompt('按钮名', btn.name);
           if (newName !== null) {
             var newSignal = prompt('信号（统一字符串）', btn.signal);
@@ -687,30 +689,23 @@
             }
           }
         }, 600);
-      });
-      cell.addEventListener('mouseup', function () { clearTimeout(longPressTimer); });
-      cell.addEventListener('mouseleave', function () { clearTimeout(longPressTimer); });
-      cell.addEventListener('touchstart', function () {
-        longPressTimer = setTimeout(function () {
-          longPressTimer = null;
-          cell._longPressHandled = true;
-          var newName = prompt('按钮名', btn.name);
-          if (newName !== null) {
-            var newSignal = prompt('信号（统一字符串）', btn.signal);
-            if (newSignal !== null) {
-              dev.buttons[idx] = { name: newName.trim() || btn.name, signal: (newSignal && newSignal.trim()) || btn.signal };
-              state.devices = state.devices.slice();
-              localStorage.setItem(STORAGE_DEVICES, JSON.stringify(state.devices));
-              renderDevicePanel();
-            }
-          }
-        }, 600);
-      }, { passive: true });
-      cell.addEventListener('touchend', function () { clearTimeout(longPressTimer); }, { passive: true });
+      }
+
+      function cancelLongPress() {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
+
+      cell.addEventListener('mousedown', startLongPress);
+      cell.addEventListener('mouseup', cancelLongPress);
+      cell.addEventListener('mouseleave', cancelLongPress);
+      cell.addEventListener('touchstart', startLongPress, { passive: true });
+      cell.addEventListener('touchend', cancelLongPress, { passive: true });
+      cell.addEventListener('touchcancel', cancelLongPress, { passive: true });
       cell.addEventListener('click', function (e) {
         e.preventDefault();
-        if (cell._longPressHandled) {
-          cell._longPressHandled = false;
+        if (longPressActivated) {
+          longPressActivated = false;
           return;
         }
         if (!needIp()) return;

@@ -48,13 +48,14 @@ void IRForwarder::update() {
     // 如果延时完成且有待转发任务，执行转发
     if (delayState == FORWARD_DELAY_READY && pendingTaskValid) {
         const ForwardTask& t = pendingTask;
+        // 边界检查：确保 signal_count 有效且数组访问安全
         if (t.signal_count == 1 && t.b_protocols[0] == 1) {
             forwarding = true;
             if (t.intervals[0] > 0) delayPrecise(t.intervals[0]);
             transmitter.sendNEC(t.signal_data[2], 32);
             forwarding = false;
             logger.resetSignalInterval();
-        } else {
+        } else if (t.signal_count > 0 && t.signal_count <= MAX_B_SIGNALS_PER_RULE) {
             IR_MapRule rule;
             if (buildRuleFromTask(pendingTask, rule)) {
                 executeForward(rule);
@@ -72,13 +73,14 @@ void IRForwarder::update() {
     // 从消息队列获取转发任务
     ForwardTask task;
     if (queue.pop(task) && task.valid) {
+        // 边界检查：确保 signal_count 有效且数组访问安全
         if (task.signal_count == 1 && task.b_protocols[0] == 1) {
             forwarding = true;
             if (task.intervals[0] > 0) delayPrecise(task.intervals[0]);
             transmitter.sendNEC(task.signal_data[2], 32);
             forwarding = false;
             logger.resetSignalInterval();
-        } else {
+        } else if (task.signal_count > 0 && task.signal_count <= MAX_B_SIGNALS_PER_RULE) {
             IR_MapRule rule;
             if (buildRuleFromTask(task, rule)) {
                 executeForward(rule);
