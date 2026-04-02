@@ -170,7 +170,7 @@ String WebServer::getHTML() {
     html += F("'>");
     // MQTT密码字段不显示实际值，提高安全性
     html += F("<input type='password' name='mqtt_password' placeholder='MQTT 密码（可选）'>");
-    html += F("<button type='submit' onclick=\"this.disabled=true;this.innerText='保存中...'\">保存配置</button>");
+    html += F("<button type='submit' onclick=\"if(this.form.checkValidity()){this.disabled=true;this.innerText='保存中...'}\">保存配置</button>");
     html += F("</form></body></html>");
     
     return html;
