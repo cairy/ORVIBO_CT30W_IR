@@ -511,7 +511,12 @@ bool IRForwarder::createForwardTask(const IR_MapRule& rule, ForwardTask& task) {
     int signalCount = (rule.bSequence.signalCount <= 3) ? rule.bSequence.signalCount : 3;
     task.signal_count = static_cast<uint8_t>(signalCount);
     task.rule_id = rule.id;  // 保存规则ID用于调试
-    
+
+    // 初始化 intervals 数组为 0，避免未初始化的垃圾值
+    for (int i = 0; i < 4; i++) {
+        task.intervals[i] = 0;
+    }
+
     // B信号数据从signal_data[2]开始存储，同时存储协议信息
     for (int i = 0; i < signalCount; i++) {  // 最多3个B信号（signal_data[2-4]）
         if (rule.bSequence.signals[i].useTiming) {
