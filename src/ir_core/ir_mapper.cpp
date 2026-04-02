@@ -332,11 +332,48 @@ int IRMapper::getAllRules(IR_MapRule* outputRules, int maxCount) {
     return outputCount;  // 返回实际填充的规则数量
 }
 
+int IRMapper::serializeRulesToJson(JsonArray& array) {
+    int savedCount = 0;
+    for (int i = 0; i < MAX_MAP_RULES; i++) {
+        if (!rules[i].valid) continue;
+        JsonObject ruleObj = array.createNestedObject();
+        ruleToJsonObject(rules[i], ruleObj, true);
+        savedCount++;
+    }
+    return savedCount;
+}
+
+bool IRMapper::saveToFlashWithLargerDoc(int validCount, size_t freeHeap) {
+    size_t largerSize = (validCount * 300) + 4096;
+    if (largerSize > freeHeap - 1024 || largerSize > 16384) {
+        return false;
+    }
+    DynamicJsonDocument largerDoc(largerSize);
+    JsonArray largerArray = largerDoc.to<JsonArray>();
+    int retrySavedCount = serializeRulesToJson(largerArray);
+
+    if (largerDoc.overflowed()) {
+        if (logger) logger->log("error", "使用更大的文档序列化仍然溢出");
+        return false;
+    }
+
+    File file = LittleFS.open(CONFIG_FILE_MAPS, "w");
+    if (!file) {
+        return false;
+    }
+    serializeJson(largerDoc, file);
+    file.close();
+
+    Serial.printf("[IRMapper] 使用更大的文档成功保存 %d 条规则\n", retrySavedCount);
+    if (logger) logger->log("system", "使用更大的文档成功保存所有规则");
+    return true;
+}
+
 bool IRMapper::saveToFlash() {
     // 保存保护：在保存开始时记录规则数量快照，避免保存过程中规则被修改
     int validCount = getRuleCount();
     int savedCount = 0;
-    
+
     // 检查可用内存
     size_t freeHeap = ESP.getFreeHeap();
     if (freeHeap < 4096) {  // 至少需要4KB空闲内存
@@ -349,12 +386,11 @@ bool IRMapper::saveToFlash() {
         }
         return false;
     }
-    
+
     // 动态计算JSON大小：每条规则约200字节，加上JSON开销
-    // 使用快照的规则数量，而不是实时调用getRuleCount()
     size_t jsonSize = (validCount * 200) + 2048;
     if (jsonSize < 4096) jsonSize = 4096;  // 最小4KB
-    
+
     // 确保不超过可用内存
     if (jsonSize > freeHeap - 1024) {  // 保留1KB缓冲
         jsonSize = freeHeap - 1024;
@@ -367,109 +403,23 @@ bool IRMapper::saveToFlash() {
             return false;
         }
     }
-    
+
     DynamicJsonDocument doc(jsonSize);
     JsonArray rulesArray = doc.to<JsonArray>();
-    
-    // 遍历整个数组，与getAllRules保持一致
-    // 使用快照：只保存保存开始时有效的规则
-    for (int i = 0; i < MAX_MAP_RULES; i++) {
-        if (!rules[i].valid) continue;
-        
-        JsonObject ruleObj = rulesArray.createNestedObject();
-        // 使用统一方法，设置hexFormat=true，统一使用十六进制格式
-        ruleToJsonObject(rules[i], ruleObj, true);
-        savedCount++;
-    }
-    
-    // 检查文档容量是否足够（ArduinoJson可能会在容量不足时截断）
+    savedCount = serializeRulesToJson(rulesArray);
+
+    // 溢出检查（填充阶段可能溢出）
     if (doc.overflowed()) {
         char buffer[128];
-        snprintf(buffer, sizeof(buffer), "JSON文档容量不足 (需要保存 %d 条规则，文档大小: %d bytes)", validCount, jsonSize);
+        snprintf(buffer, sizeof(buffer), "JSON文档溢出 (需要保存 %d 条规则，文档大小: %d bytes)", validCount, jsonSize);
         if (logger) {
             logger->log("error", buffer);
         } else {
             Serial.printf("[IRMapper] %s\n", buffer);
         }
-        // 尝试使用更大的文档重新保存
-        size_t largerSize = (validCount * 300) + 4096;  // 增加估算大小
-        if (largerSize <= freeHeap - 1024 && largerSize <= 16384) {  // 限制最大16KB
-            DynamicJsonDocument largerDoc(largerSize);
-            JsonArray largerArray = largerDoc.to<JsonArray>();
-            // 重新遍历规则数组（使用快照）
-            int retrySavedCount = 0;
-            for (int i = 0; i < MAX_MAP_RULES; i++) {
-                if (!rules[i].valid) continue;
-                JsonObject ruleObj = largerArray.createNestedObject();
-                ruleToJsonObject(rules[i], ruleObj, true);
-                retrySavedCount++;
-            }
-            String output;
-            serializeJson(largerDoc, output);
-            if (!largerDoc.overflowed()) {
-                // 直接保存，规则格式在添加时已确保正确
-                if (Storage::saveFile(CONFIG_FILE_MAPS, output)) {
-                    // 优化日志：使用Serial直接输出，避免触发日志系统的自动保存
-                    Serial.printf("[IRMapper] 使用更大的文档成功保存 %d 条规则\n", retrySavedCount);
-                    if (logger) {
-                        // 延迟日志记录，避免在保存过程中触发新的保存
-                        logger->log("system", "使用更大的文档成功保存所有规则");
-                    }
-                    return true;
-                }
-            }
-        }
-        return false;
+        return saveToFlashWithLargerDoc(validCount, freeHeap);
     }
-    
-    String output;
-    serializeJson(doc, output);
-    
-    // 序列化后再次检查溢出（序列化过程可能触发溢出）
-    if (doc.overflowed()) {
-        char buffer[128];
-        snprintf(buffer, sizeof(buffer), "JSON序列化时文档溢出 (需要保存 %d 条规则，文档大小: %d bytes)", validCount, jsonSize);
-        if (logger) {
-            logger->log("error", buffer);
-        } else {
-            Serial.printf("[IRMapper] %s\n", buffer);
-        }
-        // 尝试使用更大的文档重新保存
-        size_t largerSize = (validCount * 300) + 4096;
-        if (largerSize <= freeHeap - 1024 && largerSize <= 16384) {
-            DynamicJsonDocument largerDoc(largerSize);
-            JsonArray largerArray = largerDoc.to<JsonArray>();
-            // 重新遍历规则数组（使用快照）
-            int retrySavedCount = 0;
-            for (int i = 0; i < MAX_MAP_RULES; i++) {
-                if (!rules[i].valid) continue;
-                JsonObject ruleObj = largerArray.createNestedObject();
-                ruleToJsonObject(rules[i], ruleObj, true);
-                retrySavedCount++;
-            }
-            // 修复：使用新的String变量，避免使用之前定义的output
-            String retryOutput;
-            serializeJson(largerDoc, retryOutput);
-            if (largerDoc.overflowed()) {
-                if (logger) {
-                    logger->log("error", "使用更大的文档序列化仍然溢出");
-                }
-                return false;
-            }
-            // 直接保存，不进行复杂验证
-            if (Storage::saveFile(CONFIG_FILE_MAPS, retryOutput)) {
-                // 优化日志：使用Serial直接输出，避免触发日志系统的自动保存
-                Serial.printf("[IRMapper] 使用更大的文档成功保存 %d 条规则\n", retrySavedCount);
-                if (logger) {
-                    // 延迟日志记录，避免在保存过程中触发新的保存
-                    logger->log("system", "使用更大的文档成功保存所有规则");
-                }
-                return true;
-            }
-        }
-        return false;
-    }
-    
+
     // 验证保存的规则数量
     if (savedCount != validCount) {
         char buffer[128];
@@ -480,20 +430,21 @@ bool IRMapper::saveToFlash() {
             Serial.printf("[IRMapper] %s\n", buffer);
         }
     }
-    
-    // 直接保存，不进行复杂验证（规则格式在添加时已确保正确）
-    bool success = Storage::saveFile(CONFIG_FILE_MAPS, output);
-    if (success) {
-        // 优化日志：使用Serial直接输出，避免触发日志系统的自动保存
-        Serial.printf("[IRMapper] 成功保存 %d 条规则到Flash\n", savedCount);
-        if (logger) {
-            // 延迟日志记录，避免在保存过程中触发新的保存
-            char buffer[128];
-            snprintf(buffer, sizeof(buffer), "成功保存 %d 条规则到Flash", savedCount);
-            logger->log("system", buffer);
-        }
+
+    File file = LittleFS.open(CONFIG_FILE_MAPS, "w");
+    if (!file) {
+        return false;
     }
-    return success;
+    serializeJson(doc, file);
+    file.close();
+
+    Serial.printf("[IRMapper] 成功保存 %d 条规则到Flash\n", savedCount);
+    if (logger) {
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "成功保存 %d 条规则到Flash", savedCount);
+        logger->log("system", buffer);
+    }
+    return true;
 }
 
 bool IRMapper::loadFromFlash() {

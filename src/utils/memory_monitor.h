@@ -7,7 +7,8 @@
 class MemoryMonitor {
 public:
     // 初始化内存监控（在启动时调用，记录初始堆大小）
-    static void init();
+    // earlyFreeHeap: setup() 最开始记录的空闲堆（可选，0表示自动检测）
+    static void init(size_t earlyFreeHeap = 0);
     
     // 获取空闲堆内存（字节）
     static size_t getFreeHeap();

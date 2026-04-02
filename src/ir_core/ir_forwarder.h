@@ -47,15 +47,6 @@ private:
     bool enabled;  // 转发功能是否启用
     IRGenerator generator;  // 时序生成器
     
-    // 预编译的时序数组缓存
-    struct CompiledSignal {
-        IRTiming* timing;
-        int count;
-        bool valid;
-    };
-    
-    CompiledSignal compiledSignals[MAX_MAP_RULES][MAX_B_SIGNALS_PER_RULE];
-    
     // 时序缓冲区（改为成员变量，避免栈溢出）
     IRTiming timingBuffer[300];  // 用于executeForward和sendSignal
     IRTiming learnTimingBuffer[MAX_LEARN_TIMING_COUNT];  // 用于parseAndSendSignal

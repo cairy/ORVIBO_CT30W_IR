@@ -81,12 +81,13 @@ const unsigned long WEB_SERVER_START_DELAY = 8000; // 8秒延迟
 unsigned long systemStartTime = 0;
 
 // Web服务器启动条件判断（抽取为独立函数，简化主循环）
-bool shouldWebServerRun(unsigned long now, bool wifiConnected, bool mqttConnected, bool mqttConfigured) {
-    float usagePercent = MemoryMonitor::getUsagePercent();
+// outUsagePercent: 输出参数，返回当前内存使用率（避免调用方重复计算）
+bool shouldWebServerRun(unsigned long now, bool wifiConnected, bool mqttConnected, bool mqttConfigured, float& outUsagePercent) {
+    outUsagePercent = MemoryMonitor::getUsagePercent();
     unsigned long elapsedSinceStart = now - systemStartTime;
-    
+
     // 内存不足时强制停止Web服务器
-    if (usagePercent > MEMORY_WEBSERVER_STOP_PERCENT || !MemoryMonitor::checkMemory(MEMORY_MIN_FREE_HEAP)) {
+    if (outUsagePercent > MEMORY_WEBSERVER_STOP_PERCENT || !MemoryMonitor::checkMemory(MEMORY_MIN_FREE_HEAP)) {
         return false;
     }
     
@@ -124,11 +125,14 @@ bool shouldWebServerRun(unsigned long now, bool wifiConnected, bool mqttConnecte
 }
 
 void setup() {
+    // 尽早记录初始堆大小（在任何分配之前）
+    size_t earlyFreeHeap = ESP.getFreeHeap();
+
     Serial.begin(115200);
     Serial.println("\n\n=== ORVIBO-CT30W 红外转发器启动 ===");
-    
-    // 初始化内存监控（尽早初始化，记录初始堆大小）
-    MemoryMonitor::init();
+
+    // 初始化内存监控（尽早初始化，传入启动时的堆大小）
+    MemoryMonitor::init(earlyFreeHeap);
     
     // 初始化存储
     if (!Storage::init()) {
@@ -333,14 +337,14 @@ void loop() {
         bool mqttConfigured = networkConfig.isMQTTConfigured();
         ledControl.setNetworkStateWithMQTTConfig(wifiConnected, mqttConnected, mqttConfigured);
         
-        // Web服务器条件启动/停止逻辑
-        bool shouldRunWebServer = shouldWebServerRun(now, wifiConnected, mqttConnected, mqttConfigured);
-        
-        // 内存不足时停止Web服务器
+        // Web服务器条件启动/停止逻辑（同时获取内存使用率，避免重复调用）
+        float memUsagePercent = 0.0f;
+        bool shouldRunWebServer = shouldWebServerRun(now, wifiConnected, mqttConnected, mqttConfigured, memUsagePercent);
+
+        // 内存不足时停止Web服务器（使用已计算的内存使用率）
         if (!shouldRunWebServer && webServer.isRunning()) {
-            float usagePercent = MemoryMonitor::getUsagePercent();
-            if (usagePercent > MEMORY_WEBSERVER_STOP_PERCENT || !MemoryMonitor::checkMemory(MEMORY_MIN_FREE_HEAP)) {
-                DEBUG_PRINTF("[Web服务器] 内存不足，停止Web服务器 (使用率: %.1f%%)\n", usagePercent);
+            if (memUsagePercent > MEMORY_WEBSERVER_STOP_PERCENT || !MemoryMonitor::checkMemory(MEMORY_MIN_FREE_HEAP)) {
+                DEBUG_PRINTF("[Web服务器] 内存不足，停止Web服务器 (使用率: %.1f%%)\n", memUsagePercent);
             }
         }
         

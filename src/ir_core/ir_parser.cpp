@@ -77,7 +77,7 @@ void IRParser::enableLibraryReceiver() {
 bool IRParser::convertDecodeResult(decode_results& results, UnifiedSignal& signal) {
     // 初始化UnifiedSignal
     signal.clear();
-    
+
     // 检查是否有有效数据
     // IRremoteESP8266库中，UNKNOWN通常值为-1
     if (results.decode_type == UNKNOWN) {
@@ -86,16 +86,17 @@ bool IRParser::convertDecodeResult(decode_results& results, UnifiedSignal& signa
         signal.useTiming = false;  // 既不是协议也不是时序码（无效状态）
         return false;
     }
-    
+
     // 已知协议，转换为我们的协议编号
     signal.useTiming = false;  // 协议信号
     signal.data = (uint32_t)results.value;
     signal.repeatCount = 1;
-    
+
     // 协议类型映射（使用库的枚举值）
     // IRremoteESP8266库使用decode_type_t枚举，直接比较枚举值
     decode_type_t decodeType = results.decode_type;
-    
+
+    // ⚠️ 协议编号映射：必须与手写解析器（parseNEC/RC5/...）保持一致
     // 根据协议类型映射到我们的协议编号
     // 只使用库中确实存在的枚举值
     if (decodeType == NEC || decodeType == NEC_LIKE) {
@@ -119,7 +120,7 @@ bool IRParser::convertDecodeResult(decode_results& results, UnifiedSignal& signa
         signal.protocol = 0;
         return false;
     }
-    
+
     return true;
 }
 
@@ -127,7 +128,7 @@ bool IRParser::parseSignal(const IRTiming* timing, int count, UnifiedSignal& sig
     if (timing == nullptr || count <= 0) {
         return false;
     }
-    
+
     // 过滤噪声（<50μs的脉冲）
     int validCount = 0;
     for (int i = 0; i < count; i++) {
@@ -135,14 +136,15 @@ bool IRParser::parseSignal(const IRTiming* timing, int count, UnifiedSignal& sig
             validCount++;
         }
     }
-    
+
     if (validCount < 10) {
         return false;  // 信号太短，可能是噪声
     }
-    
+
     // 限制时序码数量
     int maxCount = (count > MAX_LEARN_TIMING_COUNT) ? MAX_LEARN_TIMING_COUNT : count;
-    
+
+    // ⚠️ 手写解析器：协议编号必须与 convertDecodeResult 保持一致
     // 尝试解析各种协议
     UnifiedSignal tempSignal;
     if (parseNEC(timing, maxCount, tempSignal)) {
@@ -175,7 +177,7 @@ bool IRParser::parseSignal(const IRTiming* timing, int count, UnifiedSignal& sig
         signal.repeatCount = 1;
         return true;
     }
-    
+
     // 未匹配协议，使用时序码
     signal.clear();
     signal.useTiming = true;  // 时序码信号
@@ -184,7 +186,7 @@ bool IRParser::parseSignal(const IRTiming* timing, int count, UnifiedSignal& sig
     signal.timingCount = maxCount;
     signal.timingBase64 = SignalUtils::timingToBase64(timing, maxCount);
     signal.repeatCount = 1;
-    
+
     return signal.timingBase64.length() > 0;
 }
 

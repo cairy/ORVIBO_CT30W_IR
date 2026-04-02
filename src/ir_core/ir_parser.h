@@ -9,6 +9,20 @@
 #include <IRutils.h>
 
 // 红外信号解析器
+//
+// 双解析器架构说明：
+// 1. IRremoteESP8266 库解析器（decodeWithLibrary）：
+//    - 用于正常工作模式（转发模式）
+//    - 直接从 GPIO 中断接收并解码，效率高
+//    - 支持的协议：NEC, RC5, RC6, Sony, Samsung 等
+//
+// 2. 手写时序解析器（parseSignal + parseNEC/RC5/...）：
+//    - 用于学习模式（需要原始时序数据）
+//    - 从 IRReceiver 的环形缓冲区读取原始时序
+//    - 协议编号必须与库解析器保持一致（protocol: 1=NEC, 2=RC5, ...）
+//    - 如果无法识别协议，保存为时序码（useTiming=true）
+//
+// 注意：两套解析器的协议编号映射必须同步维护
 class IRParser {
 public:
     IRParser();

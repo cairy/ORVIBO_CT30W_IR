@@ -73,37 +73,40 @@ bool IRReceiver::getSignal(IRTiming* outputBuffer, int& count, int maxCount) {
     if (outputBuffer == nullptr || maxCount <= 0) {
         return false;
     }
-    
-    if (bufferCount == 0) {
+
+    noInterrupts();
+    int snapCount = bufferCount;
+    bool snapReceiving = receiving;
+    unsigned long snapLastSignalTime = lastSignalTime;
+    int startIdx = readIndex;
+    interrupts();
+
+    if (snapCount == 0) {
         count = 0;
         return false;
     }
-    
-    // 如果正在接收，检查是否已经接收完成（距离最后一次信号超过100ms）
-    if (receiving) {
+
+    if (snapReceiving) {
         unsigned long now = micros();
         unsigned long elapsed;
-        // 处理 micros() 溢出（约70分钟后）
-        if (now >= lastSignalTime) {
-            elapsed = now - lastSignalTime;
+        if (now >= snapLastSignalTime) {
+            elapsed = now - snapLastSignalTime;
         } else {
-            elapsed = (0xFFFFFFFFUL - lastSignalTime) + now;
+            elapsed = (0xFFFFFFFFUL - snapLastSignalTime) + now;
         }
-        // 如果距离最后一次信号少于100ms，认为信号还在接收中
-        if (elapsed < 100000) {  // 100ms = 100000μs
+        if (elapsed < 100000) {
             count = 0;
             return false;
         }
-        // 信号接收完成，标记为不再接收（但不清空缓冲区，继续处理）
+        noInterrupts();
         receiving = false;
+        interrupts();
     }
-    
-    // 计算持续时间
+
     count = 0;
-    int startIdx = readIndex;
     unsigned long lastTime = buffer[startIdx].timestamp;
-    
-    for (int i = 0; i < bufferCount && count < maxCount; i++) {
+
+    for (int i = 0; i < snapCount && count < maxCount; i++) {
         int idx = (startIdx + i) % BUFFER_SIZE;
         if (!buffer[idx].valid) break;
         

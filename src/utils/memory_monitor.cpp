@@ -7,33 +7,36 @@ static size_t initialFreeHeap = 0;
 static bool initialized = false;
 
 // 初始化内存监控（在启动时调用）
-void MemoryMonitor::init() {
+void MemoryMonitor::init(size_t earlyFreeHeap) {
     if (!initialized) {
-        // 记录启动时的空闲堆（此时内存使用最少）
-        initialFreeHeap = ESP.getFreeHeap();
-        
-        // ESP8266的堆大小 = 初始空闲堆 + 已使用的堆
-        // 通过多次采样获取更准确的值
-        size_t maxFreeHeap = initialFreeHeap;
-        for (int i = 0; i < 5; i++) {
-            size_t currentFree = ESP.getFreeHeap();
-            if (currentFree > maxFreeHeap) {
-                maxFreeHeap = currentFree;
+        // 如果调用方提供了 setup() 最开始的空闲堆，直接使用
+        if (earlyFreeHeap > 0) {
+            initialFreeHeap = earlyFreeHeap;
+            cachedHeapSize = earlyFreeHeap;  // 启动最早期的空闲堆即为总堆近似值
+        } else {
+            // 否则记录当前空闲堆（此时内存使用已较多）
+            initialFreeHeap = ESP.getFreeHeap();
+
+            // 通过多次采样获取更准确的值
+            size_t maxFreeHeap = initialFreeHeap;
+            for (int i = 0; i < 5; i++) {
+                size_t currentFree = ESP.getFreeHeap();
+                if (currentFree > maxFreeHeap) {
+                    maxFreeHeap = currentFree;
+                }
+                delay(10);
             }
-            delay(10);
+
+            // 估算总堆大小：初始空闲堆 + 估算已使用堆（约10-20KB）
+            cachedHeapSize = maxFreeHeap + 10000;
         }
-        
-        // 估算总堆大小：初始空闲堆 + 估算已使用堆（约10-20KB）
-        // 更准确的方法：初始空闲堆通常接近总堆大小（启动时使用最少）
-        // 但考虑到启动时已经分配了一些内存，我们使用一个保守的估算
-        cachedHeapSize = maxFreeHeap + 10000;  // 初始空闲堆 + 10KB缓冲
-        
+
         // 限制在合理范围内（ESP8266典型堆大小约50-80KB）
         if (cachedHeapSize < 50000) cachedHeapSize = 50000;
         if (cachedHeapSize > 90000) cachedHeapSize = 90000;
-        
+
         initialized = true;
-        
+
         Serial.printf("[内存监控] 初始化完成 - 初始空闲堆: %d bytes (%.2f KB), 估算总堆: %d bytes (%.2f KB)\n",
                      initialFreeHeap, initialFreeHeap / 1024.0f,
                      cachedHeapSize, cachedHeapSize / 1024.0f);

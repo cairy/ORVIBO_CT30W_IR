@@ -10,16 +10,6 @@
 IRForwarder::IRForwarder(IRMapper& mapper, IRTransmitter& transmitter, MessageQueue& queue, Logger& logger)
     : mapper(mapper), transmitter(transmitter), queue(queue), logger(logger), forwarding(false), enabled(true),
       delayState(FORWARD_DELAY_IDLE), pendingTaskValid(false) {
-    // 初始化预编译缓存
-    for (int i = 0; i < MAX_MAP_RULES; i++) {
-        for (int j = 0; j < MAX_B_SIGNALS_PER_RULE; j++) {
-            compiledSignals[i][j].timing = nullptr;
-            compiledSignals[i][j].count = 0;
-            compiledSignals[i][j].valid = false;
-        }
-    }
-    
-    // 简化转发逻辑，不再需要重复码相关状态
 }
 
 bool IRForwarder::init() {
@@ -27,17 +17,6 @@ bool IRForwarder::init() {
     if (!generator.init()) {
         return false;
     }
-    
-    // 预编译缓存初始化（现在统一使用时序生成，不需要预编译）
-    // 保留缓存结构以备将来优化使用
-    for (int i = 0; i < MAX_MAP_RULES; i++) {
-        for (int j = 0; j < MAX_B_SIGNALS_PER_RULE; j++) {
-            compiledSignals[i][j].timing = nullptr;
-            compiledSignals[i][j].count = 0;
-            compiledSignals[i][j].valid = false;
-        }
-    }
-    
     return true;
 }
 
@@ -63,8 +42,9 @@ void IRForwarder::update() {
         }
         pendingTaskValid = false;
         delayState = FORWARD_DELAY_IDLE;
+        return;  // 本帧已执行转发，不再从队列取任务
     }
-    
+
     // 优化：如果正在转发，快速返回，避免阻塞
     if (forwarding) {
         return;
@@ -472,8 +452,23 @@ bool IRForwarder::buildRuleFromTask(const ForwardTask& task, IR_MapRule& rule) {
     rule.aSignal.useTiming = false;
     rule.aSignal.repeatCount = 1;
     rule.bSequence.clear();
-    bool hasFirstInterval = (task.signal_count > 1 && task.intervals[task.signal_count - 1] > 0) ||
-                            (task.signal_count == 1 && task.intervals[0] > 0);
+
+    // 判断是否有第一个信号前的间隔：
+    // hasFirstInterval=true 时，createForwardTask 存储 intervals[0..signal_count-1]（共 signal_count 个）
+    // hasFirstInterval=false 时，createForwardTask 存储 intervals[0..signal_count-2]（共 signal_count-1 个）
+    // 因此：如果 signal_count==1 且 intervals[0]>0，或 signal_count>1 且 intervals[signal_count-1]>0，说明是 hasFirstInterval 模式
+    // 但更可靠的判断是：检查间隔数组是否填满（signal_count 个间隔）
+    bool hasFirstInterval = false;
+    if (task.signal_count == 1) {
+        // 单信号：如果 intervals[0]>0，说明有第一个信号前的间隔
+        hasFirstInterval = (task.intervals[0] > 0);
+    } else if (task.signal_count > 1) {
+        // 多信号：如果最后一个间隔位置有值，说明是 hasFirstInterval 模式
+        // 注意：intervals 数组大小为 4，最多支持 4 个间隔（对应 4 个信号）
+        int lastIntervalIdx = (task.signal_count <= 4) ? (task.signal_count - 1) : 3;
+        hasFirstInterval = (task.intervals[lastIntervalIdx] > 0);
+    }
+
     int n = (task.signal_count < FORWARD_TASK_MAX_B) ? task.signal_count : FORWARD_TASK_MAX_B;
     for (int i = 0; i < n; i++) {
         UnifiedSignal bSignal;
@@ -510,7 +505,6 @@ bool IRForwarder::createForwardTask(const IR_MapRule& rule, ForwardTask& task) {
         }
     }
     // 使用signal_data[0]存储protocol，signal_data[1]存储data，避免24位截断
-    task.signal_id = 0;  // 不再使用signal_id
     task.signal_data[0] = rule.aSignal.protocol;  // protocol
     task.signal_data[1] = rule.aSignal.data;  // 完整的32位data
     // ForwardTask 最多支持 3 个 B 信号，与 signal_data[2..4]、b_protocols[3] 一致，避免 update() 越界

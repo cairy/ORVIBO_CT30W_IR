@@ -60,6 +60,10 @@ private:
     
     // 内部辅助函数：找到第一个无效槽位
     int findEmptySlot() const;
+    // 内部辅助函数：序列化规则到 JSON 数组
+    int serializeRulesToJson(JsonArray& array);
+    // 内部辅助函数：用更大的 JSON 文档重试序列化并保存
+    bool saveToFlashWithLargerDoc(int validCount, size_t freeHeap);
 };
 
 #endif // IR_MAPPER_H
