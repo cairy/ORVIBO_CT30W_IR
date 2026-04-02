@@ -7,18 +7,12 @@ String UnifiedAPI::createSuccessResponse(JsonVariant data, const String& status,
     if (data.is<JsonObject>()) {
         estimatedSize += 512;
     } else if (data.is<JsonArray>()) {
-        // 对于JsonArray，需要更精确地估算大小
-        // 先序列化data数组来获取实际大小，然后乘以1.5-2倍作为JSON文档的内存需求
-        // 因为JSON文档需要存储对象结构，而不仅仅是序列化后的字符串
+        // 按元素数量估算，避免完整序列化以获取长度（减少临时内存与碎片）
         JsonArray arr = data.as<JsonArray>();
-        String temp;
-        serializeJson(arr, temp);
-        // JSON文档内存需求通常是序列化字符串长度的1.5-2倍
-        // 加上包装开销（success, status, timestamp, data字段）
-        estimatedSize = (temp.length() * 2) + 1024;  // 2倍 + 1KB包装开销
-        // 限制最大大小，避免内存不足
+        size_t n = arr.size();
+        estimatedSize = 1024 + (n * 420);  // 包装开销 + 每条约 420 字节
         if (estimatedSize > 16384) estimatedSize = 16384;
-        if (estimatedSize < 2048) estimatedSize = 2048;  // 最小2KB
+        if (estimatedSize < 2048) estimatedSize = 2048;
     } else if (data.is<const char*>()) {
         estimatedSize += strlen(data.as<const char*>());
     }
@@ -76,7 +70,9 @@ String UnifiedAPI::createSuccessResponse(JsonVariant data, const String& status,
     }
     
     String output;
-    output.reserve(estimatedSize);
+    // 限制 reserve 上限以减少大块分配带来的内存碎片
+    size_t reserveSize = (estimatedSize <= 8192) ? estimatedSize : 8192;
+    output.reserve(reserveSize);
     serializeJson(doc, output);
     
     // 如果仍然溢出，记录错误
@@ -106,7 +102,7 @@ String UnifiedAPI::createSuccessResponse(const String& data, const String& statu
     addTimestamp(doc);
     
     String output;
-    output.reserve(estimatedSize);
+    output.reserve(estimatedSize <= 8192 ? estimatedSize : 8192);
     serializeJson(doc, output);
     return output;
 }
@@ -123,7 +119,7 @@ String UnifiedAPI::createErrorResponse(const String& error, int code) {
     addTimestamp(doc);
     
     String output;
-    output.reserve(estimatedSize);
+    output.reserve(estimatedSize <= 8192 ? estimatedSize : 8192);
     serializeJson(doc, output);
     return output;
 }
@@ -137,7 +133,7 @@ String UnifiedAPI::createExecutingResponse(const String& message) {
     addTimestamp(doc);
     
     String output;
-    output.reserve(estimatedSize);
+    output.reserve(estimatedSize <= 8192 ? estimatedSize : 8192);
     serializeJson(doc, output);
     return output;
 }

@@ -16,10 +16,10 @@ String APIHandlers::handleQueryMaps(IRMapper& mapper, Logger* logger) {
                 String content = file.readString();
                 file.close();
                 
-                // 验证内容是否为有效的JSON数组
-                String trimmed = content;
-                trimmed.trim();
-                if (trimmed.length() > 0 && trimmed[0] == '[') {
+                // 验证内容是否为有效的JSON数组（避免 trim 产生字符串副本）
+                const char* p = content.c_str();
+                while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+                if (*p == '[') {
                     // 检查消息大小，如果接近或超过MQTT缓冲区限制，记录警告
                     size_t estimatedMqttSize = content.length() + 256;  // 估算包装开销
                     if (logger != nullptr && estimatedMqttSize > MQTT_BUFFER_SIZE * 0.8) {

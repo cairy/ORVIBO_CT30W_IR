@@ -9,6 +9,7 @@
 #include "utils/api_handlers.h"
 #include "config/constants.h"
 #include <ArduinoJson.h>
+#include <LittleFS.h>
 
 WebServer::WebServer(NetworkConfigManager& config)
     : server(80), configManager(config), running(false),
@@ -178,7 +179,19 @@ void WebServer::addCORSHeaders() {
 
 void WebServer::sendJSONResponse(int code, const String& json) {
     addCORSHeaders();
-    server.send(code, "application/json", json);
+    // 超过 2KB 使用分块传输，避免一次性申请大缓冲区导致崩溃
+    const size_t CHUNK_THRESHOLD = 2048;
+    const size_t CHUNK_SIZE = 1024;
+    if (json.length() > CHUNK_THRESHOLD && server.chunkedResponseModeStart(code, "application/json")) {
+        for (size_t off = 0; off < json.length(); off += CHUNK_SIZE) {
+            size_t n = (json.length() - off) > CHUNK_SIZE ? CHUNK_SIZE : (json.length() - off);
+            server.sendContent(json.c_str() + off, n);
+            yield();
+        }
+        server.chunkedResponseFinalize();
+    } else {
+        server.send(code, "application/json", json);
+    }
 }
 
 void WebServer::sendErrorResponse(int code, const String& error) {
@@ -240,10 +253,36 @@ void WebServer::handleAPIMaps() {
         return;
     }
     
-    // 使用公共函数，传递 logger
-    String dataJson = APIHandlers::handleQueryMaps(*mapper, logger);
+    // 优先流式读取 LittleFS 文件并直接发送，避免整份数据进内存
+    if (LittleFS.exists(CONFIG_FILE_MAPS)) {
+        File file = LittleFS.open(CONFIG_FILE_MAPS, "r");
+        if (file) {
+            size_t fileSize = file.size();
+            if (fileSize > 0 && fileSize < 32768) {
+                addCORSHeaders();
+                if (server.chunkedResponseModeStart(200, "application/json")) {
+                    server.sendContent(F("{\"success\":true,\"status\":\"success\",\"data\":"));
+                    const size_t BUF = 512;
+                    char buf[BUF];
+                    while (file.available()) {
+                        size_t n = file.read((uint8_t*)buf, BUF);
+                        if (n > 0) server.sendContent(buf, n);
+                        yield();
+                    }
+                    file.close();
+                    server.sendContent(F(",\"timestamp\":"));
+                    server.sendContent(String(millis()));
+                    server.sendContent(F("}"));
+                    server.chunkedResponseFinalize();
+                    return;
+                }
+            }
+            file.close();
+        }
+    }
     
-    // 使用统一的响应处理
+    // 回退：使用公共函数构建 data 再包装响应
+    String dataJson = APIHandlers::handleQueryMaps(*mapper, logger);
     processJsonArrayResponse(dataJson, "/api/maps", 16384);
 }
 

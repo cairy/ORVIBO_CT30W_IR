@@ -175,19 +175,19 @@ bool APIResponseHandler::processJsonArrayResponse(const String& dataJson, const 
     }
     
     // 优化：如果 dataJson 已经是 JSON 数组字符串，直接字符串拼接包装，避免解析
-    // 这样可以避免 ArduinoJson 解析时的大量内存需求
-    String trimmed = dataJson;
-    trimmed.trim();
-    if (trimmed.length() > 0 && trimmed[0] == '[') {
+    // 使用指针检查首字符，避免 trim() 产生字符串副本
+    const char* p = dataJson.c_str();
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p == '[') {
         // 直接字符串拼接构建完整响应，避免解析 JSON
+        size_t dataLen = strlen(p);
         String output;
-        output.reserve(trimmed.length() + 256);  // 预分配内存
+        output.reserve(dataLen + 256);  // 预分配内存
         output = "{\"success\":true,\"status\":\"success\",\"data\":";
-        output += trimmed;
+        output += p;
         output += ",\"timestamp\":";
         output += String(millis());
         output += "}";
-        
         return sendSuccess(output, context);
     }
     
