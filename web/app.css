@@ -1,0 +1,401 @@
+/* 移动优先、大触控区、安全区 */
+:root {
+  --touch-min: 44px;
+  --tab-height: 48px;
+  --safe-bottom: env(safe-area-inset-bottom, 0);
+  --radius: 8px;
+  --gap: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.4;
+  color: #333;
+  background: #f5f5f5;
+  padding-bottom: calc(var(--tab-height) + var(--safe-bottom));
+  min-height: 100vh;
+}
+
+.main {
+  max-width: 600px;
+  margin: 0 auto;
+  min-height: 100vh;
+}
+
+.panel {
+  display: none;
+  padding: var(--gap);
+  padding-bottom: calc(var(--gap) + var(--safe-bottom));
+}
+
+.panel.active {
+  display: block;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--gap);
+  min-height: var(--touch-min);
+}
+
+.panel-header h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.panel-body {
+  flex: 1;
+}
+
+.panel-body h2 {
+  font-size: 1rem;
+  margin: var(--gap) 0 8px;
+  font-weight: 600;
+}
+
+/* Tab 栏 */
+.tab-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: calc(var(--tab-height) + var(--safe-bottom));
+  padding-bottom: var(--safe-bottom);
+  display: flex;
+  background: #fff;
+  border-top: 1px solid #e0e0e0;
+  z-index: 100;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.tab {
+  flex: 1;
+  min-height: var(--touch-min);
+  padding: 8px 4px;
+  font-size: 0.875rem;
+  border: none;
+  background: transparent;
+  color: #666;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tab:hover,
+.tab:focus {
+  color: #333;
+}
+
+.tab.active {
+  color: #0a7ea4;
+  font-weight: 600;
+}
+
+/* 列表：触控区 ≥44pt */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.list-item {
+  background: #fff;
+  border-radius: var(--radius);
+  padding: 12px;
+  min-height: var(--touch-min);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+}
+
+.list-item .summary {
+  font-size: 0.875rem;
+  color: #666;
+  word-break: break-all;
+}
+
+.list-item .meta {
+  font-size: 0.75rem;
+  color: #999;
+}
+
+.list-item .signal-str {
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  word-break: break-all;
+  max-height: 3em;
+  overflow: hidden;
+}
+
+.list-item.expanded .signal-str {
+  max-height: none;
+}
+
+.list-item .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.list-item .actions .btn {
+  min-height: 36px;
+  padding: 6px 12px;
+  font-size: 0.8125rem;
+}
+
+.empty {
+  color: #999;
+  font-size: 0.875rem;
+  padding: var(--gap);
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* 表单 */
+.form-box {
+  background: #fff;
+  border-radius: var(--radius);
+  padding: var(--gap);
+  margin-bottom: var(--gap);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+}
+
+.form-box label {
+  display: block;
+  margin-bottom: var(--gap);
+  font-size: 0.875rem;
+  color: #555;
+}
+
+.form-box input,
+.form-box select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 12px;
+  min-height: var(--touch-min);
+  font-size: 1rem;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+}
+
+.form-box input:focus,
+.form-box select:focus {
+  outline: none;
+  border-color: #0a7ea4;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: var(--gap);
+}
+
+/* 按钮 */
+.btn {
+  min-height: var(--touch-min);
+  padding: 10px 16px;
+  font-size: 0.9375rem;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.btn-primary {
+  background: #0a7ea4;
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: #096688;
+}
+
+.btn-secondary {
+  background: #e8e8e8;
+  color: #333;
+}
+
+.btn-secondary:hover {
+  background: #ddd;
+}
+
+.btn-danger {
+  background: #c62828;
+  color: #fff;
+}
+
+.btn-danger:hover {
+  background: #b71c1c;
+}
+
+.btn-text {
+  background: transparent;
+  color: #0a7ea4;
+}
+
+.btn-text:hover {
+  text-decoration: underline;
+}
+
+/* 设备面板：按钮网格 */
+.button-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--gap);
+  margin-bottom: var(--gap);
+}
+
+.device-button {
+  min-height: var(--touch-min);
+  padding: 16px;
+  background: #fff;
+  border-radius: var(--radius);
+  border: 1px solid #e0e0e0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.device-button .name {
+  font-weight: 500;
+}
+
+.device-button .send-label {
+  font-size: 0.75rem;
+  color: #0a7ea4;
+}
+
+/* 学习状态 */
+.status-box {
+  background: #e3f2fd;
+  border-radius: var(--radius);
+  padding: var(--gap);
+  margin-bottom: var(--gap);
+  font-size: 0.875rem;
+}
+
+/* 规则列表项 */
+.rule-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: var(--touch-min);
+}
+
+.rule-item .name {
+  font-weight: 500;
+}
+
+.rule-item .ab {
+  font-size: 0.75rem;
+  color: #666;
+}
+
+/* 设备列表项 */
+.device-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--touch-min);
+}
+
+.device-item .name {
+  font-weight: 500;
+}
+
+/* 弹窗 */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 200;
+}
+
+.modal-overlay .modal {
+  background: #fff;
+  width: 100%;
+  max-width: 600px;
+  border-radius: var(--radius) var(--radius) 0 0;
+  padding: var(--gap);
+  padding-bottom: calc(var(--gap) + var(--safe-bottom));
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.modal h3 {
+  margin: 0 0 var(--gap);
+  font-size: 1.125rem;
+}
+
+/* Toast */
+.toast {
+  position: fixed;
+  bottom: calc(var(--tab-height) + var(--safe-bottom) + 16px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.75);
+  color: #fff;
+  padding: 10px 20px;
+  border-radius: 20px;
+  font-size: 0.875rem;
+  z-index: 300;
+  max-width: 90%;
+}
+
+.toast.show {
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.about {
+  background: #fff;
+  border-radius: var(--radius);
+  padding: var(--gap);
+  margin-top: var(--gap);
+  font-size: 0.875rem;
+  color: #555;
+}
+
+.about code {
+  background: #f0f0f0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+
+.matched-tag {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #c8e6c9;
+  color: #2e7d32;
+}

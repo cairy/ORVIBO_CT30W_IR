@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>红外转发器</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <main class="main">
+    <section class="panel" data-tab="recent" id="panel-recent">
+      <header class="panel-header">
+        <h1>最近信号</h1>
+        <button type="button" class="btn btn-text" id="btn-refresh-recent">刷新</button>
+      </header>
+      <div class="panel-body">
+        <div id="recent-list" class="list"></div>
+        <p id="recent-empty" class="empty hidden">暂无最近信号</p>
+      </div>
+    </section>
+
+    <section class="panel" data-tab="learn" id="panel-learn">
+      <header class="panel-header">
+        <h1>学习</h1>
+      </header>
+      <div class="panel-body">
+        <div id="learn-form-box" class="form-box">
+          <label>设备名 <input type="text" id="learn-device-name" placeholder="如：空调遥控器"></label>
+          <label>指令名（逗号分隔） <input type="text" id="learn-command-names" placeholder="开机,关机,温度+"></label>
+          <label>超时（秒） <input type="number" id="learn-timeout" value="30" min="5" max="120"></label>
+          <div class="row">
+            <button type="button" class="btn btn-primary" id="btn-learn-start">启动学习</button>
+            <button type="button" class="btn btn-secondary hidden" id="btn-learn-stop">停止学习</button>
+          </div>
+        </div>
+        <div id="learn-status" class="status-box hidden"></div>
+        <div id="learn-result-box" class="hidden">
+          <h2>学习结果</h2>
+          <div id="learn-result-list" class="list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" data-tab="rules" id="panel-rules">
+      <header class="panel-header">
+        <h1>规则</h1>
+        <button type="button" class="btn btn-text" id="btn-rule-new">新建</button>
+      </header>
+      <div class="panel-body">
+        <div id="rules-list" class="list"></div>
+        <p id="rules-empty" class="empty hidden">暂无规则</p>
+        <div id="rule-detail" class="hidden">
+          <div class="form-box">
+            <label>名称 <input type="text" id="rule-name"></label>
+            <label>A（触发信号） <input type="text" id="rule-a" placeholder="1,0x00003039"></label>
+            <label>B（转发序列） <input type="text" id="rule-b" placeholder="1,0xFD48B7@40;1,0x00FD48B7"></label>
+            <div class="row">
+              <button type="button" class="btn btn-primary" id="btn-rule-save">保存</button>
+              <button type="button" class="btn btn-secondary" id="btn-rule-send-a">发送 A</button>
+              <button type="button" class="btn btn-secondary" id="btn-rule-send-b">发送 B</button>
+              <button type="button" class="btn btn-danger" id="btn-rule-delete">删除</button>
+              <button type="button" class="btn btn-text" id="btn-rule-back">返回</button>
+            </div>
+          </div>
+        </div>
+        <div id="rule-new-form" class="form-box hidden">
+          <h2>新建规则</h2>
+          <label>名称 <input type="text" id="new-rule-name" placeholder="如：开机"></label>
+          <label>A（触发信号） <input type="text" id="new-rule-a" placeholder="可粘贴"></label>
+          <label>B（转发序列） <input type="text" id="new-rule-b" placeholder="可粘贴"></label>
+          <div class="row">
+            <button type="button" class="btn btn-primary" id="btn-new-rule-save">保存</button>
+            <button type="button" class="btn btn-text" id="btn-new-rule-cancel">取消</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" data-tab="devices" id="panel-devices">
+      <header class="panel-header">
+        <h1>设备</h1>
+        <button type="button" class="btn btn-text" id="btn-device-add">添加设备</button>
+      </header>
+      <div class="panel-body">
+        <div id="devices-list" class="list"></div>
+        <p id="devices-empty" class="empty hidden">暂无设备，可保存信号到设备</p>
+        <div id="device-panel" class="hidden">
+          <h2 id="device-panel-title"></h2>
+          <div id="device-buttons" class="button-grid"></div>
+          <button type="button" class="btn btn-text" id="btn-device-back">返回</button>
+        </div>
+        <div id="device-add-form" class="form-box hidden">
+          <label>设备名称 <input type="text" id="new-device-name" placeholder="如：客厅电视"></label>
+          <div class="row">
+            <button type="button" class="btn btn-primary" id="btn-new-device-save">保存</button>
+            <button type="button" class="btn btn-text" id="btn-new-device-cancel">取消</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" data-tab="settings" id="panel-settings">
+      <header class="panel-header">
+        <h1>设置</h1>
+      </header>
+      <div class="panel-body">
+        <div class="form-box">
+          <label>设备 IP <input type="text" id="setting-ip" placeholder="192.168.1.100"></label>
+          <div class="row">
+            <button type="button" class="btn btn-primary" id="btn-save-ip">保存</button>
+            <button type="button" class="btn btn-secondary" id="btn-check-connection">检测连接</button>
+          </div>
+        </div>
+        <div class="about">
+          <h2>关于</h2>
+          <p>本页面通过设备 HTTP API 操作红外转发器。信号使用<strong>统一字符串格式</strong>：如 <code>1,0x00003039</code>、<code>1,0xFD48B7@40;1,0x00FD48B7</code>。可从最近信号、学习结果、规则中复制粘贴。手机与设备需在同一局域网。</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tab-bar" role="tablist">
+    <button type="button" class="tab" data-tab="recent" role="tab">最近</button>
+    <button type="button" class="tab" data-tab="learn" role="tab">学习</button>
+    <button type="button" class="tab" data-tab="rules" role="tab">规则</button>
+    <button type="button" class="tab" data-tab="devices" role="tab">设备</button>
+    <button type="button" class="tab" data-tab="settings" role="tab">设置</button>
+  </nav>
+
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div id="modal-save-device" class="modal hidden">
+      <h3>保存到设备</h3>
+      <label>选择设备 <select id="save-device-select"></select></label>
+      <label>或新建设备 <input type="text" id="save-device-new-name" placeholder="设备名称"></label>
+      <label>按钮名 <input type="text" id="save-button-name" placeholder="如：开机"></label>
+      <div class="row">
+        <button type="button" class="btn btn-primary" id="btn-save-to-device-ok">确定</button>
+        <button type="button" class="btn btn-text" id="btn-save-to-device-cancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
