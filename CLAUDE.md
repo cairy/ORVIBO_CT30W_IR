@@ -191,8 +191,13 @@ pio pkg list
 
 ## 文档参考
 
-- `README.md`：完整使用指南和 API 文档
-- `需求.md`：项目需求和实现思路
-- `红外发射逻辑说明.md`：发射逻辑详解
-- `红外学习逻辑说明.md`：学习模式详解
-- `SmartIR_MQTT接口规范.md`：MQTT 接口规范
+- `README.md`：项目简介和快速开始
+- `docs/getting-started.md`：快速开始指南
+- `docs/user-guide.md`：用户使用指南
+- `docs/signal-format.md`：信号格式说明
+- `docs/troubleshooting.md`：故障排查
+- `docs/requirements.md`：项目需求和实现思路
+- `docs/architecture/ir-forwarding.md`：红外转发逻辑详解
+- `docs/architecture/ir-learning.md`：红外学习逻辑详解
+- `docs/architecture/smartir-mqtt.md`：SmartIR MQTT 接口规范
+- `README.old.md`：完整 API 文档（待拆分）
