@@ -99,15 +99,15 @@ bool IRMapper::initDefaultMappings() {
         
         // 特殊处理电源规则：包含三个B信号（完整信号 + 2次重复码）
         // 参考 ir-converter-finally.ino：完整信号 + 延时30ms + 重复码 + 延时70ms + 重复码
-        // 修改：在第一个信号前添加40ms间隔
+        // 第一个完整 NEC 前的首间隔（与全局转发前延时叠加，可按现场调整）
         if (defaultRules[i].sourceData == SOURCE_POWER) {
-            // 第一个B信号：完整信号 0xFDB04F，第一个信号前间隔40ms
+            // 第一个B信号：完整信号 0xFDB04F，第一个信号前间隔 100ms
             UnifiedSignal bSignal1;
             bSignal1.protocol = NEC_PROTOCOL;
             bSignal1.useTiming = false;
             bSignal1.data = TARGET_POWER;  // 0xFDB04F
             bSignal1.repeatCount = 1;
-            rule.bSequence.addSignal(bSignal1, 40, true);
+            rule.bSequence.addSignal(bSignal1, 100, true);
             
             // 第二个B信号：第一次重复码 0xFFFFFFFF，间隔30ms
             UnifiedSignal bSignal2;
