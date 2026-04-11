@@ -140,6 +140,18 @@
       });
   }
 
+  /** 协议 data：统一为紧凑 0x 形式，避免 0x00FDB04F 与 0xFDB04F 来回分叉 */
+  function normalizeProtocolDataHex(d) {
+    if (d == null || d === '') return '0x0';
+    if (typeof d === 'number') return '0x' + (d >>> 0).toString(16).toUpperCase();
+    var s = String(d).trim();
+    if (/^0x[0-9a-fA-F]+$/.test(s)) {
+      var n = parseInt(s, 16);
+      if (!isNaN(n)) return '0x' + (n >>> 0).toString(16).toUpperCase();
+    }
+    return s;
+  }
+
   function oneSignalToStr(sig) {
     if (!sig) return '';
     if (sig.useTiming && sig.timingBase64) {
@@ -150,7 +162,7 @@
       return ''; // 无 raw 数组时无法序列化，后端通常会给 timingBase64
     }
     const p = sig.protocol != null ? sig.protocol : 0;
-    const d = sig.data || '0x0';
+    const d = normalizeProtocolDataHex(sig.data);
     const r = sig.repeatCount > 1 ? ',' + sig.repeatCount : '';
     return p + ',' + d + r;
   }

@@ -1,8 +1,8 @@
 #include "hex_utils.h"
 
 String uint32ToHexString(uint32_t value) {
-    char hexStr[11]; // "0x" + 8位十六进制 + '\0' = 11字节
-    snprintf(hexStr, sizeof(hexStr), "0x%08X", value);
+    char hexStr[11]; // "0x" + 最多8位十六进制 + '\0'
+    snprintf(hexStr, sizeof(hexStr), "0x%X", value);
     return String(hexStr);
 }
 

@@ -6,8 +6,8 @@
   "supportedController": "MQTT",
   "commandsEncoding": "Raw",
   "commands": {
-    "on": "@100;1,0xFDB04F@30;1,0xFFFFFFFF@70;1,0xFFFFFFFF",
-    "off": "@100;1,0xFDB04F@30;1,0xFFFFFFFF@70;1,0xFFFFFFFF",
+    "on": "@120;1,0xFDB04F@30;1,0xFFFFFFFF@70;1,0xFFFFFFFF",
+    "off": "@120;1,0xFDB04F@30;1,0xFFFFFFFF@70;1,0xFFFFFFFF",
     "volumeUp": "1,0xFD22DD",
     "volumeDown": "1,0xFDC23D",
     "mute": "1,0xFD708F",

@@ -2,6 +2,7 @@
 #include "utils/hex_utils.h"
 #include "unified_signal.h"
 #include <ArduinoJson.h>
+#include <string.h>
 
 
 IRLearner::IRLearner(IRReceiver& receiver, IRParser& parser, Logger& logger)
@@ -1167,7 +1168,12 @@ bool IRLearner::parseStringSequence(const String& payload, SignalSequence& seque
         }
     }
     
-    // 3. 解析每个信号段
+    // 3. 解析每个信号段（带 @ 前缀时，段尾 @ 表示「该段 IR 结束后的间隔」，写入 intervals[si+1]，与 intervals[0] 前导分开处理）
+    uint16_t gapAfterSignal[MAX_B_SIGNALS_PER_RULE];
+    for (int g = 0; g < MAX_B_SIGNALS_PER_RULE; g++) {
+        gapAfterSignal[g] = 0;
+    }
+    
     int signalIndex = 0;
     int semicolonPos = trimmed.indexOf(';', startPos);
     
@@ -1264,16 +1270,23 @@ bool IRLearner::parseStringSequence(const String& payload, SignalSequence& seque
             continue;
         }
         
-        // 5. 添加到序列
-        bool isFirstInterval = (hasFirstInterval && signalIndex == 0);
-        if (!sequence.addSignal(signal, interval, isFirstInterval)) {
-            // 序列已满
-            break;
+        if (hasFirstInterval) {
+            gapAfterSignal[signalIndex] = interval;
         }
         
-        // 如果是第一个信号且有第一个信号前的间隔，设置间隔
-        if (hasFirstInterval && signalIndex == 0) {
-            sequence.intervals[0] = firstInterval;
+        // 5. 添加到序列
+        // 带 @ 前缀时：段内间隔不交给 addSignal（否则会与 intervals[0] 前导语义冲突并覆盖错误下标），在循环结束后写入 intervals[]。
+        uint16_t passInterval = interval;
+        bool useFirstIntervalLayout = false;
+        if (!hasFirstInterval) {
+            useFirstIntervalLayout = false;
+        } else {
+            passInterval = 0;
+            useFirstIntervalLayout = true;
+        }
+        if (!sequence.addSignal(signal, passInterval, useFirstIntervalLayout)) {
+            // 序列已满
+            break;
         }
         
         signalIndex++;
@@ -1289,6 +1302,16 @@ bool IRLearner::parseStringSequence(const String& payload, SignalSequence& seque
     
     if (sequence.signalCount == 0) {
         return false;
+    }
+    
+    if (hasFirstInterval) {
+        memset(sequence.intervals, 0, sizeof(sequence.intervals));
+        sequence.intervals[0] = firstInterval;
+        for (int si = 0; si < sequence.signalCount && si < MAX_B_SIGNALS_PER_RULE; si++) {
+            if (gapAfterSignal[si] > 0 && (si + 1) < MAX_B_SIGNALS_PER_RULE) {
+                sequence.intervals[si + 1] = gapAfterSignal[si];
+            }
+        }
     }
     
     sequence.valid = true;
