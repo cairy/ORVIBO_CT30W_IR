@@ -126,6 +126,9 @@ pio device monitor
 - [红外学习逻辑](docs/architecture/ir-learning.md)
 - [SmartIR MQTT 接口规范](docs/architecture/smartir-mqtt.md)
 
+### 参考（非主固件）
+- [独立 Arduino 红外转换草图](reference/ir-converter-finally/README.md) — 历史/实验示例（ESP32-C3），与 `pio run` 主工程无关
+
 ---
 
 ## 技术规格

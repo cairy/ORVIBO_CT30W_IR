@@ -1,3 +1,11 @@
+/*
+ * 参考草图 — 非本仓库主固件
+ *
+ * 独立 Arduino 示例：将一路红外遥控器的 NEC 码映射为另一设备的 NEC 码。
+ * 针对 ESP32-C3 的引脚配置；主工程 ORVIBO CT30W 固件为 ESP8266，见 src/ 与 platformio.ini。
+ *
+ * 使用 Arduino IDE 打开本文件所在文件夹（文件夹名须为 ir-converter-finally）。
+ */
 #include <Arduino.h>
 #include <IRremoteESP8266.h>
 #include <IRrecv.h>
@@ -37,7 +45,7 @@ void setup() {
   Serial.begin(115200);
   Serial.println("Strarting");
   irrecv.enableIRIn();  // 启动接收器
-  irsend.begin();       // 启动发送器
+  irsend.begin();       // 启动发射器
   
   Serial.println("IR Signal Converter Ready - No Repeat");
   Serial.println("Mappings configured for volume, mute, power and AV/TV buttons");

@@ -200,4 +200,3 @@ pio pkg list
 - `docs/architecture/ir-forwarding.md`：红外转发逻辑详解
 - `docs/architecture/ir-learning.md`：红外学习逻辑详解
 - `docs/architecture/smartir-mqtt.md`：SmartIR MQTT 接口规范
-- `README.old.md`：完整 API 文档（待拆分）
