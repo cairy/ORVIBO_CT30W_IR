@@ -123,14 +123,87 @@ bool SignalUtils::copySignal(const UnifiedSignal& src, UnifiedSignal& dst) {
     return true;
 }
 
+// ============================================================================
+// 时序码的**逐点容差**比较（v1.3.25）
+// ============================================================================
+//
+// ⚠️ 为什么不能再用 Base64 精确匹配（这是本次故障的第二个根因）：
+//   实测同一台艾美特风扇遥控器、同一个键，一次按键连发 7 帧，**帧帧不同**：
+//     长标志 1290→1260→1240→1230→1210 µs（递减）
+//     短间隔  430→ 450→ 480→ 490→ 510 µs（递增）
+//   （占空比漂移 —— 整帧总周期不变，只是长/短各自挪；量化到 10µs 后逐字节比不上）
+//   ⇒ 精确匹配下"设为 A 之后再按同一个键"永远认不出来 ⇒ **永远不转发**；
+//     连发去重同样永远不生效。
+//
+// 判据：**同一路电平的漂移量 << 两种电平之间的间距**。
+//   实测 短(350~520µs) vs 长(1210~1370µs)，跨类间距 ≥690µs，
+//   而同类内最大差只有 80~90µs ⇒ 60µs 绝对容差 + 30% 相对容差能稳稳分开。
+//
+// 实现上**不解码成数组**：signalsEqual 会被 findRuleIndex / isSignalInMappings
+// 在规则表上反复调用（热路径），另开两个 200 × 8B 的静态数组要多占 3.2 KB BSS。
+// 改成按需取第 i 个点：Base64 每 4 字符解出 3 字节，点 i 占字节 2i、2i+1，
+// 于是 O(1) 取点、零额外常驻内存。
+
+// 取 Base64 解码后的第 k 个字节（k 从 0 起）
+static bool b64RawByteAt(const String& s, int k, uint8_t& out) {
+    if (k < 0) return false;
+    const int group   = k / 3;      // 第几组 4 字符
+    const int inGroup = k % 3;      // 组内第几个字节
+    const int c0      = group * 4;
+    if (c0 + 3 >= (int)s.length()) return false;   // 凑不满 4 个字符
+    int v[4];
+    for (int i = 0; i < 4; i++) {
+        const char c = s[c0 + i];
+        if      (c >= 'A' && c <= 'Z') v[i] = c - 'A';
+        else if (c >= 'a' && c <= 'z') v[i] = c - 'a' + 26;
+        else if (c >= '0' && c <= '9') v[i] = c - '0' + 52;
+        else if (c == '+')             v[i] = 62;
+        else if (c == '/')             v[i] = 63;
+        else                           return false;   // '=' 或脏字符
+    }
+    const uint32_t packed = ((uint32_t)v[0] << 18) | ((uint32_t)v[1] << 12) |
+                            ((uint32_t)v[2] <<  6) |  (uint32_t)v[3];
+    out = (uint8_t)((packed >> (16 - inGroup * 8)) & 0xFF);
+    return true;
+}
+
+// 取时序码第 idx 个点的时长（微秒）。编码见 timingToBase64：每点 2 字节小端 = 时长/10
+static bool timingPointMicros(const String& s, int idx, unsigned long& us) {
+    uint8_t lo = 0, hi = 0;
+    if (!b64RawByteAt(s, idx * 2,     lo)) return false;
+    if (!b64RawByteAt(s, idx * 2 + 1, hi)) return false;
+    us = (unsigned long)(uint16_t)((uint16_t)lo | ((uint16_t)hi << 8)) * 10UL;
+    return true;
+}
+
 bool SignalUtils::signalsEqual(const UnifiedSignal& a, const UnifiedSignal& b) {
     if (a.useTiming != b.useTiming) {
         return false;
     }
     
     if (a.useTiming) {
-        // 使用时序码：比较Base64字符串
-        return a.timingBase64 == b.timingBase64 && a.timingCount == b.timingCount;
+        // 点数不同 ⇒ 一定不是同一条信号（切帧后每条都是"一帧"，点数恒定）
+        if (a.timingCount != b.timingCount) {
+            return false;
+        }
+        // 快速路径：逐字节相同（同一份数据的副本走这里，省掉逐点解码）
+        if (a.timingBase64 == b.timingBase64) {
+            return true;
+        }
+        if (a.timingCount <= 0) {
+            return true;   // 两边都是空时序码，点数已相等
+        }
+        // 逐点容差比较，判据见本文件上方 TIMING_MATCH_* 的说明
+        for (int i = 0; i < a.timingCount; i++) {
+            unsigned long x = 0, y = 0;
+            if (!timingPointMicros(a.timingBase64, i, x)) return false;
+            if (!timingPointMicros(b.timingBase64, i, y)) return false;
+            const unsigned long diff = (x > y) ? (x - y) : (y - x);
+            unsigned long tol = ((x > y) ? x : y) * TIMING_MATCH_REL_PERCENT / 100UL;
+            if (tol < TIMING_MATCH_ABS_TOL_US) tol = TIMING_MATCH_ABS_TOL_US;
+            if (diff > tol) return false;
+        }
+        return true;
     } else {
         // 使用协议：比较protocol和data
         return a.protocol == b.protocol && a.data == b.data;
@@ -233,6 +306,9 @@ bool SignalUtils::base64ToTiming(const String& base64, IRTiming* timing, int& co
     
     int timingCount = byteCount / 2;
     if (timingCount > maxCount) {
+        // ⚠️ 截断必须留痕：发射侧拿到被截断的波形 = 被控设备不认，而且以前毫无线索。
+        Serial.printf_P(PSTR("[timing] 时序点 %d 超过上限 %d，已截断（base64 %u 字符）\n"),
+                      timingCount, maxCount, (unsigned)base64.length());
         timingCount = maxCount;
         byteCount = timingCount * 2;
     }
@@ -329,6 +405,21 @@ bool SignalUtils::base64ToTiming(const String& base64, IRTiming* timing, int& co
 }
 
 void SignalUtils::sequenceToJSON(const SignalSequence& seq, JsonObject& obj, bool hexFormat) {
+    // ⚠️ 辅助字段必须写在 signals / intervals **之前**（v1.3.24）
+    // ArduinoJson 装不下时是**静默丢字段**，不报错。调用方（api_handlers.cpp 的
+    // handleGetRecentSignals）给的 doc 容量按估算给，而"最近信号"里含时序码的
+    // 一条就能吃掉 500+ 字节 ⇒ 5 条满载时必然装不下。
+    // 以前 timestamp / matched 写在最后，于是容量一紧张就先丢它们 ——
+    // 前端 app.js 的 formatTime(undefined) 直接返回空串，表现为
+    // **"有的信号显示时间，有的不显示；刷新一次变一次"**（谁被丢取决于当次谁占位置）。
+    // 提到最前面后，即使后面的 signals 被截断，这条记录的时间和匹配状态仍然可读。
+    if (seq.timestamp > 0) {
+        obj["timestamp"] = seq.timestamp;
+    }
+    if (seq.valid) {
+        obj["matched"] = seq.matched;
+    }
+
     // 信号数组
     JsonArray signalsArray = obj.createNestedArray("signals");
     for (int i = 0; i < seq.signalCount; i++) {
@@ -345,14 +436,6 @@ void SignalUtils::sequenceToJSON(const SignalSequence& seq, JsonObject& obj, boo
     }
     
     // 注意：序列不包含repeatCount，重复次数由外部控制
-    
-    // 辅助字段（如果有效）
-    if (seq.timestamp > 0) {
-        obj["timestamp"] = seq.timestamp;
-    }
-    if (seq.valid) {
-        obj["matched"] = seq.matched;
-    }
 }
 
 bool SignalUtils::sequenceFromJSON(JsonObject& obj, SignalSequence& seq) {

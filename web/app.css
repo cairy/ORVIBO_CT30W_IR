@@ -1,14 +1,33 @@
-/* 移动优先、大触控区、安全区 */
-:root {
-  --touch-min: 44px;
-  --tab-height: 48px;
-  --safe-bottom: env(safe-area-inset-bottom, 0);
-  --radius: 8px;
-  --gap: 12px;
-}
+/* 移动优先、大触控区、安全区
+   配色变量不在这里 —— 全项目唯一的一份在 web/theme.css，构建时会被展开进来
+   （面板、配网页、安全模式页共用同一套配色，改一处三处都变）。 */
+@import url("theme.css");
 
 * {
   box-sizing: border-box;
+}
+
+/* ── 手机上连点按钮，别把整个页面放大 ──────────────────────────────
+   连续快速点两个挨得近的按钮，第二次落点离第一次足够近时，浏览器会判成
+   "双击" ⇒ 整页放大，而且很难缩回去（用户实际遇到的就是这个）。
+   touch-action:manipulation 关掉双击缩放和随之而来的 300ms 延迟，
+   **保留**双指捏合缩放 —— 无障碍上不能连放大都砍掉。
+
+   ⚠️ touch-action **不继承**，但祖先的值会**限制**后代（取最严的那一个）
+      ⇒ 写在 html 上能兜住所有区域（含面板空白处的连点）；
+      可点元素再逐个显式写一遍，防某些实现只看命中元素自己的值。
+   ⚠️ 不要改用 <meta viewport maximum-scale=1>：iOS 从 10 起就忽略
+      user-scalable=no，而且那会连想主动放大的用户一起挡住。 */
+html,
+button,
+a,
+label,
+summary,
+select,
+input,
+textarea,
+[role="button"] {
+  touch-action: manipulation;
 }
 
 body {
@@ -16,8 +35,8 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   font-size: 16px;
   line-height: 1.4;
-  color: #333;
-  background: #f5f5f5;
+  color: var(--text);
+  background: var(--bg);
   padding-bottom: calc(var(--tab-height) + var(--safe-bottom));
   min-height: 100vh;
 }
@@ -38,6 +57,14 @@ body {
   display: block;
 }
 
+/* 非当前页签的面板带 HTML hidden 属性（由 switchTab 维护）。
+   这样读屏和 Tab 键不会一路扫过 6 个面板的全部内容 —— 以前它们只是
+   `display:none`，但没有任何语义告诉辅助设备"这些是未选中的页签内容"。
+   `!important` 是为了压住上面的 `.panel.active{display:block}`。 */
+.panel[hidden] {
+  display: none !important;
+}
+
 .panel-header {
   display: flex;
   align-items: center;
@@ -46,7 +73,7 @@ body {
   min-height: var(--touch-min);
 }
 
-.panel-header h1 {
+.panel-header .panel-title {
   margin: 0;
   font-size: 1.25rem;
   font-weight: 600;
@@ -56,7 +83,9 @@ body {
   flex: 1;
 }
 
-.panel-body h2 {
+/* 面板内的子标题现在统一是 h3（顶层 h1 只有一个，见 index.html 的 .sr-only） */
+.panel-body h2,
+.panel-body h3 {
   font-size: 1rem;
   margin: var(--gap) 0 8px;
   font-weight: 600;
@@ -71,8 +100,8 @@ body {
   height: calc(var(--tab-height) + var(--safe-bottom));
   padding-bottom: var(--safe-bottom);
   display: flex;
-  background: #fff;
-  border-top: 1px solid #e0e0e0;
+  background: var(--surface);
+  border-top: 1px solid var(--border-2);
   z-index: 100;
   max-width: 600px;
   margin: 0 auto;
@@ -85,18 +114,18 @@ body {
   font-size: 0.875rem;
   border: none;
   background: transparent;
-  color: #666;
+  color: var(--text-3);
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
 
 .tab:hover,
 .tab:focus {
-  color: #333;
+  color: var(--text);
 }
 
 .tab.active {
-  color: #0a7ea4;
+  color: var(--accent);
   font-weight: 600;
 }
 
@@ -108,25 +137,25 @@ body {
 }
 
 .list-item {
-  background: #fff;
+  background: var(--surface);
   border-radius: var(--radius);
   padding: 12px;
   min-height: var(--touch-min);
   display: flex;
   flex-direction: column;
   gap: 8px;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  box-shadow: 0 1px 2px var(--shadow);
 }
 
 .list-item .summary {
   font-size: 0.875rem;
-  color: #666;
+  color: var(--text-3);
   word-break: break-all;
 }
 
 .list-item .meta {
   font-size: 0.75rem;
-  color: #999;
+  color: var(--text-6);
 }
 
 .list-item .signal-str {
@@ -149,13 +178,16 @@ body {
 }
 
 .list-item .actions .btn {
-  min-height: 36px;
+  /* 以前是 36px，低于 44px 的触控下限；一条规则的详情里并排 5 个按钮
+     （保存/发送A/发送B/删除/返回），手机上极容易点错。跟 .btn 一样用变量，
+     改 44 只改 theme.css 一处，不会再漏掉这里。 */
+  min-height: var(--touch-min);
   padding: 6px 12px;
   font-size: 0.8125rem;
 }
 
 .empty {
-  color: #999;
+  color: var(--text-6);
   font-size: 0.875rem;
   padding: var(--gap);
 }
@@ -164,38 +196,105 @@ body {
   display: none !important;
 }
 
+/* 只给读屏用的文本（视觉上不占位）。classic clip 写法：比 left:-9999px 好在
+   不会被 iOS 的 VoiceOver 忽略，也不会把页面撑出横向滚动条。 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* <noscript> 的提示条：脚本没跑起来时，页面否则会永远停在"正在读取设备状态…" */
+.noscript-tip {
+  margin: var(--gap);
+  padding: var(--gap);
+  border-radius: var(--radius);
+  background: var(--tint-warn, var(--surface));
+  color: var(--text);
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.noscript-tip p {
+  margin: 0 0 8px;
+}
+
+.noscript-tip p:last-child {
+  margin-bottom: 0;
+}
+
 /* 表单 */
 .form-box {
-  background: #fff;
+  background: var(--surface);
   border-radius: var(--radius);
   padding: var(--gap);
   margin-bottom: var(--gap);
-  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  box-shadow: 0 1px 2px var(--shadow);
 }
 
-.form-box label {
+/* ⚠️ 弹窗里的标签/输入框以前**完全没有样式**（下面这批规则只写了 .form-box），
+   于是「保存到设备」的输入框退回浏览器默认外观：比别处小一圈、圆角/边框不一致，
+   手机上还会因为字号 <16px 触发 iOS 自动放大。这里把弹窗一并纳进来。 */
+.form-box label,
+.modal label {
   display: block;
   margin-bottom: var(--gap);
   font-size: 0.875rem;
-  color: #555;
+  color: var(--text-2);
 }
 
 .form-box input,
-.form-box select {
+.form-box select,
+.modal input,
+.modal select {
   display: block;
   width: 100%;
   margin-top: 4px;
   padding: 12px;
   min-height: var(--touch-min);
   font-size: 1rem;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border);
   border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--text);
+}
+
+.form-box input::placeholder,
+.modal input::placeholder {
+  color: var(--placeholder);
+  opacity: 1;                     /* Firefox 默认给占位符降透明度，锁成 1 保证两主题一致 */
 }
 
 .form-box input:focus,
-.form-box select:focus {
-  outline: none;
-  border-color: #0a7ea4;
+.form-box select:focus,
+.modal input:focus,
+.modal select:focus {
+  outline: none;                     /* 触摸/鼠标点进来不画框，只换边框色 */
+  border-color: var(--accent);
+}
+
+/* 键盘焦点。以前 `.form-box input:focus{outline:none}` 把键盘用户的焦点框整个去掉了
+   （鼠标点上去确实不需要框，但键盘 Tab 过来必须看得见落在哪）。
+   用 :focus-visible 把两种情况分开：它只在"键盘/辅助设备"触发时匹配，
+   触摸与鼠标点击不匹配。老浏览器（iOS 15 之前）不认识这个伪类，整个规则被丢掉，
+   于是回落到上面那条"只换边框色" —— 也就是今天的行为，不会更差。 */
+.form-box input:focus-visible,
+.form-box select:focus-visible,
+.modal input:focus-visible,
+.modal select:focus-visible,
+.btn:focus-visible,
+.tab:focus-visible,
+.device-button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .row {
@@ -203,6 +302,61 @@ body {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: var(--gap);
+}
+
+/* ── 「导出给 HA」的下拉菜单（v1.3.33）────────────────────────────────
+   以前是「格式选择框 + 导出按钮」两个控件并排：手机上选择框被表单控件那条
+   width:100% 撑成单独一行 ⇒ 多占一整行高度，观感也散。现在合成一个按钮：
+   点开选格式，点哪一项就用哪种导。
+   ⚠️ 菜单锚在**整行**上而不是按钮上：手机上按钮会换行、落到行的中段，
+      若以按钮左边缘定位，菜单会从屏幕右侧伸出去，右边那一项点不到。
+      锚在行上则 left:0 = 行左边缘、宽度上限 = 行宽（视口减去面板左右 padding）。 */
+.row.has-menu {
+  position: relative;
+}
+
+.caret {
+  font-size: 0.7rem;          /* 只作"可展开"的提示，别抢按钮文字的视线 */
+  margin-left: 4px;
+  vertical-align: 1px;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 4px);      /* 有 flex-wrap，100% 是整个行（可能两排）的高度 */
+  left: 0;
+  z-index: 150;               /* 高于列表项，低于弹窗(.modal-overlay 是 200) */
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* 宽度由内容决定（两项都是 nowrap 的长文案，约 230px），只卡一个安全上限：
+     不能超过行宽，否则窄屏上还是会横向溢出去。别写 min-width:100% ——
+     那会让菜单撑满整个行宽（桌面上面板有 600px 宽，两个选项撑成一条长条）。 */
+  max-width: calc(100vw - 2 * var(--gap));
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px var(--shadow);
+}
+
+.menu-item {
+  min-height: var(--touch-min);
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 0.9375rem;
+  color: var(--text);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.menu-item:hover,
+.menu-item:active {
+  background: var(--surface-2);
 }
 
 /* 按钮 */
@@ -217,35 +371,35 @@ body {
 }
 
 .btn-primary {
-  background: #0a7ea4;
-  color: #fff;
+  background: var(--accent-solid);
+  color: var(--on-accent);
 }
 
 .btn-primary:hover {
-  background: #096688;
+  background: var(--accent-hover);
 }
 
 .btn-secondary {
-  background: #e8e8e8;
-  color: #333;
+  background: var(--surface-3);
+  color: var(--text);
 }
 
 .btn-secondary:hover {
-  background: #ddd;
+  background: var(--surface-4);
 }
 
 .btn-danger {
-  background: #c62828;
-  color: #fff;
+  background: var(--danger-solid);
+  color: var(--on-accent);
 }
 
 .btn-danger:hover {
-  background: #b71c1c;
+  background: var(--danger-hover);
 }
 
 .btn-text {
   background: transparent;
-  color: #0a7ea4;
+  color: var(--accent);
 }
 
 .btn-text:hover {
@@ -263,17 +417,22 @@ body {
 .device-button {
   min-height: var(--touch-min);
   padding: 16px;
-  background: #fff;
+  background: var(--surface);
   border-radius: var(--radius);
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-2);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 4px;
   cursor: pointer;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  box-shadow: 0 1px 2px var(--shadow);
   -webkit-tap-highlight-color: transparent;
+  /* 长按 640ms 改名 vs 手机自带的长按菜单/文字选择：不禁掉后者就经常"按不出来"。
+     touch-action:manipulation 同时去掉移动端 300ms 双击缩放等待，点了就发。 */
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
 }
 
 .device-button .name {
@@ -282,12 +441,12 @@ body {
 
 .device-button .send-label {
   font-size: 0.75rem;
-  color: #0a7ea4;
+  color: var(--accent);
 }
 
 /* 学习状态 */
 .status-box {
-  background: #e3f2fd;
+  background: var(--tint-info);
   border-radius: var(--radius);
   padding: var(--gap);
   margin-bottom: var(--gap);
@@ -309,7 +468,7 @@ body {
 
 .rule-item .ab {
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-3);
 }
 
 /* 设备列表项 */
@@ -324,11 +483,53 @@ body {
   font-weight: 500;
 }
 
+/* 列表项右侧的一排行内按钮（设备行的「打开 / 删除」） */
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/*
+ * 设备按钮上的删除叉。
+ * 以前删按钮只绑了 contextmenu（右键）—— 手机上根本没有右键，等于完全删不掉。
+ * 这里做成一个常驻的小叉：触控目标比视觉大（padding 撑到 32px），
+ * 避免和"长按改名""点一下发送"抢手势。
+ */
+.device-button {
+  position: relative;
+}
+
+.device-button .btn-del {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 1.125rem;
+  line-height: 1;
+  color: var(--text-6);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.device-button .btn-del:active,
+.device-button .btn-del:hover {
+  color: var(--text-2);
+}
+
 /* 弹窗 */
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.4);
+  background: var(--overlay);
   display: flex;
   align-items: flex-end;
   justify-content: center;
@@ -336,7 +537,7 @@ body {
 }
 
 .modal-overlay .modal {
-  background: #fff;
+  background: var(--surface);
   width: 100%;
   max-width: 600px;
   border-radius: var(--radius) var(--radius) 0 0;
@@ -357,8 +558,8 @@ body {
   bottom: calc(var(--tab-height) + var(--safe-bottom) + 16px);
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(0,0,0,0.75);
-  color: #fff;
+  background: var(--toast-bg);
+  color: var(--on-accent);
   padding: 10px 20px;
   border-radius: 20px;
   font-size: 0.875rem;
@@ -376,19 +577,115 @@ body {
 }
 
 .about {
-  background: #fff;
+  background: var(--surface);
   border-radius: var(--radius);
   padding: var(--gap);
   margin-top: var(--gap);
   font-size: 0.875rem;
-  color: #555;
+  color: var(--text-2);
 }
 
 .about code {
-  background: #f0f0f0;
+  background: var(--surface-2);
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 0.8rem;
+}
+
+/* ── 可折叠说明块：语法说明（「规则」页）、导出说明（「设备」页）────────
+   统一字符串格式自带语法（, ; @ |），只看例子猜不出来。
+   这份说明是**唯一来源**：「最近」页的试发区、设置页都只写一句指过来 ——
+   两处各维护一份文案，改了一处漏一处，迟早对不上。
+
+   ⚠️ **不给底色**（v1.3.34）：它紧跟在按钮行下面、两者之间只有 0 间距，
+      一旦有底色就跟按钮行连成一片，看着像"一个块被切成上下两半"；
+      去掉底色后它退化成一行可点文字，观感干净，还省掉左右各 12px 的缩进
+      （与面板里其它正文左对齐）。
+
+   ⚠️ **上下外边距必须为 0，间距一律由 summary 的 padding 给**（v1.3.34 修正）。
+      原因：收起时 `</summary>` 后面没有 `.fmt-body`，于是**同一侧**会同时生效
+      两个 12px —— summary 的 padding-bottom + 本块的下外边距 ⇒ 下方 24px、
+      上方只有 12px，看着就是"上面贴着、下面空一截"。
+      归零后：收起 = 上 12 / 下 12；展开 = 上 12（至标题）+ 12（标题至正文）
+      + 正文末行至下一个元素 12（`.fmt-body` 的 padding-bottom）。三处都是 12。 */
+.fmt-help {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-2);
+}
+
+.fmt-help > summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 600;
+  /* ⚠️ 这 12px 不只是间距，更是**触控高度**：0.875rem×1.4 ≈ 20px，
+     加上上下各 12px 才够 44px。压缩它 = 手机上一行小字点不准。
+     去掉底色之后，它同时充当与上方按钮行的分隔。 */
+  padding: 12px 0;
+  line-height: 1.4;
+}
+
+/* 下间距统一由这里的 padding 给：不这么做的话，展开时最后一段自己的
+   `margin-bottom: 10px` 会叠在 12px 上面 ⇒ 块底多出 10px，与块顶对不齐。 */
+.fmt-body {
+  padding-bottom: var(--gap);
+}
+
+.fmt-body > :last-child {
+  margin-bottom: 0;
+}
+
+.fmt-body p {
+  margin: 0 0 10px;
+  line-height: 1.6;
+}
+
+/* 折叠块里的分条说明（「设备」页的导出格式对比）。用 ul 而不是 <br> 硬换行：
+   手机上一项可能占两三行，缩进能让"这是两条并列的选项"一眼看出来。 */
+.fmt-list {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  line-height: 1.6;
+}
+
+.fmt-list li {
+  margin-bottom: 6px;
+}
+
+.fmt-body code,
+.fmt-table code {
+  background: var(--surface-2);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+
+.fmt-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  margin: 0 0 10px;
+  font-size: 0.8rem;
+}
+
+.fmt-table th,
+.fmt-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-soft);
+  word-break: break-word;
+}
+
+.fmt-table th {
+  color: var(--text-4);
+  font-weight: 600;
+}
+
+.fmt-table th:first-child,
+.fmt-table td:first-child {
+  width: 32%;
 }
 
 .matched-tag {
@@ -396,6 +693,298 @@ body {
   font-size: 0.7rem;
   padding: 2px 6px;
   border-radius: 4px;
-  background: #c8e6c9;
-  color: #2e7d32;
+  background: var(--tint-success-strong);
+  color: var(--success);
 }
+
+/* ============ 状态页 ============ */
+
+/* 六个 tab 比原来多一个，字号收一点，避免手机上挤成一团 */
+.tab {
+  font-size: 0.8125rem;
+  padding: 8px 2px;
+}
+
+/* 顶部横幅：设备现在到底在什么状态，一眼可见 */
+.banner-wrap {
+  margin-bottom: var(--gap);
+}
+
+.banner-wrap .status-banner {
+  margin-bottom: 0;
+}
+
+/* 配网模式下的「去配网」按钮：贴在横幅正下方，占满宽度 */
+#banner-action {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.status-banner {
+  border-radius: var(--radius);
+  padding: 14px var(--gap);
+  margin-bottom: var(--gap);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  background: var(--tint-neutral);
+  color: var(--neutral-ink);
+}
+
+.status-banner.banner-ok {
+  background: var(--tint-success);
+  color: var(--success);
+}
+
+.status-banner.banner-ap {
+  background: var(--tint-warn);
+  color: var(--warn-strong);
+}
+
+.status-banner.banner-offline {
+  background: var(--tint-warn-deep);
+  color: var(--warn-deep);
+}
+
+.status-banner.banner-unreachable {
+  background: var(--tint-danger);
+  color: var(--danger);
+}
+
+/* 转发总开关：整块可点区域，开关状态一眼可辨 */
+.forward-box {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: var(--gap);
+  margin-bottom: var(--gap);
+  box-shadow: 0 1px 2px var(--shadow);
+  border-left: 4px solid var(--accent);
+}
+
+.forward-box.forward-off {
+  border-left-color: var(--danger);
+}
+
+.forward-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.forward-text strong {
+  font-size: 0.9375rem;
+}
+
+.forward-text span {
+  font-size: 0.75rem;
+  color: var(--text-5);
+}
+
+.forward-off .forward-text strong {
+  color: var(--danger);
+}
+
+/* 明细表 */
+.info-grid {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px var(--shadow);
+  overflow: hidden;
+}
+
+.info-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--gap);
+  padding: 12px var(--gap);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.info-item:last-child {
+  border-bottom: none;
+}
+
+.info-key {
+  font-size: 0.875rem;
+  color: var(--text-4);
+  flex-shrink: 0;
+}
+
+.info-value {
+  font-size: 0.875rem;
+  text-align: right;
+  word-break: break-all;
+}
+
+.about .fw-line code {
+  cursor: pointer;
+}
+
+/* 设置页里的链接按钮与 .btn 视觉一致 */
+a.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+/* ── 转发记录 / 试发（「最近」页底部）──────────────────────── */
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 20px 0 6px;
+}
+
+.hint {
+  color: var(--text-3);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  margin: 0 0 var(--gap);
+}
+
+.hint strong {
+  color: var(--text);
+}
+
+/* 提示里嵌的行内代码（主题名、YAML 键名）。用等宽 + 淡底把它和正文分开；
+   word-break 是因为最长的那个是 smartir/media_player/<名字>/send，窄屏上必须能断行，
+   否则整段文字被撑宽、右侧溢出。 */
+.hint code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.95em;
+  word-break: break-all;
+}
+
+/* 规则数逼近上限时的警示（.hint 的加重版） */
+.hint.warn {
+  color: var(--warn);
+}
+
+/* 「设备」页顶部的常驻状态条：这份配置现在在设备上还是只在本机。
+   它是个按钮（点了重新与设备核对），所以要清掉浏览器给 button 的默认外观，
+   并保证 44px 的触控高度 —— 手机上一行小字是点不准的。
+   三态配色复用 tint 变量，深浅色主题都跟着走。 */
+.sync-note {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: var(--touch-min);
+  text-align: left;
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  padding: 8px 12px;
+  margin: 0 0 var(--gap);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--tint-neutral);
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.sync-note:disabled {
+  cursor: default;
+}
+
+.sync-note.is-ok {
+  background: var(--tint-success);
+  color: var(--success);
+}
+
+.sync-note.is-warn {
+  background: var(--tint-warn);
+  color: var(--warn);
+}
+
+/* 「刚学到的指令还没进设备」提示条（v1.3.43）——
+   学习结果**只存在设备 RAM**，重启/断电/升级就丢，必须显式写进 /devices.json 才算存下。
+   以前这一步只能在「学习」页逐条点「保存到设备」，学完切到设备页就看不到、很容易忘。
+   这条把设备页也变成入口：一键把它们加进目标设备。
+   用 --tint-info（浅蓝）与上面那条 sync-note 的 warn 色区分开 —— 两条常同时出现。 */
+.learn-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  width: 100%;
+  padding: 8px 12px;
+  margin: 0 0 var(--gap);
+  border-radius: 8px;
+  background: var(--tint-info);
+  color: var(--text-2);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+.learn-hint > span {
+  flex: 1 1 12em;
+  min-width: 0;
+}
+
+.forward-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fwd-status {
+  display: inline-block;
+  align-self: flex-start;
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.fwd-ok   { background: var(--tint-success); color: var(--success); }
+.fwd-warn { background: var(--tint-warn); color: var(--warn); }
+.fwd-err  { background: var(--tint-danger); color: var(--danger); }
+
+.status-box.test-ok  { background: var(--tint-success); color: var(--success); }
+.status-box.test-err { background: var(--tint-danger); color: var(--danger); }
+
+/* 未匹配规则的信号：标黄提示"这条遥控码还没人认领"——最常见的排障入口 */
+.list-item.unmatched {
+  border-left: 4px solid var(--warn-strong);
+  background: var(--tint-warn-soft);
+}
+
+.list-item.unmatched .meta {
+  color: var(--warn-strong);
+  font-weight: 600;
+}
+
+/* 面板标题右侧的按钮组，抵消 .row 的上外边距 */
+.panel-header .row {
+  margin-top: 0;
+  flex-wrap: nowrap;
+}
+
+.panel-header .row .btn-text {
+  min-height: 36px;
+  padding: 6px 10px;
+  font-size: 0.875rem;
+}
+
+/* 开关型文字按钮的激活态（实时监视） */
+.btn-text.active {
+  background: var(--tint-info-2);
+  border-radius: 6px;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+/* 深色模式已在文件开头用 CSS 变量统一处理
+   （:root 的浅色默认值 + @media prefers-color-scheme 的深色覆盖），
+   这里不再逐个类打补丁 —— 以前那三处硬编码补丁已被 --tint-warn-soft /
+   --warn-strong / --tint-info-2 取代，观感保持一致。 */

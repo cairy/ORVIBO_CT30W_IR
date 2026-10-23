@@ -4,29 +4,108 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>红外转发器</title>
+  <!-- 空 data URI 的 icon：让浏览器**不再去请求 /favicon.ico**。
+       设备是单线程的，页面的第一批 API 请求正发出去时多一条浏览器自发的连接，
+       就会多占一份 pcb/pbuf（实测并发请求会把 maxFreeBlock 压下去 ⇒ 重接口 503）。
+       固件那条 /favicon.ico 路由仍留着，给旧缓存页面兜底。 -->
+  <link rel="icon" href="data:,">
+  <!-- 手机浏览器的地址栏颜色也跟着深浅主题走（与 app.css 里的 --bg 保持一致） -->
+  <meta name="theme-color" content="#f5f5f5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#14171c" media="(prefers-color-scheme: dark)">
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
+  <h1 class="sr-only">红外转发器控制面板</h1>
+
+  <!-- 脚本没跑起来时，页面会永远停在"正在读取设备状态…"。
+       这里给一条纯 HTML 的明路：不需要 JS 就能走到配网页。 -->
+  <noscript>
+    <div class="noscript-tip">
+      <p><strong>本页需要 JavaScript 才能操作设备</strong>（浏览器里禁了脚本，或者当前网络把它拦了）。</p>
+      <p>不打算开脚本也还能办事：<a href="/setup">打开配网页</a>重新配置 WiFi 与 MQTT。</p>
+    </div>
+  </noscript>
+
   <main class="main">
-    <section class="panel" data-tab="recent" id="panel-recent">
+    <section class="panel" data-tab="status" id="panel-status" role="tabpanel" aria-labelledby="tab-status">
       <header class="panel-header">
-        <h1>最近信号</h1>
-        <button type="button" class="btn btn-text" id="btn-refresh-recent">刷新</button>
+        <h2 class="panel-title">状态</h2>
+        <button type="button" class="btn btn-text" id="btn-refresh-status">刷新</button>
       </header>
       <div class="panel-body">
-        <div id="recent-list" class="list"></div>
-        <p id="recent-empty" class="empty hidden">暂无最近信号</p>
+        <div class="banner-wrap">
+          <div id="status-banner" class="status-banner">正在读取设备状态…</div>
+          <!-- 配网模式下的直达入口：连上设备热点打开本页时，"下一步该干什么"就是去配网，
+               不该让用户自己在「设置」里找。脚本按设备状态显示/隐藏它。 -->
+          <a id="banner-action" class="btn btn-primary hidden" href="/setup">去配网</a>
+        </div>
+
+        <div class="forward-box" id="forward-box">
+          <div class="forward-text">
+            <strong>转发总开关</strong>
+            <span id="forward-hint">关闭后设备只收不发，规则照旧保留</span>
+          </div>
+          <button type="button" class="btn btn-primary" id="btn-forward-toggle" disabled>读取中…</button>
+        </div>
+
+        <div id="status-grid" class="info-grid"></div>
+
+        <div class="about">
+          <p class="fw-line">固件 <strong id="fw-version">—</strong> · 固件指纹
+            <code id="fw-md5" title="点一下复制">—</code></p>
+          <p>固件指纹用于确认无线升级到底刷进去没有：升级完刷新本页，指纹变了就是刷成功了。</p>
+        </div>
       </div>
     </section>
 
-    <section class="panel" data-tab="learn" id="panel-learn">
+    <section class="panel" data-tab="recent" id="panel-recent" role="tabpanel" aria-labelledby="tab-recent">
       <header class="panel-header">
-        <h1>学习</h1>
+        <h2 class="panel-title">最近信号</h2>
+        <div class="row">
+          <button type="button" class="btn btn-text" id="btn-live-recent" title="打开后自动刷新，按遥控器就能立刻看到">实时监视</button>
+          <button type="button" class="btn btn-text" id="btn-refresh-recent">刷新</button>
+          <button type="button" class="btn btn-text" id="btn-clear-recent" title="清空设备端的最近信号记录（不可撤销）">清空</button>
+        </div>
+      </header>
+      <div class="panel-body">
+        <p class="hint" id="live-hint">点「实时监视」会自动刷新列表：按下遥控器，1 秒内这里就会冒出新信号，
+          可以直接把它设为规则。<strong>最新的在最上面</strong>。</p>
+        <div id="recent-list" class="list"></div>
+        <p id="recent-empty" class="empty hidden">暂无最近信号</p>
+
+        <h3 class="section-title">转发记录
+          <button type="button" class="btn btn-text" id="btn-clear-forward">清空</button>
+        </h3>
+        <p class="hint">每收到一条信号都会在这里记一条，<strong>包括没匹配上规则的</strong>——
+          这正是"按了没反应"的排障入口：看到「未匹配规则」就说明信号收到了，只是还没有规则认它。
+          红外是单向的，所以这里最多只能证明"已经发出去了"，不能证明空调/电视真的响应了。</p>
+        <div id="forward-list" class="list"></div>
+        <p id="forward-empty" class="empty hidden">暂无转发记录</p>
+
+        <h3 class="section-title">试发一条 A 信号</h3>
+        <p class="hint">规则写对没有？把 A 信号粘进来点一下，看它能不能匹配到规则。
+          <strong>试发不看总开关</strong>，转发关着也能随时验证。
+          字符串不用自己拼，从上面「最近信号」复制一条就行；要看懂它，见「规则」页顶部的说明。</p>
+        <div class="form-box">
+          <label>A（触发信号） <input type="text" id="test-a" placeholder="1,0x00003039"></label>
+          <div class="row">
+            <button type="button" class="btn btn-primary" id="btn-forward-test">试发</button>
+          </div>
+        </div>
+        <div id="forward-test-result" class="status-box hidden"></div>
+      </div>
+    </section>
+
+    <section class="panel" data-tab="learn" id="panel-learn" role="tabpanel" aria-labelledby="tab-learn">
+      <header class="panel-header">
+        <h2 class="panel-title">学习</h2>
       </header>
       <div class="panel-body">
         <div id="learn-form-box" class="form-box">
           <label>设备名 <input type="text" id="learn-device-name" placeholder="如：空调遥控器"></label>
           <label>指令名（逗号分隔） <input type="text" id="learn-command-names" placeholder="开机,关机,温度+"></label>
+          <p class="hint">多个指令名用逗号分开，<strong>中英文逗号都认</strong>（也能用顿号「、」或分号）；
+            最多 8 个。填好后点「启动学习」，再对着设备一个一个按遥控器。</p>
           <label>超时（秒） <input type="number" id="learn-timeout" value="30" min="5" max="120"></label>
           <div class="row">
             <button type="button" class="btn btn-primary" id="btn-learn-start">启动学习</button>
@@ -35,18 +114,91 @@
         </div>
         <div id="learn-status" class="status-box hidden"></div>
         <div id="learn-result-box" class="hidden">
-          <h2>学习结果</h2>
+          <h3 class="section-title">学习结果
+            <button type="button" class="btn btn-text" id="btn-refresh-learn-result">刷新结果</button>
+            <button type="button" class="btn btn-text" id="btn-clear-learn-result">清除结果</button>
+          </h3>
+          <p class="hint">每个指令都能单独处理：
+            <strong>发送</strong>＝立刻把这条码发出去（顺手验一下学对没有）；
+            <strong>保存到设备</strong>＝存进「设备」页，以后在那儿一键发送；
+            <strong>设为 A / 设为 B</strong>＝拿去建转发规则——想让别的遥控器触发它，就把它设为 B。</p>
+          <p class="hint">学习结果会<b>保存在设备里</b>（约 1 KB 闪存，不占内存）：重启 / 断电 / 升级
+            都不会丢，开始下一次学习时才自动覆盖。它只是「还没处理」的暂存 ——
+            用上面的按钮设为 A/B 或保存到设备之后，才算正式记下。
+            结果没出来时点「刷新结果」（刚学完那一下设备内存最紧，等几秒通常就读到了）；
+            不想要了就点「清除结果」。</p>
           <div id="learn-result-list" class="list"></div>
         </div>
       </div>
     </section>
 
-    <section class="panel" data-tab="rules" id="panel-rules">
+    <section class="panel" data-tab="rules" id="panel-rules" role="tabpanel" aria-labelledby="tab-rules">
       <header class="panel-header">
-        <h1>规则</h1>
+        <h2 class="panel-title">规则</h2>
         <button type="button" class="btn btn-text" id="btn-rule-new">新建</button>
       </header>
       <div class="panel-body">
+        <p id="rules-limit-hint" class="hint hidden"></p>
+        <div class="row">
+          <button type="button" class="btn btn-secondary" id="btn-rule-export">导出备份</button>
+          <button type="button" class="btn btn-secondary" id="btn-rule-import">导入备份</button>
+          <input type="file" id="rule-import-file" accept="application/json,.json" class="hidden">
+        </div>
+
+        <!-- 信号字符串的语法说明。页面里**只有这一份**：
+             「最近」页的试发区、设置页都只用一句话指过来，避免两处文案各自维护后分叉。 -->
+        <details class="fmt-help">
+          <summary>信号字符串怎么看？</summary>
+          <div class="fmt-body">
+            <p>一串信号 = 若干「信号段」用 <code>;</code> 连起来，末尾可以跟一个重复次数。
+              每一段本身是下面三种写法之一。</p>
+
+            <table class="fmt-table">
+              <thead><tr><th>写法</th><th>长什么样 / 什么意思</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td>协议码</td>
+                  <td><code>1,0x00003039</code><br>
+                    逗号前是协议号，逗号后是码值。协议号：1=NEC、2=RC5、3=RC6、4=Sony、5=Samsung；
+                    码值是十六进制，设备输出时固定写 8 位。</td>
+                </tr>
+                <tr>
+                  <td>时序码</td>
+                  <td><code>+Eg0NDA…</code><br>
+                    学习时录下的整段原始波形，是一串 base64 文本。照抄就行，不用看懂。</td>
+                </tr>
+                <tr>
+                  <td>时序数组</td>
+                  <td><code>[9000,4500,560,-560]</code><br>
+                    手写波形时才用。数字单位是<strong>微秒</strong>：正数=红外灯亮，负数=灭。</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <table class="fmt-table">
+              <thead><tr><th>符号</th><th>含义</th></tr></thead>
+              <tbody>
+                <tr><td><code>;</code></td><td>分隔两个信号段。</td></tr>
+                <tr><td><code>@数字</code></td>
+                  <td>等这么久再发下一条，单位<strong>毫秒</strong>。写在整串最前面，表示第一个信号发出去之前先等这么久。</td></tr>
+                <tr><td><code>&#124;数字</code></td>
+                  <td>写在整串最末：整串重复发几次。如 <code>&#124;3</code> 就是连发 3 遍。</td></tr>
+                <tr><td><code>,数字</code></td>
+                  <td>跟在协议码后面：这一条重复发几次。如 <code>1,0x00003039,3</code>。</td></tr>
+              </tbody>
+            </table>
+
+            <p>按这个读一遍 <code>1,0xFD48B7@40;1,0x00FD48B7</code>：先发一次 NEC 码 <code>FD48B7</code>，
+              等 40 毫秒，再发一次同一个码。<code>0xFD48B7</code> 和 <code>0x00FD48B7</code> 是同一个数，
+              只是补零位数不同，两种写法都认。</p>
+
+            <p>两条输入框的区别：<strong>A（触发信号）只能填一条</strong>，
+              填多段会保存失败；<strong>B（转发序列）可以填多条</strong>，用 <code>;</code> 隔开。</p>
+
+            <p>不想手写就别手写：在「最近」页按下遥控器抓一条，或在「学习」页录下来，直接复制粘贴。</p>
+          </div>
+        </details>
+
         <div id="rules-list" class="list"></div>
         <p id="rules-empty" class="empty hidden">暂无规则</p>
         <div id="rule-detail" class="hidden">
@@ -64,9 +216,13 @@
           </div>
         </div>
         <div id="rule-new-form" class="form-box hidden">
-          <h2>新建规则</h2>
+          <h3>新建规则</h3>
           <label>名称 <input type="text" id="new-rule-name" placeholder="如：开机"></label>
           <label>A（触发信号） <input type="text" id="new-rule-a" placeholder="可粘贴"></label>
+          <div class="row">
+            <button type="button" class="btn btn-secondary" id="btn-capture-a">按遥控器抓码</button>
+            <button type="button" class="btn btn-secondary" id="btn-capture-b">从最近信号选 B</button>
+          </div>
           <label>B（转发序列） <input type="text" id="new-rule-b" placeholder="可粘贴"></label>
           <div class="row">
             <button type="button" class="btn btn-primary" id="btn-new-rule-save">保存</button>
@@ -76,16 +232,75 @@
       </div>
     </section>
 
-    <section class="panel" data-tab="devices" id="panel-devices">
+    <section class="panel" data-tab="devices" id="panel-devices" role="tabpanel" aria-labelledby="tab-devices">
       <header class="panel-header">
-        <h1>设备</h1>
+        <h2 class="panel-title">设备</h2>
         <button type="button" class="btn btn-text" id="btn-device-add">添加设备</button>
       </header>
       <div class="panel-body">
+        <!-- 配置到底存在哪，用户看不出来 —— 只有保存失败那一瞬间弹一次 toast（多半没看见）。
+             所以常驻一条状态：设备端 /devices.json 是正式存储，浏览器只留缓存。
+             它同时是"重新与设备核对"的入口，所以用 button 而不是一段文字。 -->
+        <button type="button" class="sync-note" id="devices-sync" role="status" aria-live="polite"
+                title="点一下重新与设备核对">正在与设备核对…</button>
+        <!-- 「刚学到的指令还没进设备」提示条（v1.3.43）。
+             学习结果自 v1.3.46 起会落盘到设备闪存（重启/断电/升级都不丢，开始下次学习才覆盖），
+             但它只是暂存 —— 必须写进 /devices.json 才算真正记下。
+             以前只能在「学习」页逐条点「保存到设备」—— 学完切到设备页就看不到，很容易忘掉。
+             这一条把设备页也变成入口：内容与按钮文案都由 renderDevicesLearnHint() 填。 -->
+        <div class="learn-hint hidden" id="devices-learn-hint">
+          <span id="devices-learn-hint-text"></span>
+          <button type="button" class="btn btn-primary" id="btn-devices-learn-add"></button>
+        </div>
+        <!-- 「导出给 HA」以前是「格式选择框 + 按钮」两个控件：手机上选择框被 width:100%
+             撑成单独一行，白占一行高度。现在合成**一个**按钮 —— 点开选格式，
+             点哪一项就用哪种格式导。
+             ⚠️ 菜单挂在 .row 底下（不是挂在按钮里）：手机上按钮会换行、落到行的中段，
+             以按钮左边缘定位会把菜单顶出屏幕右侧。挂在行上则 left:0 = 行左边缘。 -->
+        <div class="row has-menu">
+          <button type="button" class="btn btn-secondary" id="btn-device-export">导出备份</button>
+          <button type="button" class="btn btn-secondary" id="btn-device-import">导入备份</button>
+          <input type="file" id="device-import-file" accept="application/json,.json" class="hidden">
+          <button type="button" class="btn btn-secondary" id="btn-device-export-ha"
+                  aria-haspopup="menu" aria-expanded="false" aria-controls="ha-export-menu">
+            导出给 HA<span class="caret" aria-hidden="true">▾</span>
+          </button>
+          <div class="menu hidden" id="ha-export-menu" role="menu"
+               aria-label="导出给 Home Assistant 的格式">
+            <button type="button" class="menu-item" role="menuitem" data-fmt="native">
+              原样（本机语法 / MQTT）</button>
+            <button type="button" class="menu-item" role="menuitem" data-fmt="raw">
+              Raw 波形（ESPHome 等）</button>
+          </div>
+        </div>
+
+        <!-- 导出的说明。以前是三段常驻小字，手机上占掉四五行的位置；收进可折叠块，
+             与「规则」页的「信号字符串怎么看？」用同一套样式。 -->
+        <details class="fmt-help">
+          <summary>导出与 Home Assistant 怎么用？</summary>
+          <div class="fmt-body">
+            <p><strong>导出备份 / 导入备份</strong>：本设备的完整配置，导回来一字不差。
+              导入按设备名合并，不会清空已有设备。</p>
+            <p><strong>导出给 HA</strong>：给 Home Assistant 的 SmartIR 用，一个设备一个文件。
+              点按钮后在菜单里选格式：</p>
+            <ul class="fmt-list">
+              <li><strong>原样</strong> —— 信号串一字不改，任何协议都能导。
+                HA 侧 <code>controller_data</code> 填本机订阅的四个主题之一：
+                <code>smartir/media_player/&lt;名字&gt;/send</code>
+                （电视用 media_player，空调 climate，风扇 fan，灯 light）。</li>
+              <li><strong>Raw 波形</strong> —— 值写成带符号数组
+                <code>[9000,-4500,…]</code>（正=发光、负=灭），给 ESPHome 这类自己发波的控制器。
+                只支持<strong>时序码与 NEC 码</strong>，其余协议跳过并提示。</li>
+            </ul>
+            <p>文件放进 <code>custom_components/smartir/codes/&lt;平台&gt;/</code> 并改名成数字
+              （如 <code>9999.json</code>），HA 配置里写 <code>device_code: 9999</code>。</p>
+          </div>
+        </details>
         <div id="devices-list" class="list"></div>
-        <p id="devices-empty" class="empty hidden">暂无设备，可保存信号到设备</p>
+        <p id="devices-empty" class="empty hidden">还没有设备。点右上角「添加设备」新建，或在「最近信号」里对一条信号点「保存到设备」。</p>
         <div id="device-panel" class="hidden">
-          <h2 id="device-panel-title"></h2>
+          <h3 id="device-panel-title"></h3>
+          <p class="hint">点按钮发送信号；长按改名或改信号；点右上角 × 删除按钮。</p>
           <div id="device-buttons" class="button-grid"></div>
           <button type="button" class="btn btn-text" id="btn-device-back">返回</button>
         </div>
@@ -99,31 +314,48 @@
       </div>
     </section>
 
-    <section class="panel" data-tab="settings" id="panel-settings">
+    <section class="panel" data-tab="settings" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings">
       <header class="panel-header">
-        <h1>设置</h1>
+        <h2 class="panel-title">设置</h2>
       </header>
       <div class="panel-body">
         <div class="form-box">
-          <label>设备 IP <input type="text" id="setting-ip" placeholder="192.168.1.100"></label>
+          <label>设备地址 <input type="text" id="setting-ip" placeholder="留空 = 用当前访问地址（推荐）"></label>
           <div class="row">
             <button type="button" class="btn btn-primary" id="btn-save-ip">保存</button>
             <button type="button" class="btn btn-secondary" id="btn-check-connection">检测连接</button>
           </div>
         </div>
         <div class="about">
-          <p>本页面通过设备 HTTP API 操作红外转发器。信号使用<strong>统一字符串格式</strong>：如 <code>1,0x00003039</code>、<code>1,0xFD48B7@40;1,0x00FD48B7</code>。可从最近信号、学习结果、规则中复制粘贴。手机与设备需在同一局域网。</p>
+          <p id="setting-origin"></p>
+          <p>把本页当文件直接打开时，需要手填设备地址（如 <code>192.168.1.100</code>）；
+             直接在浏览器里访问设备地址打开本页时，留空即可自动使用当前地址。</p>
+        </div>
+        <div class="form-box">
+          <div class="row">
+            <a class="btn btn-secondary" href="/setup" id="link-setup">网络与 MQTT 配置</a>
+          </div>
+        </div>
+        <div class="about">
+          <p>配网页里可以搜索周边 WiFi、修改 MQTT，也能一键<strong>回退到上次能联网的配置</strong>——
+             配错了不用接串口。它和本面板共用一套配色，深浅色都跟着系统走。</p>
+        </div>
+        <div class="about">
+          <p>本页面通过设备 HTTP API 操作红外转发器。信号用的是<strong>统一字符串格式</strong>（如 <code>1,0x00003039</code>），
+             可以从最近信号、学习结果、规则里直接复制粘贴，不用自己拼。
+             这串字符怎么读，见「规则」页顶部的「信号字符串怎么看？」。手机与设备需在同一局域网。</p>
         </div>
       </div>
     </section>
   </main>
 
   <nav class="tab-bar" role="tablist">
-    <button type="button" class="tab" data-tab="recent" role="tab">最近</button>
-    <button type="button" class="tab" data-tab="learn" role="tab">学习</button>
-    <button type="button" class="tab" data-tab="rules" role="tab">规则</button>
-    <button type="button" class="tab" data-tab="devices" role="tab">设备</button>
-    <button type="button" class="tab" data-tab="settings" role="tab">设置</button>
+    <button type="button" class="tab" data-tab="status" id="tab-status" role="tab" aria-controls="panel-status" aria-selected="false">状态</button>
+    <button type="button" class="tab" data-tab="recent" id="tab-recent" role="tab" aria-controls="panel-recent" aria-selected="false">最近</button>
+    <button type="button" class="tab" data-tab="learn" id="tab-learn" role="tab" aria-controls="panel-learn" aria-selected="false">学习</button>
+    <button type="button" class="tab" data-tab="rules" id="tab-rules" role="tab" aria-controls="panel-rules" aria-selected="false">规则</button>
+    <button type="button" class="tab" data-tab="devices" id="tab-devices" role="tab" aria-controls="panel-devices" aria-selected="false">设备</button>
+    <button type="button" class="tab" data-tab="settings" id="tab-settings" role="tab" aria-controls="panel-settings" aria-selected="false">设置</button>
   </nav>
 
   <div id="modal-overlay" class="modal-overlay hidden">
@@ -139,7 +371,7 @@
     </div>
   </div>
 
-  <div id="toast" class="toast hidden"></div>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite" aria-atomic="true"></div>
 
   <script src="app.js"></script>
 </body>

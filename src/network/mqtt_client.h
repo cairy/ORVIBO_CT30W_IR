@@ -17,6 +17,9 @@ public:
     bool connect();
     void disconnect();
     bool publish(const String& topic, const String& payload, bool retain = false);
+    // const char* 版：给"栈上 char 缓冲 / PROGMEM 常量模板"用，避免为传参隐式构造 String
+    // 再吃一次堆（本机配了 MQTT 时空闲堆只有 ~4 KB，任何一次多余分配都可能致命）。
+    bool publish(const char* topic, const char* payload, bool retain = false);
     bool subscribe(const String& topic);
     void setCallback(MQTT_CALLBACK_SIGNATURE);
     void setServer(const String& server, uint16_t port);
@@ -28,8 +31,10 @@ private:
     NetworkConfigManager& configManager;
     unsigned long lastReconnectAttempt;
     uint8_t reconnectAttempts;           // 重连尝试次数（用于指数退避）
+    bool bufferReady;                    // MQTT 收发缓冲是否已分配（按需分配，见 ensureBuffer）
     static const uint8_t MAX_RECONNECT_ATTEMPTS = 10;  // 最大重连尝试次数
     bool attemptReconnect();
+    bool ensureBuffer();                 // 按需分配 MQTT 收发缓冲（未配置 MQTT 时不占）
     unsigned long getReconnectInterval() const;  // 获取当前重连间隔（指数退避）
 };
 

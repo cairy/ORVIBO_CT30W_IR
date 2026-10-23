@@ -4,13 +4,14 @@
 #include <string.h>
 #include "utils/hex_utils.h"
 #include "utils/logger.h"
+#include "utils/timing_scratch.h"
 #include "unified_signal.h"
 #include "ir_core/ir_learner.h"
 
-// 用于 a/b 字符串格式解析的时序缓冲区（仅 jsonObjectToRule 使用）
-static IRTiming s_parseTimingBuffer[MAX_LEARN_TIMING_COUNT];
+// a/b 字符串格式解析用的时序暂存：复用全局共享缓冲（原先单独常驻 1,600 B）
+// 见 src/utils/timing_scratch.h —— 只在 jsonObjectToRule 内使用，且不跨调用持有。
 
-IRMapper::IRMapper() : ruleCount(0), nextId(1), logger(nullptr) {
+IRMapper::IRMapper() : ruleCount(0), nextId(1), logger(nullptr), loadFailed(false) {
     for (int i = 0; i < MAX_MAP_RULES; i++) {
         rules[i].valid = false;
         rules[i].name[0] = '\0';
@@ -45,7 +46,7 @@ bool IRMapper::initDefaultMappings() {
         if (logger) {
             logger->log("error", buffer);
         } else {
-            Serial.printf("[IRMapper] %s\n", buffer);
+            Serial.printf_P(PSTR("[IRMapper] %s\n"), buffer);
         }
         return false;
     }
@@ -157,7 +158,7 @@ bool IRMapper::initDefaultMappings() {
             if (logger) {
                 logger->log("error", buffer);
             } else {
-                Serial.printf("[IRMapper] %s\n", buffer);
+                Serial.printf_P(PSTR("[IRMapper] %s\n"), buffer);
             }
         }
     }
@@ -170,7 +171,7 @@ bool IRMapper::initDefaultMappings() {
         if (logger) {
             logger->log("warning", buffer);
         } else {
-            Serial.printf("[IRMapper] %s\n", buffer);
+            Serial.printf_P(PSTR("[IRMapper] %s\n"), buffer);
         }
     }
     
@@ -179,7 +180,7 @@ bool IRMapper::initDefaultMappings() {
         if (logger) {
             logger->log("error", "没有成功添加任何默认规则");
         } else {
-            Serial.println("[IRMapper] 没有成功添加任何默认规则");
+            Serial.println(F("[IRMapper] 没有成功添加任何默认规则"));
         }
         return false;
     }
@@ -191,7 +192,7 @@ bool IRMapper::initDefaultMappings() {
         if (logger) {
             logger->log("system", buffer);
         } else {
-            Serial.printf("[IRMapper] %s\n", buffer);
+            Serial.printf_P(PSTR("[IRMapper] %s\n"), buffer);
         }
     } else {
         char buffer[128];
@@ -199,7 +200,7 @@ bool IRMapper::initDefaultMappings() {
         if (logger) {
             logger->log("error", buffer);
         } else {
-            Serial.printf("[IRMapper] %s\n", buffer);
+            Serial.printf_P(PSTR("[IRMapper] %s\n"), buffer);
         }
     }
     
@@ -216,6 +217,35 @@ int IRMapper::findEmptySlot() const {
     return -1;  // 数组已满
 }
 
+// 取一个可用的规则 ID：在 1..255 里循环找第一个**当前没被占用**的值。
+// 为什么不用 `nextId++`：nextId 是 uint8_t，加到 255 会回绕成 0；而 id == 0 在本模块
+// 各处都被当作"非法/无效"（deleteRule / handleUpdateMap 的 `if (id != 0)`），
+// 于是回绕后新分配的规则会**永远删不掉**。这里显式跳过 0，并跳过已占用的号，
+// 保证恒有合法且唯一的 ID（规则上限 MAX_MAP_RULES 远小于 255，不会找不到）。
+uint8_t IRMapper::allocateId() {
+    // nextId 可能是 0：loadFromFlash 里有 `nextId = rule.id + 1`，而 rule.id 是 uint8_t，
+    // 取到 255 时 +1 就溢出成 0。先把它规范回 1..255，否则下面的取模会算出 0。
+    int start = (int)nextId;
+    if (start < 1 || start > 255) {
+        start = 1;
+    }
+    for (int step = 0; step < 255; step++) {
+        int candidate = (start - 1 + step) % 255 + 1;  // 恒在 1..255，永不为 0
+        bool used = false;
+        for (int i = 0; i < MAX_MAP_RULES; i++) {
+            if (rules[i].valid && rules[i].id == (uint8_t)candidate) {
+                used = true;
+                break;
+            }
+        }
+        if (!used) {
+            nextId = (uint8_t)candidate;
+            return (uint8_t)candidate;
+        }
+    }
+    return 1;  // 理论不可达（20 条规则用不满 255 个号）
+}
+
 bool IRMapper::addRule(const IR_MapRule& rule, bool saveImmediately) {
     // 检查是否已存在相同的A信号（遍历整个数组）
     int existingIndex;
@@ -229,18 +259,22 @@ bool IRMapper::addRule(const IR_MapRule& rule, bool saveImmediately) {
         return false;  // 数组已满
     }
     
-    // 在找到的空槽位插入规则
+    // 在找到的空槽位插入规则。ID 由 allocateId() 取（跳过 0、跳过已占用的），
+    // 不再用 `nextId++` —— uint8_t 加到 255 会回绕成 0，而 0 在本模块是非法值。
     rules[emptyIndex] = rule;
-    rules[emptyIndex].id = nextId++;
+    rules[emptyIndex].id = allocateId();
     rules[emptyIndex].valid = true;
     
-    if (saveImmediately) {
-        saveToFlash();
+    if (saveImmediately && !saveToFlash()) {
+        // 落盘失败必须让调用方知道：以前这里丢弃返回值照样 return true，
+        // 于是"文件没写成"也报成功，用户重启才发现白改（v1.3.18 已在批量路径
+        // 修过一次，单条路径漏了）。
+        return false;
     }
     return true;
 }
 
-bool IRMapper::updateRule(uint8_t id, const IR_MapRule& rule) {
+bool IRMapper::updateRule(uint8_t id, const IR_MapRule& rule, bool saveImmediately) {
     int index;
     if (!findRuleIndexById(id, index)) {
         return false;
@@ -250,11 +284,13 @@ bool IRMapper::updateRule(uint8_t id, const IR_MapRule& rule) {
     rules[index].id = id;  // 保持原有ID
     rules[index].valid = true;
     
-    saveToFlash();
+    if (saveImmediately && !saveToFlash()) {
+        return false;   // 同上：落盘失败不能报成功
+    }
     return true;
 }
 
-bool IRMapper::deleteRule(uint8_t id) {
+bool IRMapper::deleteRule(uint8_t id, bool saveImmediately) {
     int index;
     if (!findRuleIndexById(id, index)) {
         return false;
@@ -264,13 +300,23 @@ bool IRMapper::deleteRule(uint8_t id) {
     rules[index].valid = false;
     rules[index].name[0] = '\0';
 
-    saveToFlash();
+    if (saveImmediately && !saveToFlash()) {
+        return false;   // 同上：落盘失败不能报成功
+    }
     return true;
 }
 
 IR_MapRule* IRMapper::findRule(const UnifiedSignal& aSignal) {
     int index;
     if (findRuleIndex(aSignal, index)) {
+        return &rules[index];
+    }
+    return nullptr;
+}
+
+IR_MapRule* IRMapper::findRuleById(uint8_t id) {
+    int index;
+    if (findRuleIndexById(id, index)) {
         return &rules[index];
     }
     return nullptr;
@@ -332,113 +378,140 @@ int IRMapper::getAllRules(IR_MapRule* outputRules, int maxCount) {
     return outputCount;  // 返回实际填充的规则数量
 }
 
-int IRMapper::serializeRulesToJson(JsonArray& array) {
-    int savedCount = 0;
+int IRMapper::collectIds(uint8_t* out, int maxCount) const {
+    if (out == nullptr || maxCount <= 0) {
+        return 0;
+    }
+    int n = 0;
+    for (int i = 0; i < MAX_MAP_RULES && n < maxCount; i++) {
+        if (rules[i].valid) {
+            out[n++] = rules[i].id;
+        }
+    }
+    return n;
+}
+
+// 时序码信号在 JSON 里额外占多少字节（Base64 会被复制进 ArduinoJson 的 string pool）
+static inline size_t timingJsonCost(const UnifiedSignal& s) {
+    return s.useTiming ? ((size_t)s.timingBase64.length() + 16) : 0;
+}
+
+// 保存映射规则到 Flash。
+//
+// ⚠️ v1.3.17 重写，根因与 Discovery 那次「恒久发不出去」是同一类：
+// 旧实现先把**全部**规则塞进一个 DynamicJsonDocument（每条按 200 B 预留、下限 4096 B）
+// 再整体序列化，并且开头有一条绝对的 `freeHeap < 4096 ⇒ 跳过保存`。而本机**配了 MQTT
+// 之后空闲堆只有 3~5 KB** —— 那条门槛让"规则改动"能进 RAM 却永远不落盘：HA 里删改规则
+// 后 rule_count 当场就变，**重启又变回去**，只在日志里留一行 error。
+// 现在改成**边遍历边写**：峰值内存只取决于单条规则，与规则总条数无关。
+//
+// 同时改用「临时文件 + rename」：旧实现一 open("w") 就把原文件清空，写到一半失败
+// 只剩半截 JSON；现在任何一步失败都保留原文件。
+bool IRMapper::saveToFlash() {
+    int validCount = getRuleCount();
+
+    // 单条规则需要的 JSON DOM：id + name + aSignal + bSequence(signals[] + intervals[]
+    // + timestamp/matched)。每个信号对象约 6 个字段 ≈ 170 B，按 224 B/信号预留 + 256 B 骨架。
+    //
+    // ⚠️ 时序码信号要额外算上 Base64：ruleToJsonObject 写的是
+    // `obj["timingBase64"] = signal.timingBase64`，ArduinoJson 会把整串**复制进
+    // string pool**。200 个时序点 ≈ 400 字节 → 约 534 字符，按 224 B/信号估算会
+    // 严重低估 ⇒ ruleDoc 溢出 ⇒ 走到下面 failed=true ⇒ **整份规则一条都不存**，
+    // 再叠加"落盘返回值被忽略"⇒ 用户在面板上完全无感。这里按实际长度累加。
+    size_t docSize = 256;   // 骨架下限
     for (int i = 0; i < MAX_MAP_RULES; i++) {
         if (!rules[i].valid) continue;
-        JsonObject ruleObj = array.createNestedObject();
-        ruleToJsonObject(rules[i], ruleObj, true);
+        size_t need = 256 + timingJsonCost(rules[i].aSignal);
+        for (int j = 0; j < rules[i].bSequence.signalCount; j++) {
+            need += 224 + timingJsonCost(rules[i].bSequence.signals[j]);
+        }
+        if (need > docSize) docSize = need;   // 取最大的单条（DOM 是逐条复用的）
+    }
+    if (docSize < 768) docSize = 768;
+
+    // 堆不够就别开文件（原文件保持不动）。留 1 KB 给 LittleFS 的写缓冲。
+    size_t freeHeap = ESP.getFreeHeap();
+    if (docSize + 1024 > freeHeap) {
+        char buffer[160];
+        snprintf(buffer, sizeof(buffer), "内存不足，规则未保存 (需要 %u, 空闲: %u bytes)",
+                 (unsigned)(docSize + 1024), (unsigned)freeHeap);
+        if (logger) {
+            logger->log("error", buffer);
+        } else {
+            Serial.printf_P(PSTR("[IRMapper] %s\n"), buffer);
+        }
+        return false;
+    }
+
+    File file = LittleFS.open(CONFIG_FILE_MAPS_TMP, "w");
+    if (!file) {
+        if (logger) {
+            logger->log("error", "打开规则临时文件失败，规则未保存");
+        } else {
+            Serial.println(F("[IRMapper] 打开规则临时文件失败"));
+        }
+        return false;
+    }
+
+    DynamicJsonDocument ruleDoc(docSize);
+    file.print('[');
+    int savedCount = 0;
+    bool failed = false;
+    for (int i = 0; i < MAX_MAP_RULES; i++) {
+        if (!rules[i].valid) continue;
+
+        ruleDoc.clear();
+        JsonObject ruleObj = ruleDoc.to<JsonObject>();
+        ruleToJsonObject(rules[i], ruleObj, true);  // true = hex 格式
+        if (ruleDoc.overflowed()) {
+            failed = true;
+            break;
+        }
+        if (savedCount > 0) {
+            file.print(',');
+        }
+        serializeJson(ruleDoc, file);
         savedCount++;
     }
-    return savedCount;
-}
-
-bool IRMapper::saveToFlashWithLargerDoc(int validCount, size_t freeHeap) {
-    size_t largerSize = (validCount * 300) + 4096;
-    if (largerSize > freeHeap - 1024 || largerSize > 16384) {
-        return false;
+    if (!failed) {
+        file.print(']');
     }
-    DynamicJsonDocument largerDoc(largerSize);
-    JsonArray largerArray = largerDoc.to<JsonArray>();
-    int retrySavedCount = serializeRulesToJson(largerArray);
-
-    if (largerDoc.overflowed()) {
-        if (logger) logger->log("error", "使用更大的文档序列化仍然溢出");
-        return false;
-    }
-
-    File file = LittleFS.open(CONFIG_FILE_MAPS, "w");
-    if (!file) {
-        return false;
-    }
-    serializeJson(largerDoc, file);
     file.close();
 
-    Serial.printf("[IRMapper] 使用更大的文档成功保存 %d 条规则\n", retrySavedCount);
-    if (logger) logger->log("system", "使用更大的文档成功保存所有规则");
-    return true;
-}
-
-bool IRMapper::saveToFlash() {
-    // 保存保护：在保存开始时记录规则数量快照，避免保存过程中规则被修改
-    int validCount = getRuleCount();
-    int savedCount = 0;
-
-    // 检查可用内存
-    size_t freeHeap = ESP.getFreeHeap();
-    if (freeHeap < 4096) {  // 至少需要4KB空闲内存
-        char buffer[128];
-        snprintf(buffer, sizeof(buffer), "内存不足，跳过保存 (空闲: %d bytes)", freeHeap);
+    // 条数不符也按失败处理：宁可保留上一份完整规则，也不落半截
+    if (failed || savedCount != validCount) {
+        LittleFS.remove(CONFIG_FILE_MAPS_TMP);
+        char buffer[160];
+        if (failed) {
+            snprintf(buffer, sizeof(buffer),
+                     "规则未保存：单条规则 JSON 超出 %u bytes 缓冲（空闲: %u bytes）",
+                     (unsigned)docSize, (unsigned)ESP.getFreeHeap());
+        } else {
+            snprintf(buffer, sizeof(buffer),
+                     "规则未保存：条数不匹配（期望 %d，实际 %d）", validCount, savedCount);
+        }
         if (logger) {
             logger->log("error", buffer);
         } else {
-            Serial.printf("[IRMapper] %s\n", buffer);
+            Serial.printf_P(PSTR("[IRMapper] %s\n"), buffer);
         }
         return false;
     }
 
-    // 动态计算JSON大小：每条规则约200字节，加上JSON开销
-    size_t jsonSize = (validCount * 200) + 2048;
-    if (jsonSize < 4096) jsonSize = 4096;  // 最小4KB
-
-    // 确保不超过可用内存
-    if (jsonSize > freeHeap - 1024) {  // 保留1KB缓冲
-        jsonSize = freeHeap - 1024;
-        if (jsonSize < 1024) {
-            if (logger) {
-                logger->log("error", "内存不足，无法保存 (需要至少1KB)");
-            } else {
-                Serial.println("[IRMapper] 内存不足，无法保存 (需要至少1KB)");
-            }
-            return false;
-        }
-    }
-
-    DynamicJsonDocument doc(jsonSize);
-    JsonArray rulesArray = doc.to<JsonArray>();
-    savedCount = serializeRulesToJson(rulesArray);
-
-    // 溢出检查（填充阶段可能溢出）
-    if (doc.overflowed()) {
-        char buffer[128];
-        snprintf(buffer, sizeof(buffer), "JSON文档溢出 (需要保存 %d 条规则，文档大小: %d bytes)", validCount, jsonSize);
+    // 原子替换：删旧 → 改名。两步之间掉电，最坏是规则文件缺失（开机走默认规则），
+    // 但绝不会留下半截 JSON。
+    LittleFS.remove(CONFIG_FILE_MAPS);
+    if (!LittleFS.rename(CONFIG_FILE_MAPS_TMP, CONFIG_FILE_MAPS)) {
+        LittleFS.remove(CONFIG_FILE_MAPS_TMP);
         if (logger) {
-            logger->log("error", buffer);
+            logger->log("error", "规则文件替换失败，规则未保存");
         } else {
-            Serial.printf("[IRMapper] %s\n", buffer);
+            Serial.println(F("[IRMapper] 规则文件替换失败"));
         }
-        return saveToFlashWithLargerDoc(validCount, freeHeap);
-    }
-
-    // 验证保存的规则数量
-    if (savedCount != validCount) {
-        char buffer[128];
-        snprintf(buffer, sizeof(buffer), "保存规则数量不匹配 (期望: %d, 实际: %d)", validCount, savedCount);
-        if (logger) {
-            logger->log("error", buffer);
-        } else {
-            Serial.printf("[IRMapper] %s\n", buffer);
-        }
-    }
-
-    File file = LittleFS.open(CONFIG_FILE_MAPS, "w");
-    if (!file) {
         return false;
     }
-    serializeJson(doc, file);
-    file.close();
 
-    Serial.printf("[IRMapper] 成功保存 %d 条规则到Flash\n", savedCount);
+    Serial.printf_P(PSTR("[IRMapper] 成功保存 %d 条规则到Flash\n"), savedCount);
     if (logger) {
         char buffer[128];
         snprintf(buffer, sizeof(buffer), "成功保存 %d 条规则到Flash", savedCount);
@@ -448,12 +521,13 @@ bool IRMapper::saveToFlash() {
 }
 
 bool IRMapper::loadFromFlash() {
+    loadFailed = false;
     // 使用文件流直接读取，避免String截断问题（参考Logger的实现）
     if (!LittleFS.exists(CONFIG_FILE_MAPS)) {
         if (logger) {
             logger->log("system", "Maps文件不存在，创建空文件");
         } else {
-            Serial.println("[IRMapper] Maps文件不存在，创建空文件");
+            Serial.println(F("[IRMapper] Maps文件不存在，创建空文件"));
         }
         if (Storage::saveFile(CONFIG_FILE_MAPS, "[]")) {
             // 清空所有规则（统一数据源）
@@ -463,6 +537,7 @@ bool IRMapper::loadFromFlash() {
             nextId = 1;
             return true;
         }
+        loadFailed = true;
         return false;
     }
     
@@ -471,8 +546,9 @@ bool IRMapper::loadFromFlash() {
         if (logger) {
             logger->log("error", "无法打开Maps文件");
         } else {
-            Serial.println("[IRMapper] 无法打开Maps文件");
+            Serial.println(F("[IRMapper] 无法打开Maps文件"));
         }
+        loadFailed = true;
         return false;
     }
     
@@ -487,7 +563,7 @@ bool IRMapper::loadFromFlash() {
         snprintf(buffer, sizeof(buffer), "读取Maps文件，大小: %d bytes", fileSize);
         logger->log("system", buffer);
     } else {
-        Serial.printf("[IRMapper] 读取Maps文件，大小: %d bytes\n", fileSize);
+        Serial.printf_P(PSTR("[IRMapper] 读取Maps文件，大小: %d bytes\n"), fileSize);
     }
     
     DynamicJsonDocument doc(jsonSize);
@@ -501,7 +577,7 @@ bool IRMapper::loadFromFlash() {
         if (logger) {
             logger->log("error", buffer);
         } else {
-            Serial.printf("[IRMapper] %s\n", buffer);
+            Serial.printf_P(PSTR("[IRMapper] %s\n"), buffer);
         }
         if (Storage::saveFile(CONFIG_FILE_MAPS, "[]")) {
             // 清空所有规则（统一数据源）
@@ -521,7 +597,7 @@ bool IRMapper::loadFromFlash() {
         if (logger) {
             logger->log("error", buffer);
         } else {
-            Serial.printf("[IRMapper] %s\n", buffer);
+            Serial.printf_P(PSTR("[IRMapper] %s\n"), buffer);
         }
         // 尝试使用更大的文档重新读取
         file = LittleFS.open(CONFIG_FILE_MAPS, "r");
@@ -538,17 +614,39 @@ bool IRMapper::loadFromFlash() {
                     }
                 } else {
                     if (logger) {
-                        logger->log("error", "使用更大的文档仍然失败");
+                        logger->log("error", "使用更大的文档仍然失败（保留原文件，不写默认规则）");
                     }
+                    loadFailed = true;
                     return false;
                 }
             } else {
                 file.close();
+                if (logger) {
+                    logger->log("error", "Maps 文件过大，本次读不出来（保留原文件，不写默认规则）");
+                }
+                loadFailed = true;
                 return false;
             }
+        } else {
+            // 重新打开文件都失败 —— 同样是"读不出来"，不能当成"规则为空"
+            loadFailed = true;
+            return false;
         }
     }
     
+    if (!doc.is<JsonArray>()) {
+        // 根不是数组 = 文件已经坏了。以前会走到 as<JsonArray>() 拿到一个空数组，
+        // 于是"清空内存规则 + return true"，随后被 initDefaultMappings() 用 5 条
+        // 默认规则覆盖文件 ⇒ 用户规则不可逆丢失。现在明确报失败并保留原文件。
+        if (logger) {
+            logger->log("error", "Maps 文件根节点不是数组，保留原文件不覆盖");
+        } else {
+            Serial.println(F("[IRMapper] Maps 文件根节点不是数组"));
+        }
+        loadFailed = true;
+        return false;
+    }
+
     JsonArray rulesArray = doc.as<JsonArray>();
     // 清空所有规则（统一数据源：遍历整个数组）
     for (int i = 0; i < MAX_MAP_RULES; i++) {
@@ -581,7 +679,7 @@ bool IRMapper::loadFromFlash() {
             if (logger) {
                 logger->log("warning", buffer);
             } else {
-                Serial.printf("[IRMapper] %s\n", buffer);
+                Serial.printf_P(PSTR("[IRMapper] %s\n"), buffer);
             }
             break;
         }
@@ -596,7 +694,7 @@ bool IRMapper::loadFromFlash() {
             if (logger) {
                 logger->log("error", buffer);
             } else {
-                Serial.printf("[IRMapper] %s\n", buffer);
+                Serial.printf_P(PSTR("[IRMapper] %s\n"), buffer);
             }
             continue;
         }
@@ -616,7 +714,7 @@ bool IRMapper::loadFromFlash() {
         if (logger) {
             logger->log("error", "检测到旧格式数据，重置为空文件");
         } else {
-            Serial.println("[IRMapper] 检测到旧格式数据，重置为空文件");
+            Serial.println(F("[IRMapper] 检测到旧格式数据，重置为空文件"));
         }
         if (Storage::saveFile(CONFIG_FILE_MAPS, "[]")) {
             // 清空所有规则（统一数据源）
@@ -638,7 +736,7 @@ bool IRMapper::loadFromFlash() {
             if (logger) {
                 logger->log("error", buffer);
             } else {
-                Serial.printf("[IRMapper] %s\n", buffer);
+                Serial.printf_P(PSTR("[IRMapper] %s\n"), buffer);
             }
             if (Storage::saveFile(CONFIG_FILE_MAPS, "[]")) {
                 // 清空所有规则（统一数据源）
@@ -656,7 +754,7 @@ bool IRMapper::loadFromFlash() {
             if (logger) {
                 logger->log("system", buffer);
             } else {
-                Serial.printf("[IRMapper] %s\n", buffer);
+                Serial.printf_P(PSTR("[IRMapper] %s\n"), buffer);
             }
         }
     }
@@ -669,7 +767,7 @@ bool IRMapper::loadFromFlash() {
         if (logger) {
             logger->log("warning", buffer);
         } else {
-            Serial.printf("[IRMapper] %s\n", buffer);
+            Serial.printf_P(PSTR("[IRMapper] %s\n"), buffer);
         }
     }
     // 注意：移除了"规则加载完成"的日志，因为：
@@ -847,7 +945,7 @@ bool IRMapper::jsonObjectToRule(JsonObject& obj, IR_MapRule& rule) {
             return false;
         }
         SignalSequence tempSeq;
-        if (!IRLearner::parseStringSequence(String(aStr), tempSeq, s_parseTimingBuffer, MAX_LEARN_TIMING_COUNT)) {
+        if (!IRLearner::parseStringSequence(String(aStr), tempSeq, timingScratch(), TIMING_SCRATCH_CAPACITY)) {
             return false;
         }
         if (tempSeq.signalCount != 1) {
@@ -899,7 +997,7 @@ bool IRMapper::jsonObjectToRule(JsonObject& obj, IR_MapRule& rule) {
         if (!bStr || bStr[0] == '\0') {
             return false;
         }
-        if (!IRLearner::parseStringSequence(String(bStr), rule.bSequence, s_parseTimingBuffer, MAX_LEARN_TIMING_COUNT)) {
+        if (!IRLearner::parseStringSequence(String(bStr), rule.bSequence, timingScratch(), TIMING_SCRATCH_CAPACITY)) {
             return false;
         }
     } else {

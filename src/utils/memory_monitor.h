@@ -44,6 +44,28 @@ public:
     // maxUsagePercent: 最大允许的内存使用率（默认93%）
     // 返回true表示内存充足，false表示内存不足
     static bool checkMemory(size_t requiredBytes, float maxUsagePercent = 93.0f);
+
+    // ── 发射路径专用的「总堆下限」（v1.3.39 起）────────────────────────────
+    // 为什么 checkMemory() 不够：它第一道只要求 freeHeap ≥ requiredBytes，
+    // 第二/三道看「使用率」与「最大连续块」⇒ 总堆只剩 3.6 KB 时**照样放行**。
+    // 2026-10-04 实测那次放行的后果不是"发送失败"，是**软看门狗硬复位**
+    // （内部分配失败 ⇒ SDK 的 system_show_malloc() 关中断打整张堆图 ⇒ 一次 loop 超时）。
+    //
+    // 判据来自 556 个可信样本（串口 `[TX] start` + `[API send]` 配对）：
+    //   成功的发送，**请求入口** freeHeap 全部 ≥ 4536；崩溃那次是 3680 ⇒ 下界取中间值。
+    //   ⚠️ 门槛按 freeHeap 看是**单调**的，按 maxFreeBlock 看**不单调**
+    //   （blk=2328 能跑通、blk=2744 崩）⇒ 只能用 freeHeap，⛔ 别改成抬 maxBlock。
+    //
+    // ⛔⛔ **只能用在"请求入口"（payload 刚到、还没解析），绝不能挪到 IRForwarder::sendSequence()。**
+    //   实测（`tools/serial_v38.log`，556 个样本）：发射时（sendSequence 入口）的堆
+    //   比请求入口**低约 1.4 KB** —— min 3120 / p5 4200 / p50 4504，
+    //   而其中 8 次 heap<4000 的发送**全部成功**（`[TX] end ms=28`，入口 heap 4536~5384）。
+    //   ⇒ 把 4096 挪到发射点会把"入口 5000 左右、本来完全正常"的发送误杀
+    //   （用户看到的是"点发送没反应"）。这条是踩过才写下的，别再犯。
+    //
+    // tag: 串口前缀（呼应各入口自己的埋点，如 "API send" / "SmartIR"）
+    // 返回 false 表示**应当拒绝本次发射**（调用方返回错误，不要继续往下分配）。
+    static bool hasSendHeadroom(const char* tag);
     
     // JSON大小估算函数
     // baseSize: 基础开销（通常256字节）

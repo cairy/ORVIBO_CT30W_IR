@@ -1,4 +1,5 @@
 #include "memory_monitor.h"
+#include "config/constants.h"   // MEMORY_MIN_FOR_SEND（hasSendHeadroom 用）
 
 // ESP8266 堆大小（动态获取）
 // 在启动时记录初始空闲堆，用于计算总堆大小
@@ -31,13 +32,15 @@ void MemoryMonitor::init(size_t earlyFreeHeap) {
             cachedHeapSize = maxFreeHeap + 10000;
         }
 
-        // 限制在合理范围内（ESP8266典型堆大小约50-80KB）
-        if (cachedHeapSize < 50000) cachedHeapSize = 50000;
+        // 上限保护：防采样异常。下限不能硬抬到 50KB —— 本机是 2MB 芯片 + 大固件，
+        // 真实总堆只有约 19.6KB，硬抬下限会把使用率算成假的 92%，于是"内存不足就停面板"
+        // 的兜底会在内存其实还够时误触发（表现就是面板自己关掉、ping 得通但 80 端口拒绝）。
         if (cachedHeapSize > 90000) cachedHeapSize = 90000;
+        if (cachedHeapSize < 4096) cachedHeapSize = 4096;
 
         initialized = true;
 
-        Serial.printf("[内存监控] 初始化完成 - 初始空闲堆: %d bytes (%.2f KB), 估算总堆: %d bytes (%.2f KB)\n",
+        Serial.printf_P(PSTR("[内存监控] 初始化完成 - 初始空闲堆: %d bytes (%.2f KB), 估算总堆: %d bytes (%.2f KB)\n"),
                      initialFreeHeap, initialFreeHeap / 1024.0f,
                      cachedHeapSize, cachedHeapSize / 1024.0f);
     }
@@ -107,14 +110,14 @@ void MemoryMonitor::printMemoryInfo() {
     float usagePercent = getUsagePercent();
     float fragPercent = getFragmentationPercent();
     
-    Serial.println("=== 内存使用情况 ===");
-    Serial.printf("总堆内存: %u 字节 (%.2f KB)\n", heapSize, heapSize / 1024.0f);
-    Serial.printf("空闲堆内存: %u 字节 (%.2f KB)\n", freeHeap, freeHeap / 1024.0f);
-    Serial.printf("已使用堆内存: %u 字节 (%.2f KB)\n", getUsedHeap(), getUsedHeap() / 1024.0f);
-    Serial.printf("最大连续空闲块: %u 字节 (%.2f KB)\n", maxBlock, maxBlock / 1024.0f);
-    Serial.printf("内存使用率: %.2f%%\n", usagePercent);
-    Serial.printf("内存碎片率: %.2f%%\n", fragPercent);
-    Serial.println("==================");
+    Serial.println(F("=== 内存使用情况 ==="));
+    Serial.printf_P(PSTR("总堆内存: %u 字节 (%.2f KB)\n"), heapSize, heapSize / 1024.0f);
+    Serial.printf_P(PSTR("空闲堆内存: %u 字节 (%.2f KB)\n"), freeHeap, freeHeap / 1024.0f);
+    Serial.printf_P(PSTR("已使用堆内存: %u 字节 (%.2f KB)\n"), getUsedHeap(), getUsedHeap() / 1024.0f);
+    Serial.printf_P(PSTR("最大连续空闲块: %u 字节 (%.2f KB)\n"), maxBlock, maxBlock / 1024.0f);
+    Serial.printf_P(PSTR("内存使用率: %.2f%%\n"), usagePercent);
+    Serial.printf_P(PSTR("内存碎片率: %.2f%%\n"), fragPercent);
+    Serial.println(F("=================="));
 }
 
 String MemoryMonitor::getMemoryInfoString() {
@@ -155,6 +158,19 @@ bool MemoryMonitor::checkMemory(size_t requiredBytes, float maxUsagePercent) {
         return false;
     }
     
+    return true;
+}
+
+// 发射路径专用的总堆下限 —— 判据与用法（含"⛔ 别挪到 sendSequence"的实测依据）
+// 全部写在 memory_monitor.h 的声明处，这里只留实现。
+bool MemoryMonitor::hasSendHeadroom(const char* tag) {
+    const uint32_t freeHeap = ESP.getFreeHeap();
+    if (freeHeap < MEMORY_MIN_FOR_SEND) {
+        Serial.printf_P(PSTR("[%s] 拒绝发射：freeHeap=%u < %u（宁拒不复位）\n"),
+                      (tag != nullptr) ? tag : "send",
+                      (unsigned)freeHeap, (unsigned)MEMORY_MIN_FOR_SEND);
+        return false;
+    }
     return true;
 }
 

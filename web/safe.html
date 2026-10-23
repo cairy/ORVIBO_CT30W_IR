@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>安全模式 · 红外转发器</title>
+  <meta name="theme-color" content="#b26a00" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#8a5200" media="(prefers-color-scheme: dark)">
+  <style>
+@import url("theme.css");
+
+/* 安全模式页 = 设备出问题时的救援页面。
+   两件事最重要：
+     1) 一眼看出"这不是正常工作状态" —— 整页琥珀色警示带 + 大字标题，
+        与常驻面板的绿色"运行中"横幅形成对比（配色见 theme.css 的 --safe-*）。
+     2) 手机上就能把固件刷回去 —— 按钮指向 /update，并把用户名写清楚。
+   页面必须在脚本没跑起来时也完整可用：所有关键操作都是普通链接。 */
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-text-size-adjust: 100%;
+}
+
+/* 顶部警示带：页面上最醒目的东西 */
+.band {
+  background: var(--safe-band-bg);
+  color: var(--safe-band-ink);
+  padding: 14px var(--gap);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.band .wrap { padding: 0; display: flex; align-items: center; gap: 10px; }
+.band .mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--safe-band-ink);
+  color: var(--safe-band-bg);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.wrap {
+  max-width: 600px;
+  margin: 0 auto;
+  padding: var(--gap);
+  padding-bottom: calc(var(--gap) + var(--safe-bottom) + 24px);
+}
+
+h1 { font-size: 1.5rem; margin: var(--gap) 0 6px; }
+h2 { font-size: 1rem; margin: 0 0 var(--gap); }
+.lead { margin: 0 0 var(--gap); color: var(--text-2); font-size: 0.9375rem; }
+
+.card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: var(--gap);
+  margin-bottom: var(--gap);
+  box-shadow: 0 1px 2px var(--shadow);
+}
+/* 第一张卡（状态）用琥珀描边，跟正常面板的卡片区分开 */
+.card.accent { border: 1px solid var(--safe-card-border); }
+
+.kv {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--gap);
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 0.875rem;
+}
+.kv:last-child { border-bottom: none; }
+.kv span { color: var(--text-4); flex-shrink: 0; }
+.kv b, .kv code { text-align: right; word-break: break-all; font-weight: 500; }
+.kv code { font-family: ui-monospace, monospace; font-size: 0.8rem; }
+
+ol { margin: 0 0 var(--gap); padding-left: 1.2em; font-size: 0.875rem; color: var(--text-2); }
+ol li { margin-bottom: 6px; }
+code {
+  background: var(--surface-2);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: var(--touch-min);
+  padding: 10px 16px;
+  font-size: 0.9375rem;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+  font-family: inherit;
+}
+.btn-primary { background: var(--accent-solid); color: var(--on-accent); }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-warn { background: var(--safe-accent); color: var(--safe-accent-ink); }
+.btn-ghost { background: var(--surface-3); color: var(--text); }
+.btn-ghost:hover { background: var(--surface-4); }
+
+.count { margin: 0 0 var(--gap); font-size: 0.875rem; color: var(--text-3); }
+.count b { color: var(--text); font-variant-numeric: tabular-nums; }
+
+.foot { font-size: 0.8rem; color: var(--text-5); text-align: center; margin-top: 20px; }
+.hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="band">
+    <div class="wrap"><span class="mark">!</span> 安全模式 · 救援模式，红外功能未加载</div>
+  </div>
+
+  <div class="wrap">
+    <h1>安全模式</h1>
+    <p class="lead">
+      设备现在只做三件事：联网、开放固件升级服务、等你操作。
+      <strong>红外转发、映射规则、MQTT / Home Assistant 一律没有加载。</strong>
+      常见原因是它连续几次启动失败，或上电时按钮被按住 —— 如果是误入，直接跳到下面第 ② 步重启即可。
+    </p>
+
+    <section class="card accent">
+      <div class="kv"><span>固件版本</span><b id="fw">—</b></div>
+      <div class="kv"><span>固件指纹</span><code id="md5">—</code></div>
+      <div class="kv"><span>文件系统</span><b id="fs">—</b></div>
+      <div class="kv"><span>联网方式</span><b id="net">—</b></div>
+      <div class="kv"><span>可上传固件大小</span><b id="space">—</b></div>
+    </section>
+
+    <section class="card">
+      <h2>① 重新刷一个固件（推荐）</h2>
+      <ol>
+        <li>电脑上执行：<code>pio run -t upload --upload-port &lt;设备IP&gt;</code></li>
+        <li>或者点下面的按钮，用浏览器上传电脑上的
+          <code>.pio/build/esp12e/firmware.bin</code>；
+          用户名 <code>admin</code>，口令是你配置 OTA 时设的那个（见项目 <code>secrets.ini</code>）。</li>
+      </ol>
+      <a class="btn btn-primary" href="/update">打开固件上传页</a>
+    </section>
+
+    <section class="card">
+      <h2>② 或者直接回去</h2>
+      <p class="lead" style="margin-bottom:8px">
+        设备功能没坏、只是想回到正常工作状态时，点这个按钮。
+      </p>
+      <p class="count">还有 <b id="left">—</b> 秒会自动重启回正常模式。</p>
+      <a class="btn btn-warn" href="/exit">立即重启回正常模式</a>
+    </section>
+
+    <p class="foot">
+      设备指示灯慢闪（约 1 秒一次）就表示它处在安全模式；
+      回到正常模式后指示灯会按联网状态变化。
+    </p>
+  </div>
+
+  <script>
+  (function () {
+    'use strict';
+    function el(id) { return document.getElementById(id); }
+
+    fetch('/safe-status').then(function (r) { return r.json(); }).then(function (res) {
+      var d = (res && res.data) || {};
+
+      el('fw').textContent = d.firmware || '—';
+      el('md5').textContent = d.sketchMD5 || '—';
+      el('fs').textContent = d.fsOk ? '已挂载（配置可读）' : '未挂载（配置可能已被清空）';
+      el('net').textContent = d.howToReach || '—';
+      var space = d.freeSketchSpace;
+      el('space').textContent = (space == null) ? '—' : (Math.round(space / 1024) + ' KB');
+
+      // 倒计时在本地自己走，不轮询设备 —— 救援模式下越少打扰越好
+      var left = d.rebootInSec;
+      if (typeof left === 'number' && left > 0) {
+        el('left').textContent = left;
+        var timer = setInterval(function () {
+          left -= 1;
+          if (left <= 0) {
+            clearInterval(timer);
+            el('left').textContent = '0';
+            return;
+          }
+          el('left').textContent = left;
+        }, 1000);
+      } else {
+        el('left').textContent = '—';
+      }
+    }).catch(function () {
+      // 取不到就保持 "—"，页面其余部分（两个按钮）照样能用
+    });
+  })();
+  </script>
+</body>
+</html>

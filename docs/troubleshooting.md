@@ -59,6 +59,46 @@ pio pkg install
 3. 检查路由器 DHCP 租期设置
 4. 尝试为设备分配静态 IP
 
+### ⭐ 设备"活着但连不上"（僵死态）—— v1.3.36 前只能拔电
+
+**症状**（跟上面两条都不同，先按这个表认一下）：
+
+| 检查项 | 僵死态的表现 |
+| --- | --- |
+| 串口 | `[heap]` 每 60 s 照常打一行，`AT+QUERY` 仍回 `WiFi mode: STA(connected)` |
+| `ping <设备IP>` | 「无法访问目标主机」 |
+| `arp -a` | 列表里**没有**这个 IP |
+| 浏览器 / `curl` | HTTP 000（连接不上，不是 4xx/5xx） |
+| ~~`espota` 刷机~~ | ~~`No Answer`~~ ⛔ **别用它判**（见下方注） |
+| 串口 `[wifi] 断开 reason=` | **一次都没打** —— 802.11 层自认为在线 |
+
+一句话：**主循环在跑 + 802.11 自认在线 + TCP/HTTP 全死 + 不重启 + 不自愈。**
+
+> ⛔ **别拿 `espota` 报 `No Answer` 当证据**（2026-10-04 实测更正）：
+> 健康设备对 OTA 邀请的**回应率就只有约 50%**，而且成功/失败**严格交替**
+> （连测 8 次是 `回应 → 无回应 → 回应 → 无回应 → 回应`）。
+> 所以单次 `No Answer` **说明不了任何事** —— 既不能证明僵死，也不能证明 OTA 挂了。
+> 想验 OTA 通道请用 `tools/ota_probe.py`（内部会重试最多 5 轮）；
+> **刷机时第一次 `No Answer`，直接重跑一次就好，千万别据此去拔电。**
+
+**v1.3.36 起会自己恢复**：每 30 s 向网关做一次 TCP 探测，连续 3 次耗时超过 112 ms
+（满超时 150 ms）⇒ 先写现场快照，再 `ESP.restart()`。最多连做 3 次，之后只保命不再重启。
+
+**取证**（自愈的价值就在这一步）：
+
+```bash
+curl http://<设备IP>/api/diag/freeze          # 取现场（probes[] 是最近 8 次探测的耗时）
+curl -X DELETE http://<设备IP>/api/diag/freeze # 取证完务必清掉，否则下次分不清新旧
+curl http://<设备IP>/api/status                # 看 netRestartCount / netRestartedByNetwork / hasFreezeSnapshot
+```
+
+**如果还没恢复**（3 次自愈用完 / 跑的是旧固件）：只能断电重启。
+⛔ **别用 `AT+RESTORE` 当重启** —— 它会拿备份配置**覆盖**主配置，坏了反而退回 AP 模式。
+
+**已知未解**：触发机理尚未找到，约 **1 次 / 300~500 次连点红外发送**，偶发。
+已排除的方向：不是堆不足（僵死时堆还有 6 KB）、不是某一路 API（同一组配置一次 7 秒死、
+一次 432 次安然）、不是并发本身。真出一次时请把 `/api/diag/freeze` 的原文留下来。
+
 ---
 
 ## MQTT 连接问题
@@ -87,7 +127,7 @@ pio pkg install
 **症状**：串口输出显示 Discovery 发布失败
 
 **解决方案**：
-1. 检查 MQTT 缓冲区大小（已设置为 8192 字节）
+1. 检查 MQTT 缓冲区大小（已设置为 1024 字节，`MQTT_BUFFER_SIZE`）
 2. 检查可用内存（Discovery 消息较大，需要足够内存）
 3. Web 服务器会自动启用，可通过 `http://设备IP` 访问进行排查
 4. 设备会自动重试发布
@@ -155,7 +195,7 @@ pio pkg install
 
 **解决方案**：
 1. 检查 JSON 格式是否正确（使用 JSON 验证工具）
-2. 检查 JSON 大小是否超过限制（MQTT 缓冲区 8192 字节）
+2. 检查 JSON 大小是否超过限制（MQTT 缓冲区 1024 字节，单条入站 payload 上限 `MQTT_MAX_INBOUND_PAYLOAD=768`）
 3. 检查可用内存是否足够
 4. 尝试减少 JSON 中的数据量（如批量更新时减少规则数量）
 
@@ -165,8 +205,23 @@ pio pkg install
 
 ### 查看串口输出
 ```bash
-pio device monitor
+C:/Users/cairy/.platformio/penv/Scripts/python.exe tools/serial_monitor.py COM4 60 --append --log tools/x.log
 ```
+
+只有 penv 的 python 装了 `pyserial`。⭐ **`--append` 必带** —— 默认打开方式是 `"w"`，
+重挂一次就把上一次的现场冲掉了（崩在重启前的栈只留在这份日志里，冲掉拿不回来）。
+
+### 判断"上次为什么重启"—— 串口上有两个数，OTA 之后它们会打架
+
+| 来源 | OTA 之后 | 真崩溃 |
+| --- | --- | --- |
+| bootloader 行 `rst cause:N, boot mode:(3,X)` | **`rst cause:2, boot mode:(3,7)`** | `rst cause:2, boot mode:(3,6)` |
+| 固件 `[健康] 上次重启原因` | **4 (software-restart)** ✅ | 2 (exception) |
+| 有没有 `Exception (N)` + 栈 | 没有 | **有** |
+
+⇒ **以固件的那一行为准**。bootloader 那行的判别符是 `boot mode`：
+`(3,7)` = OTA 后的 eboot 跳转（此时 `rst cause` 是噪音），`(3,6)` = 常规启动（两者一致）。
+远程没有串口时看 `/api/status` 的 `resetReason` / `resetReasonText`，同一个值。
 
 串口输出包含：
 - 设备启动信息

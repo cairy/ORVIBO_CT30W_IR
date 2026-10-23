@@ -41,6 +41,8 @@ private:
     unsigned long firstConnectedTime;  // MQTT首次连接时间
     int discoveryRetryCount;  // Discovery重试次数
     unsigned long lastStatePublishTime;  // 上次状态发布时间
+    unsigned long lastStateSyncCheckTime;  // 上次"状态同步检查"时间（定期回推，见 update()）
+    static const unsigned long STATE_SYNC_INTERVAL_MS = 5000;  // 每 5s 检查一次状态是否需回推
     
     // 状态缓存（使用固定大小数组，避免String的动态内存分配）
     char lastPublishedStatus[16];  // 上次发布的状态（"ready"/"learning"/"error"）
@@ -51,6 +53,10 @@ private:
     
     void processCommand(const String& payload);
     void publishDiscoveryConfig();
+    // 发布一条 Discovery 实体配置：头模板在 PROGMEM，payload 拼进栈缓冲 ⇒ **零堆分配**
+    // （原来的 DynamicJsonDocument + serializeJson 是本机"配了 MQTT 就发不出 Discovery"的根因）
+    bool publishDiscoveryEntity(const char* entityClass, const char* entityId,
+                                const char* configHead, const char* deviceJson);
     void handleQueryMaps();
     void handleUpdateMap(const String& json);  // 支持单个和批量更新
     void handleGetLogs();
@@ -61,6 +67,8 @@ private:
     void handleGetRecentSignals(const String& json);
     void handleSendSignal(const String& json);
     void handleSetForwardingEnabled(const String& json);
+    void handleGetForwardRecords();  // 转发记录（最近 8 条结论）
+    void handleForwardTest(const String& json);  // 试跑一条 A 信号
     void handleGetStatus();  // 获取设备状态
     void handleSmartIRSignal(const String& payload);  // 处理 SmartIR 发送的信号（Base64/数组/协议格式）
     

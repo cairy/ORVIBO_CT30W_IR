@@ -1,0 +1,150 @@
+/* ============================================================================
+   主题变量 —— 全项目唯一的配色来源
+   ============================================================================
+   设备上有三个页面：常驻面板（index.html）、配网页（setup.html）、
+   安全模式页（safe.html）。它们必须"看起来是同一个设备的界面"，
+   所以配色只在这里定义一份，三个页面各自 @import 它。
+
+   tools/gen_web_assets.py 在构建时把 @import 展开成上面的实际内容，
+   页面因此仍是"一次请求拿全"（救援页面绝不能依赖第二个请求成功）。
+
+   浅色值 = 改造前 app.css 里的硬编码颜色 ⇒ **浅色观感一个像素都不会变**。
+   深色只覆盖 @media 里那一份，不动排版。
+   ============================================================================ */
+
+:root {
+  /* 让浏览器自带的控件（下拉列表展开后的选项、滚动条、自动填充）也跟着明暗走；
+     不写这句，深色模式下 `<select>` 的展开面板仍是白底黑字。 */
+  color-scheme: light dark;
+
+  --touch-min: 44px;
+  --tab-height: 48px;
+  --safe-bottom: env(safe-area-inset-bottom, 0);
+  --radius: 8px;
+  --gap: 12px;
+
+  /* ── 浅色主题（默认值）───────────────────────────────────────────── */
+  --bg: #f5f5f5;                  /* 页面底色 */
+  --surface: #fff;                /* 卡片 / 列表项 / 弹窗 */
+  --surface-2: #f0f0f0;           /* 行内代码块底 */
+  --surface-3: #e8e8e8;           /* 次要按钮底 */
+  --surface-4: #ddd;              /* 次要按钮 hover */
+
+  --text: #333;                   /* 主文字 */
+  --text-2: #555;                 /* 表单标签 */
+  --text-3: #666;                 /* 次要说明 */
+  --text-4: #777;                 /* 明细表键名 */
+  --text-5: #888;                 /* 更次要 */
+  --text-6: #999;                 /* 最次要 / 空态 */
+
+  --border: #ddd;                 /* 输入框边框 */
+  --border-2: #e0e0e0;            /* tab 栏 / 设备按钮边框 */
+  --border-soft: #f0f0f0;         /* 明细表分隔线 */
+
+  --input-bg: #fff;               /* 输入框底：浅色下 = 浏览器默认白（观感不变） */
+  --placeholder: #999;            /* 输入框占位提示 */
+
+  --accent: #0a7ea4;              /* 主色（文字、边框、聚焦态） */
+  --accent-solid: #0a7ea4;        /* 主色按钮底色 */
+  --accent-hover: #096688;
+  --on-accent: #fff;              /* 主色/危险按钮上的文字 */
+
+  --danger: #c62828;
+  --danger-solid: #c62828;
+  --danger-hover: #b71c1c;
+  --success: #2e7d32;
+  --warn: #b26a00;
+  --warn-deep: #b35300;
+  --warn-strong: #e6a700;
+  --neutral-ink: #455a64;
+
+  /* 浅色提示底（tint）：状态横幅、转发结论、"未匹配"标黄等 */
+  --tint-neutral: #eceff1;
+  --tint-success: #e8f5e9;
+  --tint-success-strong: #c8e6c9;
+  --tint-warn: #fff8e1;
+  --tint-warn-deep: #fff3e0;
+  --tint-warn-soft: #fffdf3;
+  --tint-danger: #ffebee;
+  --tint-info: #e3f2fd;
+  --tint-info-2: #e3f2f8;
+
+  --shadow: rgba(0,0,0,0.06);
+  --overlay: rgba(0,0,0,0.4);
+  --toast-bg: rgba(0,0,0,0.75);
+
+  /* ── 安全模式专用：警示色，正常状态下永远不出现 ──────────────────────
+     安全模式页整页用琥珀色，为的是和"常驻面板"一眼区分开 ——
+     用户第一次看到它时必须立刻明白"设备现在不是正常工作状态"。
+     --safe-accent-ink 是压在琥珀底上的文字色：浅色下用白（琥珀够深），
+     深色下琥珀提亮成 #f0c04a，就必须换深字，否则白字打在上面几乎读不出来。 */
+  --safe-accent: #b26a00;
+  --safe-accent-ink: #fff;
+  --safe-band-bg: #b26a00;
+  --safe-band-ink: #fff;
+  --safe-card-border: #e6a700;
+}
+
+/* ── 深色主题：跟随手机 / 浏览器的系统设置自动切换 ──────────────────────
+   只换配色，不换排版。
+   主色按钮（--accent-solid）在深色下保持深蓝 + 白字，保证按钮文字可读；
+   而用作文字和边框的 --accent 换成更亮的青蓝，避免在深色底上发灰。       */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c;
+    --surface: #1d2128;
+    --surface-2: #272c34;
+    --surface-3: #333941;
+    --surface-4: #454c56;
+
+    --text: #e6e9ee;
+    --text-2: #c3c9d2;
+    --text-3: #a9b0ba;
+    --text-4: #959ca6;
+    --text-5: #8a919b;
+    --text-6: #7f8691;
+
+    --border: #3a414b;
+    --border-2: #343b44;
+    --border-soft: #282e36;
+
+    /* 输入框：比卡片（--surface）略亮一点，读起来才像个"可以填的坑"；
+       不再是浏览器默认的纯白 —— 纯白在深色页上是最扎眼的一块。 */
+    --input-bg: #252b33;
+    --placeholder: #7f8691;
+
+    --accent: #5cc9e0;
+    --accent-solid: #0a7ea4;
+    --accent-hover: #1289b0;
+    --on-accent: #fff;
+
+    --danger: #ff6f6b;
+    --danger-solid: #c62828;
+    --danger-hover: #d9433a;
+    --success: #7cc47f;
+    --warn: #e8a33a;
+    --warn-deep: #f0a54a;
+    --warn-strong: #f0c04a;
+    --neutral-ink: #b0bec5;
+
+    --tint-neutral: #262b31;
+    --tint-success: #1f3324;
+    --tint-success-strong: #2c4a30;
+    --tint-warn: #3a3320;
+    --tint-warn-deep: #43341f;
+    --tint-warn-soft: #2f2a1c;    /* 与改造前深色补丁里的 #2e2a1c 基本一致 */
+    --tint-danger: #3a2427;
+    --tint-info: #1e2f3a;
+    --tint-info-2: #12333d;       /* 同上，沿用原 #12333d */
+
+    --shadow: rgba(0,0,0,0.4);
+    --overlay: rgba(0,0,0,0.6);
+    --toast-bg: rgba(20,23,28,0.92);
+
+    --safe-accent: #f0c04a;
+    --safe-accent-ink: #241a00;   /* 提亮后的琥珀配深字，才读得清 */
+    --safe-band-bg: #8a5200;
+    --safe-band-ink: #ffedc2;
+    --safe-card-border: #8a6a1e;
+  }
+}

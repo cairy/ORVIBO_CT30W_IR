@@ -5,7 +5,14 @@ String UnifiedAPI::createSuccessResponse(JsonVariant data, const String& status,
     size_t estimatedSize = 256;  // 基础开销：success, status, timestamp等字段
     
     if (data.is<JsonObject>()) {
-        estimatedSize += 512;
+        // ⚠️ v1.3.52：原来写死 `+= 512` 是**错的**。对一个 30 字段的 status 对象，
+        //   光键名 + 槽位就 >1.5 KB ⇒ **100% 溢出** ⇒ 走下面 largerDoc(1536) 把全部字段
+        //   连字符串再深拷一遍，然后 `doc = largerDoc` 又是**拷贝赋值**
+        //   （BasicJsonDocument::copyAssignFrom → reallocPool，**再申请一份等大池**）
+        //   ⇒ 每个调用者都凭空多扛 ~3 KB 峰值，而设备空闲堆只有 ~5.6 KB。
+        //   改成**按内容算**：序列化长度 + 键名/槽位开销。估小了也不会错 ——
+        //   下面本来就有"溢出 ⇒ 开更大 doc 重试"的兜底。
+        estimatedSize += measureJson(data) + 512;
     } else if (data.is<JsonArray>()) {
         // 按元素数量估算，避免完整序列化以获取长度（减少临时内存与碎片）
         JsonArray arr = data.as<JsonArray>();

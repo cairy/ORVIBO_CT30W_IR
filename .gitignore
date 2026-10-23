@@ -6,3 +6,43 @@
 .DS_Store
 test/
 .vscode/extensions.json
+
+# 由 tools/gen_web_assets.py 在构建时从 web/ 生成，不入库
+src/network/web_assets.h
+
+# 本机私有凭据（OTA 口令等）：platformio.ini 用 extra_configs 引它，
+# 模板见 secrets.example.ini。**这个文件名不能改**，否则platformio.ini 找不到。
+secrets.ini
+
+# 固件 / flash 镜像：整片备份里含 WiFi 明文口令与设备凭据，绝不入库。
+# .elf 同理 —— 它就是 bin 的前身，链接时把 secrets.ini 里的凭据连同符号表一起装了进去
+# （tools/decode_crash.py 要用它反解地址，所以留在本机 firmware-archive/ 里即可）。
+*.bin
+*.elf
+
+# 串口采集日志（临时取证产物，可随时重抓）
+tools/*.log
+
+# 长稳监控的运行产物（CSV 采样曲线 + 事件日志，本机留档，不入库）
+tools/longrun*
+
+# 各类探针的运行产物（CSV 采样，文件名里带设备 IP，可随时重跑）
+tools/*.csv
+
+# 页面快照（headless Edge 截图，本机目测用，不入库）
+tools/preview/
+__pycache__/
+
+# 转发排障的临时产物：设备记录快照与探针输出（curl 重定向落盘，可随时重抓）
+tools/rec_*.json
+tools/sig_*.json
+tools/gate_*.txt
+# 崩溃现场 JSON（设备吐出来的取证产物，可随时重取）
+tools/crash_*.json
+
+# 我（AI）在排障时写的临时便签：预编译指纹、提交信息草稿、设备配置快照等
+# （下划线开头，随时可删 —— 下划线前缀是本仓库里"临时产物"的统一约定）
+tools/_*
+
+# AI 工作区：记忆里含 OTA 口令、设备 IP/MAC 等，只留本地
+.workbuddy/

@@ -31,10 +31,13 @@ public:
     
     // 使用IRremoteESP8266库解码（推荐方法）
     bool decodeWithLibrary(UnifiedSignal& signal);
-    
+
     // 禁用/启用库的接收（用于学习模式）
     void disableLibraryReceiver();
     void enableLibraryReceiver();
+
+    // 丢弃当前采样、复位到"等下一个信号"（发射静默期里用来丢掉自发的余光）
+    void resumeReceiver();
     
     // 使用自定义时序解析（用于学习模式）
     // 如果解析成功，设置protocol+data，useTiming=false
@@ -46,10 +49,15 @@ public:
 
 private:
     IRrecv* irrecv;  // IRremoteESP8266库的接收器对象
-    
+
     // 将库的解码结果转换为UnifiedSignal
     bool convertDecodeResult(decode_results& results, UnifiedSignal& signal);
-    
+
+    // 库认不出协议时的兜底：把 results 里的原始时序落成 useTiming=true 的信号（v1.3.24）
+    // decode() 返回 false 时 results.rawbuf / rawlen 仍然有效（IRrecv.cpp 在协议试错
+    // **之前**就填好了它们），所以不需要碰 IRrecv 的私有全局。
+    bool buildTimingFallback(const decode_results& results, UnifiedSignal& signal);
+
     // 自定义解析方法（保留用于学习模式）
     bool parseNEC(const IRTiming* timing, int count, UnifiedSignal& signal);
     bool parseRC5(const IRTiming* timing, int count, UnifiedSignal& signal);

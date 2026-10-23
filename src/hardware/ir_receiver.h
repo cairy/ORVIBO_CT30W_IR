@@ -15,7 +15,9 @@ struct IRTiming {
 class IRReceiver {
 public:
     IRReceiver();
-    bool init();
+    bool init();          // 只配引脚，不挂中断（工作模式下 GPIO5 归 IRrecv）
+    void attach();        // 学习模式：把 GPIO5 的中断切给本接收器
+    void detach();        // 学习结束：交还（随后由 IRParser::enableLibraryReceiver 接管）
     void update();
     bool getSignal(IRTiming* buffer, int& count, int maxCount);
     void clearBuffer();

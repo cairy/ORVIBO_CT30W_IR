@@ -74,7 +74,7 @@ pio device monitor
 ### 3. 首次配置
 设备无配置时自动进入 AP 模式：
 - SSID：`ORVIBO-CT30W`
-- 密码：`12345678`
+- 密码：编译时从 `secrets.ini` 的 `ap_password` 注入（没有默认值，见 [secrets.example.ini](secrets.example.ini)）
 - 配网页面：http://192.168.4.1
 
 在配网页面填写家庭 Wi-Fi 和 MQTT 服务器信息。
@@ -120,6 +120,8 @@ pio device monitor
 - [信号格式说明](docs/signal-format.md) - UnifiedSignal 和 SignalSequence 格式
 - [开发指南](docs/development.md) - 编译、架构、贡献指南
 - [故障排查](docs/troubleshooting.md) - 常见问题和解决方案
+- [刷机与 OTA](docs/flashing-and-ota.md) - 三种写固件方式、串口 AT、常见坑
+- [压测与长稳测试](docs/stress-testing.md) - 判据与阈值、工具用法、什么时候要抓串口
 
 ### 架构文档
 - [红外转发逻辑](docs/architecture/ir-forwarding.md)
@@ -136,8 +138,8 @@ pio device monitor
 | 项目 | 说明 |
 |------|------|
 | 芯片 | ESP8266 ESP-12E |
-| 内存 | 80KB RAM（可用约 40KB） |
-| Flash | 4MB |
+| 内存 | 80KB RAM（启动期可用堆约 21KB，稳态空闲约 12KB） |
+| Flash | 2MB（Puya P25Q16，链接脚本 `eagle.flash.2m256.ld`） |
 | Wi-Fi | 2.4GHz 802.11 b/g/n |
 | 红外接收 | GPIO5 |
 | 红外发射 | GPIO14 |
@@ -153,7 +155,7 @@ pio device monitor
 ## 性能指标
 
 - **转发延迟**：≤100ms（A 信号接收到 B 信号发射）
-- **转发前延时**：50ms（AB 信号隔离，避免干扰）
+- **转发前延时**：20ms（AB 信号隔离，避免干扰）
 - **协议解析准确率**：>99%（使用 IRremoteESP8266 库）
 - **时序精度**：微秒级
 - **内存使用**：≤90%（运行时自动清理）

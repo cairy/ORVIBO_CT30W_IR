@@ -3,15 +3,26 @@
 ## 硬件准备
 
 ### 所需材料
-- ORVIBO CT30W 设备（基于 ESP8266 ESP-12E 模组）
-- USB 转串口适配器（首次烧录用）
+- ORVIBO CT30W 设备（基于 ESP8266 **OW8266-02Q** 模组，2MB flash）
+- **USB 转 TTL 模块**（CH340 / CH341 均可，须支持 3.3V）—— 首次烧录用；**首次需自行把 2.0mm 排针焊到主板编程测试点（出厂未焊接）**
 - 红外接收头：GPIO5
 - 红外发射管：GPIO14
 - 状态 LED：GPIO15
 - 按钮（出厂重置）：GPIO4
 
-### 接线说明
-设备出厂已焊接好引脚，通常无需额外接线。若自行搭建，参考 `src/config/pins.h` 中的引脚定义。
+### 接线说明（烧录用）
+主板预留一排 **2.0mm 间距编程测试点**（丝印 `3V3 / GND / RST / GPIO0 / RX / TX`，出厂没焊排针）。烧录接线：
+
+| CT30W 测试点 | USB-TTL | 说明 |
+|---|---|---|
+| `3V3` | `VCC`(3.3V) | 由 USB-TTL 给板子供电，跳线拨 3.3V，勿接 5V |
+| `GND` | `GND` | 共地 |
+| `RX` | `TX` | 交叉 |
+| `TX` | `RX` | 交叉 |
+| `GPIO0` | `GND` | 拉低进下载模式，刷完拔掉 |
+| `RST` | 不接 | 复位时瞬时短接到 GND |
+
+**进入下载模式**：`GPIO0` 接地后，把 USB-TTL 插电脑即上电进入。完整接线图、示意与排障见 [刷机与 OTA 全流程](flashing-and-ota.md)。应用层引脚定义见 `src/config/pins.h`。
 
 ---
 
@@ -30,21 +41,30 @@ pio run
 ```
 
 ### 烧录固件
-```bash
-# 命令行
-pio run --target upload
 
-# VS Code：点击底部状态栏 "→" 图标，或 Ctrl+Alt+U
-```
-
-> **提示**：若烧录失败，按住设备 BOOT 按钮，再按一次 RESET，松开 BOOT 后重试。
-
-### 串口监控
-```bash
-pio device monitor   # 波特率 115200
-```
+> ⚠️ 本设备是手动拉低 GPIO0 进下载模式的 CH340 板子，**没有可靠自动复位电路**，`pio run --target upload`（走 esptool 默认复位）在这块板子上连不上。
+> **正确做法见 [刷机与 OTA 全流程](flashing-and-ota.md)**，那里有接线图、整片备份、串口刷写与无线 OTA 的完整步骤。要点：
+> 1. GPIO0 接地 + 复位进下载模式（保持 GPIO0 拉低）；
+> 2. 用 `tools/flash_write.py`（已封装好"连接→擦除→写→校验"同进程）；
+> 3. 刷完断开 GPIO0、复位，新固件才运行。
+>
+> 设备已在网且固件带 OTA 时，日常升级走无线 ArduinoOTA 即可，免接线。
+> **注意本机有个坑**：`pio run -t upload` 用的是 PIO 自带的 python，它不在 Windows 防火墙的
+> 入站放行名单里，会被挡（表现：PC 停在 `No response from device`）。请按
+> `flashing-and-ota.md` §6 B1 的命令，用**系统 Python** 直接跑 `espota.py`。
+> 另：浏览器 `/update` 通道在本机固件上会刷崩，别用。
 
 固件位置：`.pio/build/esp12e/firmware.bin`
+
+### 串口监控
+
+日常看日志用 `pio device monitor`（115200）。**排障抓开机日志**时本机 CH340 有个坑：用默认电平打开串口会把设备按住复位导致全空白，请用：
+
+```bash
+C:\Users\cairy\.platformio\penv\Scripts\python.exe tools/serial_monitor.py COM4 150 tools/serial_capture.log
+```
+
+（详见 [刷机与 OTA 全流程 · §7/§9](flashing-and-ota.md)）
 
 ---
 
@@ -54,7 +74,7 @@ pio device monitor   # 波特率 115200
 
 设备无配置时自动进入 **AP 模式**（LED 慢闪）：
 - SSID：`ORVIBO-CT30W`
-- 密码：`12345678`
+- 密码：编译时从 `secrets.ini` 的 `ap_password` 注入（没有默认值，见 `secrets.example.ini`）
 - 配网页面：[http://192.168.4.1](http://192.168.4.1)
 
 在配网页面填写家庭 Wi-Fi 的 SSID、密码，以及 MQTT 服务器地址（如有）。
@@ -64,6 +84,10 @@ pio device monitor   # 波特率 115200
 AT+WIFI=你的SSID,你的密码
 AT+MQTT=服务器地址,端口,用户名,密码
 ```
+
+> **AT 指令已知坑**：`at_handler.cpp` 会把整条命令先 `toUpperCase()` 再解析，导致大小写敏感的 **SSID / 密码被强制大写存错**。若走串口配网，请暂时只用全大写或数字密码；或改 Web 配网页（已修于 1.1.2，见下）。
+>
+> **Web 配网页坑（已修于固件 1.1.2）**：1.1.1 及更早版本，提交按钮在 `onclick` 里把自己 `disabled`，多数手机浏览器会**吞掉表单提交**——点下去显示"保存中…"但请求没发出去、设备 LED 不闪、不重启。现象就是"配网无效"。升级到 **1.1.2+** 后正常：提交后 LED 快闪 3 下、浏览器显示"配置已保存"并 3 秒后重启。
 
 ### 步骤 2：确认设备上线
 

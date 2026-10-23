@@ -41,12 +41,16 @@ struct UnifiedSignal {
     // 清理函数
     void clear() {
         if (useTiming) {
-            timingBase64 = "";
             timingCount = 0;
         } else {
             protocol = 0;
             data = 0;
         }
+        // ⚠️ timingBase64 必须无条件清空：它是一整段堆分配的 Base64
+        // （200 个时序点 ≈ 534 字符）。以前只在 useTiming==true 分支清，
+        // 于是"对象从时序码复用为协议信号"时会拖着几百字节旧 Base64 常驻 ——
+        // 而这正是内存见底时最该回收的那块（见 Logger::clearRecentSequences）。
+        timingBase64 = "";
         useTiming = false;
         freeTiming();
         repeatCount = 1;

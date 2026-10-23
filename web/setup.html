@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>网络配置 · 红外转发器</title>
+  <meta name="theme-color" content="#f5f5f5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#14171c" media="(prefers-color-scheme: dark)">
+  <style>
+@import url("theme.css");
+
+/* 配网页：手机竖屏为主，一切以"手指点得中、一眼看得懂"为准。
+   布局类只在本页用，配色全部来自 theme.css（与设备面板同一套变量）。 */
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-text-size-adjust: 100%;
+}
+
+.wrap {
+  max-width: 600px;
+  margin: 0 auto;
+  padding: var(--gap);
+  padding-bottom: calc(var(--gap) + var(--safe-bottom) + 24px);
+}
+
+h1 { font-size: 1.25rem; margin: 0 0 4px; }
+h2 { font-size: 1rem; margin: 0 0 var(--gap); }
+.sub { margin: 0 0 var(--gap); font-size: 0.875rem; color: var(--text-3); }
+
+.card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: var(--gap);
+  margin-bottom: var(--gap);
+  box-shadow: 0 1px 2px var(--shadow);
+}
+
+/* 当前状态一览：改之前先看清"现在是什么样" */
+.kv {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--gap);
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 0.875rem;
+}
+.kv:last-child { border-bottom: none; }
+.kv span { color: var(--text-4); flex-shrink: 0; }
+.kv b { text-align: right; word-break: break-all; font-weight: 500; }
+
+label {
+  display: block;
+  margin-bottom: var(--gap);
+  font-size: 0.875rem;
+  color: var(--text-2);
+}
+label:last-child { margin-bottom: 0; }
+
+input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 12px;
+  min-height: var(--touch-min);
+  font-size: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--text);
+  -webkit-appearance: none;
+  appearance: none;
+}
+input::placeholder { color: var(--placeholder); opacity: 1; }
+input:focus { outline: none; border-color: var(--accent); }
+/* 键盘焦点：与设备面板同一处理（见 app.css 的说明）。
+   :focus-visible 只在键盘/辅助设备触发时匹配，触摸点击不匹配；
+   老浏览器不认这个伪类 ⇒ 规则被丢 ⇒ 回落成上面的"只换边框色"。 */
+input:focus-visible,
+.btn:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* SSID 那一行：标签与输入框不套在同一个 <label> 里（按钮夹在中间，语义会歧义） */
+.field { margin-bottom: var(--gap); }
+.field .lbl {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.875rem;
+  color: var(--text-2);
+}
+
+/* SSID 一行里塞输入框 + 搜索按钮 */
+.input-row { display: flex; gap: 8px; }
+.input-row input { margin-top: 0; }
+
+.btn {
+  min-height: var(--touch-min);
+  padding: 10px 16px;
+  font-size: 0.9375rem;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  font-family: inherit;
+}
+.btn-primary { background: var(--accent-solid); color: var(--on-accent); }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-ghost {
+  background: var(--surface-3);
+  color: var(--text);
+  flex-shrink: 0;
+  padding: 10px 14px;
+}
+.btn-ghost:hover { background: var(--surface-4); }
+.btn:disabled { opacity: 0.6; }
+
+/* 勾选框：别被上面"输入框占满一行"的规则带跑 */
+label.chk {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  color: var(--text-2);
+}
+label.chk input {
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  flex-shrink: 0;
+  accent-color: var(--accent-solid);
+}
+
+.tip {
+  margin: var(--gap) 0 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+.tip strong { color: var(--text); }
+
+/* 搜到的 WiFi 列表 */
+.scan { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.scan-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: var(--touch-min);
+  padding: 8px 12px;
+  font-size: 0.875rem;
+  text-align: left;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.scan-item:hover { background: var(--surface-3); }
+.scan-item .nm { word-break: break-all; }
+.scan-item .sig { color: var(--text-5); font-size: 0.75rem; flex-shrink: 0; }
+.scan-item.on { border-color: var(--accent); color: var(--accent); }
+
+/* MQTT 默认折叠：多数人只用 WiFi，展开是主动行为 */
+details.card summary {
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 600;
+  list-style: none;
+}
+details.card summary::-webkit-details-marker { display: none; }
+details.card summary::after { content: " 展开 ▾"; font-size: 0.8rem; font-weight: 400; color: var(--text-5); }
+details.card[open] summary::after { content: " 收起 ▴"; }
+details.card[open] summary { margin-bottom: var(--gap); }
+
+.actions { display: flex; flex-direction: column; gap: 8px; margin-bottom: var(--gap); }
+.actions .btn { width: 100%; }
+
+/* 页面内的提示条（JS 读状态失败 / 扫描失败 / 操作回执） */
+.msg {
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: var(--gap);
+  font-size: 0.875rem;
+  background: var(--tint-info);
+  color: var(--neutral-ink);
+}
+.msg.err { background: var(--tint-danger); color: var(--danger); }
+.msg.ok { background: var(--tint-success); color: var(--success); }
+
+.foot { font-size: 0.8rem; color: var(--text-5); text-align: center; margin-top: 20px; }
+.foot a { color: var(--accent); }
+.hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>网络配置</h1>
+    <p class="sub" id="where">正在读取设备状态…</p>
+
+    <div id="msg" class="msg hidden"></div>
+
+    <section class="card">
+      <div class="kv"><span>WiFi</span><b id="st-wifi">—</b></div>
+      <div class="kv"><span>设备地址</span><b id="st-ip">—</b></div>
+      <div class="kv"><span>MQTT</span><b id="st-mqtt">—</b></div>
+      <div class="kv"><span>固件</span><b id="st-fw">—</b></div>
+    </section>
+
+    <!-- 表单用原生 action 提交：即使页面脚本没跑起来（老浏览器 / 脚本被拦），
+         也能完成配网 —— 脚本只做增强，不做前提。 -->
+    <form id="form" action="/save" method="POST">
+      <section class="card">
+        <h2>WiFi</h2>
+
+        <!-- SSID 那一行不用 <label> 包住按钮：按钮落在 label 里，点它有可能被浏览器
+             当成"激活这个输入框"，行为在各家浏览器上不一致。 -->
+        <div class="field">
+          <span class="lbl">WiFi 名称</span>
+          <div class="input-row">
+            <input type="text" name="ssid" id="ssid" placeholder="选择或手输 WiFi 名称"
+                   autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" required>
+            <button type="button" class="btn btn-ghost" id="btn-scan">搜索</button>
+          </div>
+        </div>
+        <div id="scan-box" class="scan hidden"></div>
+
+        <div class="field">
+          <label class="lbl" for="password">WiFi 密码</label>
+          <div class="input-row">
+            <input type="password" name="password" id="password" placeholder="留空 = 不修改已保存的密码"
+                   autocomplete="new-password">
+            <button type="button" class="btn btn-ghost pw-toggle" data-target="password"
+                    aria-pressed="false" aria-label="显示密码">显示</button>
+          </div>
+        </div>
+        <p class="tip" id="pw-tip">留空 = 保持原密码不变。</p>
+      </section>
+
+      <details class="card" id="mqtt-card">
+        <summary>MQTT / Home Assistant（可选）</summary>
+        <label>服务器地址
+          <input type="text" name="mqtt_server" id="mqtt_server" placeholder="留空 = 不改动现有 MQTT"
+                 autocomplete="off" autocapitalize="off" spellcheck="false">
+        </label>
+        <label>端口
+          <input type="number" name="mqtt_port" id="mqtt_port" placeholder="留空 = 沿用已保存的端口"
+                 min="1" max="65535">
+        </label>
+        <label>用户名
+          <input type="text" name="mqtt_username" id="mqtt_username" autocomplete="off"
+                 autocapitalize="off" spellcheck="false" placeholder="留空 = 不改动">
+        </label>
+        <div class="field">
+          <label class="lbl" for="mqtt_password">密码</label>
+          <div class="input-row">
+            <input type="password" name="mqtt_password" id="mqtt_password"
+                   placeholder="留空 = 不改动" autocomplete="new-password">
+            <button type="button" class="btn btn-ghost pw-toggle" data-target="mqtt_password"
+                    aria-pressed="false" aria-label="显示密码">显示</button>
+          </div>
+        </div>
+        <label class="chk">
+          <input type="checkbox" name="mqtt_clear" id="mqtt_clear" value="1">
+          <span>关闭 MQTT（不再连接任何服务器）</span>
+        </label>
+        <p class="tip">这个分区里 <strong>留空一律表示"不改动"</strong>，所以够用就别动它。</p>
+      </details>
+
+      <div class="actions">
+        <button type="submit" class="btn btn-primary" id="btn-save">保存并重启设备</button>
+        <button type="button" class="btn btn-ghost" id="btn-restore">回退到上次能联网的配置</button>
+      </div>
+    </form>
+
+    <p class="tip" style="margin-top:0">
+      <strong>留空 = 保持原样</strong>：这个页面上任何密码、用户名、端口留空都不会被清掉，
+      只有 WiFi 名称是必填的。保存时 WiFi 与 MQTT 会一起写入，设备随即重启 ——
+      手机上要把 Wi-Fi 切回目标网络（连设备热点时配的，保存后热点就没了），再回到设备地址看面板。
+    </p>
+
+    <p class="foot"><a href="/">返回设备面板</a> · 配置错了可以在串口下发 <code>AT+RESTORE</code> 兜底</p>
+  </div>
+
+  <script>
+  (function () {
+    'use strict';
+
+    // 本页只由设备本身提供（浏览器访问 <设备IP>/setup），所以直接用当前地址调 API，
+    // 不需要像面板那样允许手填 IP。
+    var API = location.origin + '/api';
+    var known = { ssid: '', mqttServer: '' };
+
+    function el(id) { return document.getElementById(id); }
+    function setText(id, v) { el(id).textContent = v; }
+
+    function showMsg(text, cls) {
+      var box = el('msg');
+      box.textContent = text;
+      box.className = 'msg' + (cls ? ' ' + cls : '');
+    }
+    function hideMsg() { el('msg').className = 'msg hidden'; }
+
+    function api(path, opt) {
+      return fetch(API + path, opt).then(function (res) {
+        return res.json().then(function (json) {
+          if (!res.ok || json.success === false) {
+            throw new Error((json && json.error) || ('HTTP ' + res.status));
+          }
+          return json;
+        });
+      });
+    }
+
+    // ---------- 当前状态（改之前先让用户看清现在是什么样）----------
+    function loadStatus() {
+      api('/status').then(function (res) {
+        var d = res.data || {};
+        known.ssid = d.wifiSSID || '';
+        known.mqttServer = d.mqttServer || '';
+        known.wifiPasswordSet = !!d.wifiPasswordSet;
+        known.mqttPasswordSet = !!d.mqttPasswordSet;
+
+        if (d.status === 'ap') {
+          setText('where', '设备还没连上 WiFi，正等着你在这里填。');
+        } else if (d.wifiConnected) {
+          setText('where', '设备已连上「' + (d.wifiSSID || 'WiFi') + '」。改动保存后会重启生效。');
+        } else {
+          setText('where', '设备未连接 WiFi，请确认下面的名称与密码。');
+        }
+
+        setText('st-wifi', d.wifiConnected
+          ? (d.wifiSSID || '已连接')
+          : (d.wifiConfigured ? '未连接' : '未配置'));
+        setText('st-ip', d.localIP || '—');
+        setText('st-mqtt', d.mqttConnected
+          ? ('已连接 · ' + (d.mqttServer || ''))
+          : (d.mqttConfigured ? ('未连接 · ' + (d.mqttServer || '')) : '未配置'));
+        setText('st-fw', d.firmware || '—');
+
+        var form = el('form');
+        form.ssid.value = known.ssid;
+        if (d.mqttConfigured) {
+          form.mqtt_server.value = known.mqttServer;
+          form.mqtt_port.value = d.mqttPort || 1883;
+          form.mqtt_username.value = d.mqttUsername || '';
+          el('mqtt-card').open = true;
+        }
+
+        el('pw-tip').innerHTML = known.wifiPasswordSet
+          ? '设备里已经存着密码。这次<strong>只想改 MQTT</strong>？把密码留空就行，不会被清掉。'
+          : '设备里还没有存密码。首次配网请填写密码；若是开放网络，留空即可。';
+      }).catch(function () {
+        setText('where', '读不到设备状态（不影响填写，但建议先确认地址是否正确）。');
+      });
+    }
+
+    // ---------- 搜索周边 WiFi ----------
+    // 设备在 AP 模式下扫描时会临时切到"热点 + 站点"双模，热点可能瞬断几秒 ——
+    // 页面已先说明；失败重按一次即可。
+    //
+    // 固件侧是两段式：/wifi/scan 只负责"起扫"并立刻返回（异步扫描，主循环不再
+    // 停摆 2~4 秒），结果要轮询 /wifi/scan/result 取。所以这里必须自己轮询，
+    // 不能像以前那样一次请求就期望拿到列表。
+    var SCAN_POLL_MS = 500;
+    var SCAN_POLL_MAX = 44;   // 500ms × 44 ≈ 22s，比固件侧的 20s 兜底略长
+
+    function renderScanList(box, list) {
+      box.textContent = '';
+      if (!list.length) {
+        box.textContent = '没搜到 WiFi，请靠近路由器再试，或直接手输名称。';
+        return;
+      }
+      list.forEach(function (ap) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'scan-item';
+        var nm = document.createElement('span');
+        nm.className = 'nm';
+        nm.textContent = ap.ssid + (ap.encrypted ? ' 🔒' : '');
+        var sig = document.createElement('span');
+        sig.className = 'sig';
+        sig.textContent = ap.rssi + ' dBm';
+        b.appendChild(nm);
+        b.appendChild(sig);
+        b.addEventListener('click', function () {
+          el('ssid').value = ap.ssid;
+          box.querySelectorAll('.scan-item').forEach(function (x) { x.classList.remove('on'); });
+          b.classList.add('on');
+          el('password').focus();
+        });
+        box.appendChild(b);
+      });
+    }
+
+    function pollScan(box, tries) {
+      // 每次轮询都重新发一次请求：设备可能正在扫描，也可能刚扫完
+      return api('/wifi/scan/result').then(function (res) {
+        var d = (res.data) || {};
+        if (d.status === 'scanning') {
+          if (tries <= 0) throw new Error('扫描超时');
+          return new Promise(function (resolve) { setTimeout(resolve, SCAN_POLL_MS); })
+            .then(function () { return pollScan(box, tries - 1); });
+        }
+        if (d.status !== 'done') throw new Error('扫描没有启动成功');
+        renderScanList(box, d.networks || []);
+      });
+    }
+
+    function scan() {
+      var btn = el('btn-scan');
+      var box = el('scan-box');
+      btn.disabled = true;
+      btn.textContent = '搜索中';
+      box.className = 'scan';
+      box.textContent = '正在扫描周边 WiFi…';
+      api('/wifi/scan').then(function () {
+        return pollScan(box, SCAN_POLL_MAX);
+      }).catch(function (err) {
+        box.textContent = '搜索失败：' + err.message + '（热点可能刚断了一下，重连后重试）';
+      }).then(function () {
+        btn.disabled = false;
+        btn.textContent = '搜索';
+      });
+    }
+
+    // ---------- 密码框的"显示 / 隐藏" ----------
+    // 手机小屏上把 WPA 密码敲错一次的代价很实在：设备连不上就退回热点，
+    // 人得跑一趟重连。允许自己看一眼敲了什么，比事后靠猜划算得多。
+    // 只是把 input 的 type 在 password/text 之间切换，字段名和提交内容都不变。
+    document.querySelectorAll('.pw-toggle').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var input = el(btn.dataset.target);
+        var show = input.type === 'password';
+        input.type = show ? 'text' : 'password';
+        btn.textContent = show ? '隐藏' : '显示';
+        btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+        btn.setAttribute('aria-label', show ? '隐藏密码' : '显示密码');
+      });
+    });
+
+    // ---------- 提交前把关 ----------
+    // 换了 WiFi 却把密码留空 = 告诉设备"新网络没有密码"。这多半是漏填，
+    // 所以在这里明确问一句 —— 配错了设备会退成热点，用户得跑一趟。
+    el('form').addEventListener('submit', function (e) {
+      var ssid = el('ssid').value.trim();
+      var pw = el('password').value;
+      if (ssid && ssid !== known.ssid && pw.length === 0 && known.wifiPasswordSet) {
+        if (!window.confirm('你把 WiFi 换成了「' + ssid + '」，但密码留空了。\n\n'
+            + '留空表示这个网络没有密码（开放网络）。如果它其实要密码，请点取消回去填写。')) {
+          e.preventDefault();
+          return;
+        }
+      }
+      // 提交已经发生，才把按钮置灰 —— 在点击的同一拍禁用按钮会让部分手机浏览器吞掉提交
+      var btn = el('btn-save');
+      setTimeout(function () {
+        btn.disabled = true;
+        btn.textContent = '保存中…';
+      }, 0);
+    });
+
+    // ---------- 回退到"上次能联网的那份配置" ----------
+    // 手机端自救通道：配错了又不想用串口时，用它把设备救回能上网的状态
+    // （固件里保存的是「最后一次真正连上 WiFi 的配置」，不是「上一版」）。
+    el('btn-restore').addEventListener('click', function () {
+      if (!window.confirm('把设备恢复到上次能联网的配置并重启？\n\n这会丢弃你现在填的这些内容。')) return;
+      var btn = el('btn-restore');
+      btn.disabled = true;
+      btn.textContent = '恢复中…';
+      fetch(API + '/restore', { method: 'POST' }).then(function (res) {
+        return res.json().then(function (json) {
+          if (!res.ok || json.success === false) {
+            throw new Error((json && json.error) || ('HTTP ' + res.status));
+          }
+          var ssid = (json.data && json.data.ssid) || '原网络';
+          showMsg('已恢复为「' + ssid + '」，设备正在重启并尝试连回去。'
+            + '手机的热点连接会断掉，属正常现象。', 'ok');
+        });
+      }).catch(function (err) {
+        showMsg('恢复失败：' + err.message, 'err');
+        btn.disabled = false;
+        btn.textContent = '回退到上次能联网的配置';
+      });
+    });
+
+    el('btn-scan').addEventListener('click', scan);
+
+    // 勾了"关闭 MQTT"就把那几个输入框一并禁掉：既避免误填，也让状态一眼可见
+    // （被禁用的字段不参与提交，而 mqtt_clear 本身仍是提交的）
+    el('mqtt_clear').addEventListener('change', function () {
+      var off = this.checked;
+      ['mqtt_server', 'mqtt_port', 'mqtt_username', 'mqtt_password'].forEach(function (id) {
+        el(id).disabled = off;
+      });
+      // 密码框都禁用了，"显示密码"按钮留着可点会让人以为还能改 —— 一起禁掉
+      el('mqtt_password').parentNode.querySelector('.pw-toggle').disabled = off;
+    });
+
+    loadStatus();
+  })();
+  </script>
+</body>
+</html>
